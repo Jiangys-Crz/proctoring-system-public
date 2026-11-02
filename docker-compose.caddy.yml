@@ -1,0 +1,136 @@
+# All public traffic enters the host Caddy gateway on TCP/UDP 443.
+# Existing backend updates: bash scripts/deploy-caddy.sh web
+services:
+  uploads-init:
+    image: busybox:1.37.0
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - web-uploads:/uploads
+    command: ["sh", "-c", "chown -R 1000:1000 /uploads && chmod 700 /uploads"]
+
+  mysql:
+    image: mysql:8.4
+    container_name: cwnupaa-proctor-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-cwnupaa_proctoring}
+      MYSQL_USER: ${MYSQL_USER:-cwnupaa_proctor}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:3307:3306"
+    command:
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=tcp -h 127.0.0.1 -u\"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -e 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 30
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian-security}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        NPM_FALLBACK_REGISTRY: ${NPM_FALLBACK_REGISTRY-https://registry.npmmirror.com}
+        NEXT_PUBLIC_MEDIA_HLS_BASE: ${MEDIA_HLS_PUBLIC_BASE:-}
+        PROCTOR_CLIENT_WEB_INTERNAL_BASE: http://client-web:4032
+    container_name: cwnupaa-proctor-web
+    init: true
+    shm_size: 256mb
+    security_opt:
+      - seccomp=./deployment/chromium-seccomp.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      media:
+        condition: service_started
+      uploads-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+      MEDIA_URL_SECRET: ${MEDIA_URL_SECRET:-}
+      MEDIA_PUBLISH_SECRET: ${MEDIA_PUBLISH_SECRET:-}
+      MEDIA_RTMPS_PUBLIC_BASE: ${MEDIA_RTMPS_PUBLIC_BASE:?set MEDIA_RTMPS_PUBLIC_BASE to rtmps://proctorstream.example.org:443}
+      CWNUPAA_EXTERNAL_API_BASE: ${CWNUPAA_EXTERNAL_API_BASE:-https://www.example.org/api}
+      CWNUPAA_EXTERNAL_APP_KEY: ${CWNUPAA_EXTERNAL_APP_KEY:-}
+      PROCTOR_UPLOAD_DIR: ${PROCTOR_UPLOAD_DIR:-./uploads}
+      UPLOAD_MAX_CONCURRENT: ${UPLOAD_MAX_CONCURRENT:-4}
+      UPLOAD_MATERIAL_MAX_CONCURRENT: ${UPLOAD_MATERIAL_MAX_CONCURRENT:-2}
+      MEDIA_VALIDATION_CONCURRENCY: ${MEDIA_VALIDATION_CONCURRENCY:-2}
+      DESKTOP_RELEASE_CHANNEL: ${DESKTOP_RELEASE_CHANNEL:-public}
+      DESKTOP_RELEASE_DIR: ${DESKTOP_RELEASE_DIR:-}
+      HYDRO_PROCTOR_SHARED_SECRET: ${HYDRO_PROCTOR_SHARED_SECRET:-}
+      HYDRO_PROCTOR_API_KEY: ${HYDRO_PROCTOR_API_KEY:-}
+      HYDRO_PROCTOR_INTERNAL_BASE_URL: ${HYDRO_PROCTOR_INTERNAL_BASE_URL:-http://host.docker.internal}
+      HYDRO_PROCTOR_PUBLIC_URL: ${HYDRO_PROCTOR_PUBLIC_URL:-http://localhost}
+      HYDRO_PROCTOR_JUDGE_ACCOUNT: ${HYDRO_PROCTOR_JUDGE_ACCOUNT:-proctor-judge}
+      HYDRO_PROCTOR_JUDGE_PASSWORD: ${HYDRO_PROCTOR_JUDGE_PASSWORD:-}
+      HYDRO_PROCTOR_PROBLEM_DOMAIN: ${HYDRO_PROCTOR_PROBLEM_DOMAIN:-Problems}
+      MEDIA_WHIP_INTERNAL_BASE: http://media:8889
+      MEDIA_HLS_INTERNAL_BASE: http://media:8080
+      MEDIA_API_INTERNAL_BASE: http://media:9997
+    ports:
+      - "127.0.0.1:${PROCTOR_WEB_HOST_PORT:-4031}:4031"
+    volumes:
+      - web-uploads:/app/apps/web/uploads
+    command: >
+      sh -c "pnpm --filter @cwnupaa/proctor-web db:push &&
+             pnpm --filter @cwnupaa/proctor-web db:seed &&
+             pnpm --filter @cwnupaa/proctor-web start"
+
+  client-web:
+    build:
+      context: .
+      dockerfile: apps/client-web/Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        NPM_FALLBACK_REGISTRY: ${NPM_FALLBACK_REGISTRY-https://registry.npmmirror.com}
+        NEXT_PUBLIC_PROCTOR_API_BASE: ${APP_BASE_URL:?set APP_BASE_URL}
+        NEXT_PUBLIC_PROCTOR_CONTEST_MOCK: ${PROCTOR_CONTEST_MOCK:-0}
+    container_name: cwnupaa-proctor-client-web
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "127.0.0.1:${PROCTOR_CLIENT_WEB_HOST_PORT:-4032}:4032"
+
+  media:
+    image: bluenviron/mediamtx:1
+    container_name: cwnupaa-proctor-media
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    environment:
+      MTX_WEBRTCADDITIONALHOSTS: ${MEDIA_WEBRTC_ADDITIONAL_HOSTS:-}
+      MTX_AUTHHTTPADDRESS: ${MEDIA_AUTH_HTTP_ADDRESS:-http://web:4031/api/media/auth}
+    ports:
+      # Host loopback ports are configurable: a shared host may already own the
+      # upstream defaults. The Caddyfile layer-4 targets must match these values.
+      - "127.0.0.1:${MEDIA_RTMP_HOST_PORT:-1935}:1935"
+      - "127.0.0.1:${MEDIA_HLS_HOST_PORT:-8080}:8080"
+      - "127.0.0.1:${MEDIA_WEBRTC_HTTP_HOST_PORT:-8889}:8889"
+      - "127.0.0.1:${MEDIA_API_HOST_PORT:-9997}:9997"
+      - "127.0.0.1:${MEDIA_ICE_HOST_PORT:-8189}:443/tcp"
+      - "127.0.0.1:${MEDIA_ICE_HOST_PORT:-8189}:443/udp"
+    volumes:
+      - ./apps/media/mediamtx.caddy.yml:/mediamtx.yml:ro
+
+volumes:
+  mysql-data:
+  web-uploads:

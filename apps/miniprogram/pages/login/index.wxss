@@ -1,0 +1,127 @@
+.brand {
+  margin: 20rpx 0 24rpx;
+  text-align: center;
+}
+
+.brand-logo {
+  width: 128rpx;
+  height: 128rpx;
+  margin-bottom: 12rpx;
+}
+
+.brand-name {
+  color: #155eef;
+  font-size: 44rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+}
+
+.brand-sub {
+  margin-top: 6rpx;
+  color: #637083;
+  font-size: 30rpx;
+  letter-spacing: 8rpx;
+}
+
+.title {
+  line-height: 1.35;
+}
+
+.muted {
+  color: #7a8699;
+  font-size: 26rpx;
+}
+
+.server-status {
+  margin-top: 18rpx;
+  padding: 18rpx;
+  border: 1rpx solid #d7deea;
+  border-radius: 10rpx;
+  background: #f8fafc;
+  color: #637083;
+  font-size: 26rpx;
+}
+
+.server-status text {
+  display: block;
+  margin-top: 6rpx;
+  color: #18202d;
+}
+
+.server-status.connected {
+  border-color: rgba(15, 157, 120, 0.35);
+  background: #ecfdf6;
+  color: #0f7661;
+}
+
+.server-status.connected text {
+  color: #0f9d78;
+  font-weight: 700;
+}
+
+.placeholder {
+  color: #aab3c2;
+}
+
+.verify-note {
+  margin-top: 14rpx;
+  padding: 14rpx 16rpx;
+  border-radius: 10rpx;
+  background: #fff8e8;
+  color: #6f4b00;
+}
+
+.exam-info {
+  margin-top: 12rpx;
+  padding: 18rpx;
+  border-radius: 10rpx;
+  background: #eef5ff;
+  color: #33415c;
+  font-size: 26rpx;
+  line-height: 1.7;
+}
+
+.confirm-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #eef1f6;
+  font-size: 28rpx;
+}
+
+.confirm-row text:first-child {
+  flex: 0 0 120rpx;
+  color: #7a8699;
+}
+
+.confirm-row text:last-child {
+  flex: 1;
+  text-align: right;
+  color: #18202d;
+  word-break: break-all;
+}
+
+.material-preview {
+  margin: 16rpx 0;
+  overflow: hidden;
+  border: 1rpx solid #d7deea;
+  border-radius: 12rpx;
+  background: #f8fafc;
+}
+
+.material-preview image {
+  display: block;
+  width: 100%;
+  height: 360rpx;
+}
+
+.material-preview video {
+  display: block;
+  width: 100%;
+  height: 360rpx;
+}
+
+.material-preview .muted {
+  padding: 12rpx 16rpx;
+}

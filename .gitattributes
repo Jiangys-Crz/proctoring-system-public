@@ -1,0 +1,6 @@
+# Native helper manifests hash the canonical source bytes on every build host.
+apps/desktop/native/**/*.c text eol=lf
+apps/desktop/native/**/*.h text eol=lf
+# macOS scripts may also be packaged from a Windows checkout.
+apps/desktop/resources/novajudge-submit/*.sh text eol=lf
+apps/desktop/resources/novajudge-submit/submit-macos text eol=lf

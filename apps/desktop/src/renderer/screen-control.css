@@ -1,0 +1,5 @@
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; cursor: none; user-select: none; }
+body { display: flex; align-items: center; justify-content: center; color: #e2e8f0; font: 20px system-ui, sans-serif; }
+#screenControlImage { width: 100vw; height: 100vh; object-fit: contain; pointer-events: none; }
+#screenControlGuardError { position: fixed; left: 0; right: 0; bottom: 0; padding: 16px; background: #7f1d1d; color: #fff; text-align: center; z-index: 2; }
+[hidden] { display: none !important; }

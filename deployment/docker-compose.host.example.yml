@@ -1,0 +1,20 @@
+# Copy to docker-compose.host.yml only on hosts that need private NovaJudge DNS
+# and a trusted internal certificate authority. Fill in this host's own values.
+# Copy this host's public root.crt to deployment/novajudge-ca.local.crt with
+# mode 0644 so the unprivileged web process can read it. Never copy a CA key.
+services:
+  web:
+    extra_hosts:
+      - "novajudge.example.test:192.168.50.20"
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/proctor-extra-ca.crt
+      # LAN only: expose TCP/UDP 18189 on this host, forwarding to the existing
+      # loopback media port. Private-IP 443 candidates are rejected by Chrome.
+      MEDIA_BROWSER_ICE_PORT: "18189"
+    volumes:
+      - ./deployment/novajudge-ca.local.crt:/run/proctor-extra-ca.crt:ro
+  # Use THIS host's own LAN address. MediaMTX must resolve the RTC domain when
+  # building ICE candidates; the container cannot rely on client hosts files.
+  media:
+    extra_hosts:
+      - "proctorrtc.example.test:192.168.50.20"

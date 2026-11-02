@@ -1,0 +1,11 @@
+{
+  "name": "cwnupaa-proctor-auth",
+  "version": "0.2.2",
+  "description": "HydroOJ API-Key problem-bank and Judger bridge for CWNU PAA online proctoring.",
+  "main": "index.ts",
+  "private": true,
+  "peerDependencies": {
+    "hydrooj": "*"
+  },
+  "license": "AGPL-3.0-only"
+}

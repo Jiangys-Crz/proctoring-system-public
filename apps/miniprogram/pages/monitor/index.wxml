@@ -1,0 +1,25 @@
+<view class="monitor-page">
+  <view class="camera camera-placeholder"></view>
+
+  <view class="monitor-overlay">
+    <view class="monitor-status">
+      <text class="status-dot {{finished ? 'off' : (locked ? 'lock' : 'live')}}"></text>
+      <text class="status-text">{{message}}</text>
+    </view>
+
+    <button class="primary" bindtap="openSecureWeb">复制 HTTPS 第二机位网页地址</button>
+
+    <view class="monitor-tips">小程序不进行明文推流。请使用手机浏览器或原生 App 的加密第二机位。</view>
+
+    <view wx:if="{{locked}}" class="lock-note">当前会话已被锁定，请等待管理员处理。</view>
+    <view wx:if="{{finished}}" class="finish-note">当前考试已结束。监考老师恢复后，小程序会自动继续第二机位监考。</view>
+
+    <view class="monitor-actions">
+      <button wx:if="{{canCancelLogin}}" class="danger small" bindtap="cancelLoginRequest">取消请求登录</button>
+      <button class="danger small" bindtap="reportCameraIssue">摄像头异常上报</button>
+      <button wx:if="{{!recordingVoice}}" class="primary small" bindtap="startVoiceReply">开始语音回复</button>
+      <button wx:if="{{recordingVoice}}" class="danger small" bindtap="stopVoiceReply">停止并发送语音</button>
+    </view>
+    <view class="muted">语音：{{voiceMessage}}</view>
+  </view>
+</view>

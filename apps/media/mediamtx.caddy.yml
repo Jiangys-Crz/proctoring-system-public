@@ -1,0 +1,51 @@
+logLevel: info
+api: true
+apiAddress: :9997
+
+# 发布和读取分别使用后台签发的独立短期凭据。
+authMethod: http
+authHTTPAddress: http://web:4031/api/media/auth
+authHTTPExclude: []
+
+rtsp: false
+srt: false
+playback: false
+moq: false
+
+rtmp: true
+# Caddy terminates public RTMPS TLS and proxies only over host loopback.
+rtmpEncryption: "no"
+rtmpAddress: :1935
+
+hls: true
+hlsAddress: :8080
+hlsAllowOrigins: ['*']
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAlwaysRemux: false
+
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+# The listener port is advertised in ICE candidates. It MUST equal the
+# external Caddy gateway port; Docker maps host loopback 8189 to container 443.
+webrtcLocalUDPAddress: :443
+webrtcLocalTCPAddress: :443
+# Container/private interface candidates are unreachable from public clients.
+webrtcIPsFromInterfaces: false
+
+pathDefaults:
+  source: publisher
+  overridePublisher: true
+  # Clients upload the sole evidence copy; live remuxing must not record again.
+  record: false
+
+paths:
+  '~^voice/[A-Za-z0-9_-]+_(ADMIN|DESKTOP)$':
+    record: false
+    overridePublisher: false
+  '~^live/test_[A-Za-z0-9_-]+_(DESKTOP_SCREEN|DESKTOP_CAMERA|MOBILE_CAMERA)$':
+    record: false
+  all_others:

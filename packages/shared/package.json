@@ -1,0 +1,50 @@
+{
+  "name": "@cwnupaa/proctor-shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    "./realtime-voice": {
+      "types": "./src/realtime-voice.d.ts",
+      "default": "./src/realtime-voice.js"
+    },
+    "./webrtc-codecs": {
+      "types": "./src/webrtc-codecs.d.ts",
+      "default": "./src/webrtc-codecs.js"
+    },
+    "./recording-buffer": {
+      "types": "./src/recording-buffer.d.ts",
+      "default": "./src/recording-buffer.js"
+    },
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./leaderboard": {
+      "types": "./src/leaderboard.ts",
+      "default": "./src/leaderboard.ts"
+    },
+    "./leaderboard-table": {
+      "types": "./src/LeaderboardTable.tsx",
+      "default": "./src/LeaderboardTable.tsx"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.1.13",
+    "sanitize-html": "^2.17.4",
+    "react": "19.2.8",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/sanitize-html": "^2.16.1",
+    "@types/react": "^19.2.7"
+  },
+  "license": "AGPL-3.0-only"
+}

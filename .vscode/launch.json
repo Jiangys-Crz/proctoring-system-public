@@ -1,0 +1,43 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Desktop: Debug Main (F5)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/apps/desktop",
+      "runtimeExecutable": "${workspaceFolder}/apps/desktop/node_modules/.bin/electron",
+      "runtimeArgs": ["."],
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/apps/desktop/node_modules/.bin/electron.cmd"
+      },
+      "env": {
+        "PROCTOR_DEV": "1",
+        "PROCTOR_DISABLE_LOCAL_CONTROL": "1"
+      },
+      "outputCapture": "std",
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/apps/desktop/dist/**/*.js"],
+      "preLaunchTask": "desktop: build"
+    },
+    {
+      "name": "Desktop: Watch + Debug Main (F5)",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/apps/desktop",
+      "runtimeExecutable": "${workspaceFolder}/apps/desktop/node_modules/.bin/electron",
+      "runtimeArgs": ["."],
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/apps/desktop/node_modules/.bin/electron.cmd"
+      },
+      "env": {
+        "PROCTOR_DEV": "1",
+        "PROCTOR_DISABLE_LOCAL_CONTROL": "1"
+      },
+      "outputCapture": "std",
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/apps/desktop/dist/**/*.js"],
+      "preLaunchTask": "desktop: dev:watch"
+    }
+  ]
+}

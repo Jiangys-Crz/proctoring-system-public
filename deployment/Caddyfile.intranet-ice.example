@@ -1,0 +1,13 @@
+# Inside the existing global `layer4` block on the LAN gateway, keep the old
+# udp/:443 route and append these listeners. Use this host's own LAN IP and
+# loopback MediaMTX ICE port. Do not copy these values to the public gateway.
+192.168.50.20:18189 {
+  route {
+    proxy tcp/127.0.0.1:18189
+  }
+}
+udp/192.168.50.20:18189 {
+  route {
+    proxy udp/127.0.0.1:18189
+  }
+}

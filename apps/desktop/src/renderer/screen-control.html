@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>监考屏幕展示</title>
+    <link rel="stylesheet" href="./screen-control.css" />
+  </head>
+  <body>
+    <img id="screenControlImage" alt="监考老师推送的图片" draggable="false" hidden />
+    <div id="screenControlLoading" role="status">正在加载监考老师推送的图片…</div>
+    <div id="screenControlGuardError" role="alert" hidden></div>
+    <script src="./screen-control-display.js"></script>
+  </body>
+</html>

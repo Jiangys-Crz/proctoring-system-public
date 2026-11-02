@@ -1,0 +1,25 @@
+{
+  "name": "cwnupaa-proctoring-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CWNU PAA online contest proctoring platform for HydroOJ and NovaJudge.",
+  "packageManager": "pnpm@11.16.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @cwnupaa/proctor-web dev",
+    "dev:client": "pnpm --filter @cwnupaa/proctor-client-web dev",
+    "dev:client:https": "pnpm --filter @cwnupaa/proctor-client-web dev:https",
+    "dev:mobile:proxy": "node scripts/dev-mobile-proxy.mjs",
+    "build:web": "pnpm --filter @cwnupaa/proctor-web build",
+    "build:client": "pnpm --filter @cwnupaa/proctor-client-web build",
+    "dev:desktop": "pnpm --filter @cwnupaa/proctor-desktop dev",
+    "dev:desktop:watch": "pnpm --filter @cwnupaa/proctor-desktop dev:watch",
+    "build:desktop": "pnpm --filter @cwnupaa/proctor-desktop build",
+    "dist:desktop:mac": "pnpm --filter @cwnupaa/proctor-desktop dist:mac",
+    "dist:desktop:win": "pnpm --filter @cwnupaa/proctor-desktop dist:win",
+    "db:generate": "pnpm --filter @cwnupaa/proctor-web db:generate",
+    "db:push": "pnpm --filter @cwnupaa/proctor-web db:push",
+    "db:seed": "pnpm --filter @cwnupaa/proctor-web db:seed",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "desktop: build",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--filter", "@cwnupaa/proctor-desktop", "build"],
+      "group": "build",
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "desktop: dev:watch",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["dev:desktop:watch"],
+      "isBackground": true,
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}

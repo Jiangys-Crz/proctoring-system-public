@@ -1,0 +1,65 @@
+// Run against a local built web server backed by proctor_novajudge_qa.
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import bcrypt from 'bcryptjs';
+import { chromium } from 'playwright-core';
+import { prisma } from '../src/lib/db';
+import { digestPasswordForStorage } from '../src/lib/password-crypto';
+
+const base = process.env.QA_WEB_ORIGIN || 'http://127.0.0.1:43218';
+assert.equal(new URL(process.env.DATABASE_URL || 'http://invalid').pathname, '/proctor_novajudge_qa');
+assert.ok(['localhost', '127.0.0.1'].includes(new URL(base).hostname));
+const username = `nova-web-${randomUUID()}`, password = 'qa-password-only';
+const user = await prisma.user.create({ data: { username, role: 'SUPER_ADMIN', passwordHash: await bcrypt.hash(digestPasswordForStorage(password), 4) } });
+const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+let examId: string | undefined;
+try {
+  const context = await browser.newContext({ timezoneId: 'Asia/Shanghai' });
+  const page = await context.newPage(); const pageErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await page.route('**/api/hydro/languages', route => route.fulfill({ json: { ok: true, data: [] } }));
+  assert.equal((await context.request.post(`${base}/api/auth/admin-login`, { data: { username, password } })).status(), 200);
+  await page.goto(`${base}/dashboard/exams/new`);
+  await page.getByLabel('考试类型', { exact: true }).selectOption('NOVAJUDGE');
+  assert.equal(await page.getByLabel('规则', { exact: true }).isVisible(), false);
+  assert.equal(await page.locator('#exam-problems').count(), 0);
+  assert.equal(await page.getByText('提交语言限制', { exact: true }).isVisible(), false);
+  await page.getByPlaceholder('输入考试名称').fill('NovaJudge 网页发布验证');
+  await page.getByLabel('开始日期', { exact: true }).fill('2026-10-13');
+  await page.getByLabel('开始时间', { exact: true }).fill('16:00');
+  await page.getByLabel('考试时长（分钟）', { exact: true }).fill('180');
+  await page.getByLabel('NovaJudge 平台域名', { exact: true }).fill('judge.example.test');
+  await page.getByLabel('NovaJudge 比赛 ID', { exact: true }).fill('12');
+  await page.getByLabel('NovaJudge 外榜 API Key', { exact: true }).fill('source-key-fixture');
+  await page.getByLabel('NovaJudge 数据时区', { exact: false }).selectOption('UTC');
+  const createdResponse = page.waitForResponse(response => response.url() === `${base}/api/exams` && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '保存考试', exact: true }).click();
+  const created = await createdResponse; assert.equal(created.status(), 201); const result = await created.json(); examId = result.data.id;
+  assert.equal(JSON.stringify(result).includes('source-key-fixture'), false);
+  const stored = await prisma.exam.findUniqueOrThrow({ where: { id: examId } });
+  assert.equal(stored.platform, 'NOVAJUDGE'); assert.equal(stored.platformBaseUrl, 'https://judge.example.test'); assert.equal(stored.platformContestId, '12');
+  assert.equal(stored.novaJudgeApiKey, 'source-key-fixture'); assert.equal(stored.novaJudgeTimezone, 'UTC'); assert.equal(stored.published, true);
+  assert.equal(stored.startAt.toISOString(), '2026-10-13T08:00:00.000Z'); assert.equal(stored.endAt.toISOString(), '2026-10-13T11:00:00.000Z');
+  assert.equal(await prisma.examProblem.count({ where: { examId } }), 0);
+  const details = await context.request.get(`${base}/api/exams/${examId}`); const publicData = await details.json();
+  assert.equal(publicData.data.novaJudgeApiKeyConfigured, true); assert.equal(JSON.stringify(publicData).includes('source-key-fixture'), false);
+  assert.equal((await fetch(`${base}/api/exams/${examId}`)).status, 401);
+  await page.goto(`${base}/dashboard/exams/${examId}/settings`);
+  await page.getByPlaceholder('已配置，留空保留原密钥').waitFor();
+  assert.equal(await page.getByLabel('NovaJudge 外榜 API Key', { exact: true }).inputValue(), '');
+  assert.equal(await page.getByLabel('考试类型', { exact: true }).isDisabled(), true);
+  await page.getByLabel('考试时长（分钟）', { exact: true }).fill('90');
+  const editedResponse = page.waitForResponse(response => response.url() === `${base}/api/exams/${examId}` && response.request().method() === 'PATCH');
+  await page.getByRole('button', { name: '保存考试', exact: true }).click(); assert.equal((await editedResponse).status(), 200);
+  const edited = await prisma.exam.findUniqueOrThrow({ where: { id: examId } }); assert.equal(edited.novaJudgeApiKey, 'source-key-fixture'); assert.equal(edited.durationMinutes, 90);
+  await page.goto(`${base}/dashboard/exams/${examId}`); await page.getByRole('link', { name: 'NovaJudge 比赛', exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: '代码查重', exact: true }).count(), 0);
+  const output = path.resolve('../../tmp/novajudge-qa'); await mkdir(output, { recursive: true }); await page.screenshot({ path: path.join(output, 'web-overview.png') });
+  assert.deepEqual(pageErrors, []);
+  console.log('NovaJudge web integration passed: real admin auth, platform form, no local problems, timezone/timing, create/edit, retained secret, anonymous denial and Nova management links.');
+} finally {
+  await browser.close(); if (examId) await prisma.exam.deleteMany({ where: { id: examId } });
+  await prisma.user.deleteMany({ where: { id: user.id } }); await prisma.$disconnect();
+}

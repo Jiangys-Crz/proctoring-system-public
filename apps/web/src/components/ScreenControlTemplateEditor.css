@@ -1,0 +1,50 @@
+.screen-template-backdrop { position: fixed; inset: 0; z-index: 3000; padding: 24px; background: #17262dbd; display: grid; place-items: center; }
+.screen-template-dialog { width: min(1440px, 100%); max-height: calc(100dvh - 48px); display: flex; flex-direction: column; background: #fff; border: 1px solid #dbe4e8; border-radius: 12px; box-shadow: 0 24px 80px #0719244d; color: #233b49; overflow: hidden; }
+.screen-template-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 24px; border-bottom: 1px solid #e4eaed; }
+.screen-template-heading h2 { margin: 0 0 6px; font-size: 19px; }
+.screen-template-heading p { margin: 0; font-size: 13px; line-height: 1.6; color: #73858f; }
+.screen-template-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0; }
+.screen-template-content { padding: 20px 24px; overflow: auto; }
+.screen-template-images { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 10px; }
+.screen-template-images > div { flex: 0 0 140px; border: 1px solid #dfe7eb; border-radius: 7px; overflow: hidden; background: #fff; }
+.screen-template-images > div.selected { border-color: #319e70; box-shadow: 0 0 0 1px #319e70; }
+.screen-template-images button { display: grid; gap: 4px; border: 0; background: transparent; width: 100%; text-align: left; padding: 6px; cursor: pointer; color: inherit; }
+.screen-template-images img { width: 126px; height: 66px; object-fit: contain; background: #f0f4f6; }
+.screen-template-images button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.screen-template-images small { font-size: 11px; color: #7e919a; }
+.screen-template-images label { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 6px; border-top: 1px solid #edf1f3; cursor: pointer; }
+.screen-template-dialog input[type='checkbox'] { width: 14px; height: 14px; accent-color: #299c67; }
+.screen-template-batch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 18px; }
+.screen-template-batch > span { font-size: 12px; color: #7c8c95; }
+.screen-template-preview-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 14px; border: 1px solid #e2e9ed; border-radius: 7px; background: #f8fafb; margin-bottom: 16px; }
+.screen-template-dialog label { font-size: 12px; color: #5c727f; }
+.screen-template-preview-controls label { display: grid; gap: 6px; flex: 1 1 220px; max-width: 360px; }
+.screen-template-dialog input:not([type='checkbox']), .screen-template-dialog select, .screen-template-dialog textarea { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #d9e2e7; border-radius: 5px; padding: 8px 10px; background: #fff; color: #263d4a; font: inherit; }
+.screen-template-dialog input[type='color'] { height: 34px; padding: 4px; }
+.screen-template-preview-status { display: flex; align-items: center; gap: 6px; color: #7e8e96; font-size: 12px; padding-bottom: 9px; }
+.screen-template-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; align-items: start; gap: 20px; }
+.screen-template-workspace.preview-only { grid-template-columns: minmax(0, 1fr); }
+.screen-template-stage { min-width: 0; padding: 16px; background: #eef2f4; border: 1px solid #dfe7eb; border-radius: 7px; }
+.screen-template-canvas { position: relative; width: 100%; background: #fff; user-select: none; }
+.screen-template-canvas > img { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.screen-template-block { position: absolute; border: 1px dashed #238556; background: #319e7006; padding: 0; cursor: move; touch-action: none; }
+.screen-template-block.selected { border: 2px solid #238556; background: #319e7014; }
+.screen-template-block span { position: absolute; left: -1px; top: -20px; color: #fff; background: #238556; padding: 2px 6px; border-radius: 3px 3px 0 0; font-size: 11px; white-space: nowrap; }
+.screen-template-hint { color: #7f919a; font-size: 12px; line-height: 1.7; margin: 10px 0 0; overflow-wrap: anywhere; }
+.screen-template-properties { min-width: 0; display: grid; gap: 14px; padding: 16px; border: 1px solid #dfe7eb; border-radius: 7px; }
+.screen-template-properties strong { font-size: 13px; }
+.screen-template-properties > label { display: grid; gap: 7px; }
+.screen-template-properties .screen-template-check { display: flex; align-items: center; gap: 7px; }
+.screen-template-properties .screen-template-hint { margin: 0; }
+.screen-template-block-list { min-width: 0; display: flex; gap: 5px; flex-wrap: wrap; }
+.screen-template-block-list:empty { display: none; }
+.screen-template-block-list button, .screen-template-fields button { padding: 5px 8px; border: 1px solid #dce5e9; background: #f8fafb; border-radius: 4px; font-size: 12px; color: #486270; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screen-template-block-list button.selected { border-color: #299c67; color: #247a50; background: #edf7f1; }
+.screen-template-fields { display: grid; gap: 7px; font-size: 12px; }
+.screen-template-fields > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.screen-template-number-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.screen-template-number-grid label { display: grid; gap: 6px; }
+.screen-template-dialog button:disabled { opacity: .5; cursor: default; }
+.screen-template-dialog button:focus-visible, .screen-template-dialog input:focus-visible, .screen-template-dialog select:focus-visible, .screen-template-dialog textarea:focus-visible { outline: 2px solid #299c67; outline-offset: 2px; }
+@media (max-width: 1000px) { .screen-template-workspace { grid-template-columns: minmax(0, 1fr); } .screen-template-properties { max-width: none; } }
+@media (max-width: 640px) { .screen-template-backdrop { padding: 8px; } .screen-template-dialog { max-height: calc(100dvh - 16px); } .screen-template-heading { padding: 14px; align-items: flex-start; flex-direction: column; gap: 12px; } .screen-template-content { padding: 14px; } .screen-template-stage { padding: 8px; } .screen-template-heading h2 { font-size: 17px; } .screen-template-preview-controls { padding: 10px; } }

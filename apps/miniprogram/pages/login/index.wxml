@@ -1,0 +1,107 @@
+<view class="page">
+  <view class="brand">
+    <image class="brand-logo" src="/assets/logo.png" mode="aspectFit" />
+    <view class="brand-name">程序设计算法协会</view>
+    <view class="brand-sub">线上监考平台</view>
+  </view>
+
+  <!-- 第一步：选择考试并填写信息 -->
+  <block wx:if="{{step === 1}}">
+    <view class="card">
+      <view class="title">考生信息</view>
+      <view class="muted">请选择考试并填写个人信息，核对无误后进入下一步。</view>
+      <view class="server-status {{serverConnected ? 'connected' : ''}}">
+        <view>监考服务器</view>
+        <text>{{serverStatus}}</text>
+      </view>
+      <label class="field">考试编号
+        <input type="number" maxlength="10" value="{{examCode}}" bindinput="onExamCodeInput" placeholder="请输入 10 位考试编号" />
+      </label>
+      <label class="field">考试信息
+        <picker range="{{examNames}}" value="{{examIndex}}" bindchange="onExamChange">
+          <view class="{{examIndex < 0 ? 'placeholder' : ''}}">{{examNames[examIndex] || '请选择考试'}}</view>
+        </picker>
+      </label>
+      <view class="exam-info" wx:if="{{exams[examIndex]}}">
+        <view>考试编号：{{exams[examIndex].examCode}}</view>
+        <view>考试名称：{{exams[examIndex].name}}</view>
+        <view>考试时间：{{exams[examIndex].startText}} ~ {{exams[examIndex].endText}}</view>
+        <view>考试时长：{{exams[examIndex].durationMinutes}} 分钟</view>
+        <view>比赛类型：{{exams[examIndex].contestType === 'TEAM' ? '团队赛' : '个人赛'}}</view>
+        <view>第二机位：{{exams[examIndex].requireMiniProgram ? '需要' : '不需要'}}</view>
+      </view>
+      <label class="field">学校
+        <input value="{{school}}" bindinput="onInput" data-key="school" placeholder="请输入学校" />
+      </label>
+      <label class="field" wx:if="{{!(exams[examIndex] && exams[examIndex].contestType === 'TEAM' && exams[examIndex].teamAccountMode === 'TEAM_ACCOUNT')}}">学院
+        <input value="{{college}}" bindinput="onInput" data-key="college" placeholder="请输入学院" />
+      </label>
+      <label class="field">姓名
+        <input value="{{name}}" bindinput="onInput" data-key="name" placeholder="请输入姓名" />
+      </label>
+      <label class="field" wx:if="{{exams[examIndex] && exams[examIndex].contestType === 'TEAM'}}">队伍名称
+        <input value="{{teamName}}" bindinput="onInput" data-key="teamName" placeholder="请输入队伍名称" />
+      </label>
+      <label class="field">学号
+        <input value="{{studentId}}" bindinput="onInput" data-key="studentId" placeholder="{{exams[examIndex] && exams[examIndex].contestType === 'TEAM' ? '请输入队员学号' : '请输入学号'}}" />
+      </label>
+      <label class="field">考号
+        <input value="{{examNumber}}" bindinput="onInput" data-key="examNumber" placeholder="请输入考号" />
+      </label>
+      <label class="field">密码
+        <input password value="{{password}}" bindinput="onInput" data-key="password" placeholder="请输入登录密码" />
+      </label>
+      <view class="muted verify-note">信息填写完成后将自动核对，全部与登记信息一致才能进入下一步。</view>
+      <button class="primary" loading="{{verifying}}" bindtap="nextStep">{{verifying ? '正在核对…' : '下一步'}}</button>
+      <view class="muted">{{message}}</view>
+    </view>
+  </block>
+
+  <!-- 第二步：信息核对 + 照片 / 环境视频 / 扫码 -->
+  <block wx:if="{{step === 2}}">
+    <view class="card">
+      <view class="title">信息核对</view>
+      <view class="muted">请核对以下信息，如有误可返回修改。</view>
+      <view class="confirm-row"><text>考试</text><text>{{examNames[examIndex]}}</text></view>
+      <view class="confirm-row"><text>学校</text><text>{{school}}</text></view>
+      <view class="confirm-row" wx:if="{{!(exams[examIndex] && exams[examIndex].contestType === 'TEAM' && exams[examIndex].teamAccountMode === 'TEAM_ACCOUNT')}}"><text>学院</text><text>{{college}}</text></view>
+      <view class="confirm-row"><text>姓名</text><text>{{name}}</text></view>
+      <view class="confirm-row" wx:if="{{exams[examIndex] && exams[examIndex].contestType === 'TEAM'}}"><text>队伍</text><text>{{teamName}}</text></view>
+      <view class="confirm-row"><text>学号</text><text>{{studentId}}</text></view>
+      <view class="confirm-row"><text>考号</text><text>{{examNumber}}</text></view>
+      <button class="secondary" bindtap="prevStep">上一步修改</button>
+    </view>
+
+    <view class="card">
+      <view class="title">第一步 · 手持身份证照片</view>
+      <view class="muted">请手持身份证件拍摄正面照片，用于身份核验。</view>
+      <view class="material-preview" wx:if="{{identityPhotoPath}}">
+        <image src="{{identityPhotoPath}}" mode="aspectFill" bindtap="previewIdentityPhoto" />
+        <view class="muted">点击图片可放大预览，不满意可重新拍摄</view>
+      </view>
+      <button class="primary" bindtap="takeIdentityPhoto">{{identityPhotoPath ? '重新拍摄照片' : '拍摄身份照片'}}</button>
+    </view>
+
+    <view class="card">
+      <view class="title">第二步 · 周围环境视频</view>
+      <view class="muted">请录制 3–15 秒的考场周围环境视频。</view>
+      <view class="material-preview" wx:if="{{roomVideoPath}}">
+        <video src="{{roomVideoPath}}" controls object-fit="contain" />
+        <view class="muted">可点击播放预览，不满意可重新录制</view>
+      </view>
+      <button class="primary" bindtap="recordRoomVideo">{{roomVideoPath ? '重新录制视频' : '录制环境视频'}}</button>
+    </view>
+
+    <view class="card">
+      <view class="title">第三步 · 扫描电脑二维码</view>
+      <view class="muted">在电脑客户端点击"扫码绑定"，用手机扫描屏幕上的二维码完成配对。</view>
+      <button bindtap="scanPairQr">{{pairCode ? '重新扫描' : '扫描电脑二维码'}}</button>
+      <view class="muted">配对码：{{pairCode || '未绑定'}}</view>
+    </view>
+
+    <view class="card">
+      <button class="primary" loading="{{submitting}}" bindtap="submitLoginRequest">提交登录请求</button>
+      <view class="muted">{{message}}</view>
+    </view>
+  </block>
+</view>

@@ -1,0 +1,36 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  ffmpeg-static: true
+  prisma: true
+minimumReleaseAgeExclude:
+  - '@next/env@16.4.1'
+  - '@next/swc-darwin-arm64@16.4.1'
+  - '@next/swc-darwin-x64@16.4.1'
+  - '@next/swc-linux-arm64-gnu@16.4.1'
+  - '@next/swc-linux-arm64-musl@16.4.1'
+  - '@next/swc-linux-x64-gnu@16.4.1'
+  - '@next/swc-linux-x64-musl@16.4.1'
+  - '@next/swc-win32-arm64-msvc@16.4.1'
+  - '@next/swc-win32-x64-msvc@16.4.1'
+  - next@16.4.1
+# Keep transitive parsers on patched versions; direct KaTeX and Markdown plugins share one runtime.
+overrides:
+  'katex@<0.18.2': '0.18.7'
+  'js-yaml@>=4.0.0 <4.3.2': '4.3.2'
+  'source-map-js@<1.2.2': '1.2.2'
+  '@prisma/config>deepmerge-ts': '8.0.2'
+  # Desktop packaging tools run only on the build host, independently of the Win7 runtime.
+  '@xmldom/xmldom@<0.8.15': '0.8.15'
+  'fast-uri@>=3.0.0 <3.1.8': '3.1.8'
+  'undici@>=6.0.0 <6.28.1': '6.28.1'
+  'brace-expansion@<2.0.0': '1.1.21'
+  'brace-expansion@>=2.0.0 <3.0.0': '2.1.7'
+  'brace-expansion@>=4.0.0 <5.0.12': '5.0.12'
+  'http-cache-semantics@<4.3.0': '4.3.0'

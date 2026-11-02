@@ -1,0 +1,20 @@
+{
+  "pages": [
+    "pages/login/index",
+    "pages/monitor/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "程序设计算法协会 线上监考平台",
+    "navigationBarBackgroundColor": "#155eef",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#eef2f7"
+  },
+  "permission": {
+    "scope.camera": {
+      "desc": "用于身份核验与第二机位监考"
+    },
+    "scope.record": {
+      "desc": "用于环境视频与监考语音"
+    }
+  }
+}

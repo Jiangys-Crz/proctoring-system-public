@@ -1,0 +1,24 @@
+.switchRow { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px; border: 1px solid #e2e8f0; border-radius: 10px; background: #f8fafc; }
+.switchRow p { margin: 6px 0 0; font-size: 13px; }
+.switchControl { display: flex; align-items: center; gap: 12px; flex-shrink: 0; font-size: 13px; }
+.switchButton { display: inline-flex; align-items: center; width: 54px; height: 30px; border: 0; border-radius: 999px; padding: 3px; background: #94a3b8; cursor: pointer; transition: background 150ms; }
+.switchButton[aria-checked="true"] { background: #22a06b; }
+.switchButton:focus-visible { outline: 3px solid #60a5fa; outline-offset: 3px; }
+.switchButton:disabled { cursor: wait; opacity: .6; }
+.switchThumb { width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0003; transition: transform 150ms; }
+.switchButton[aria-checked="true"] .switchThumb { transform: translateX(24px); }
+.logs { border-top: 1px solid #e2e8f0; padding-top: 20px; min-width: 0; }
+.logHeading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.logHeading h3 { margin: 0; }
+.logHeading > span { font-size: 12px; }
+.logScroll { overflow: auto; max-height: 440px; }
+.logScroll th { position: sticky; top: 0; background: #f8fafc; z-index: 1; white-space: nowrap; }
+.logTime { white-space: nowrap; font-size: 12px; }
+.logMessage { min-width: 220px; overflow-wrap: anywhere; }
+.logMessage small { display: block; margin-top: 4px; font-size: 11px; }
+.badge { display: inline-block; padding: 3px 8px; border-radius: 5px; white-space: nowrap; font-size: 12px; }
+.SUCCESS { color: #147d4f; background: #e8f7ef; }
+.ERROR { color: #be123c; background: #fff1f2; }
+.INFO { color: #475569; background: #f1f5f9; }
+@media (max-width: 640px) { .switchRow { align-items: flex-start; flex-direction: column; gap: 12px; } .switchControl { align-self: flex-end; } }
+@media (prefers-reduced-motion: reduce) { .switchButton, .switchThumb { transition: none; } }

@@ -1,0 +1,23 @@
+# For Caddy running on the Docker host. If Caddy runs in its own container,
+# use reachable host/network addresses instead of 127.0.0.1.
+proctoring.example.org {
+	reverse_proxy 127.0.0.1:4031 {
+		# Flush SSE and live responses immediately.
+		flush_interval -1
+	}
+}
+
+proctorstu.example.org {
+	reverse_proxy 127.0.0.1:4032
+}
+
+# This HTTPS site lets Caddy obtain/renew the RTMPS domain certificate.
+# RTMPS itself connects directly to MediaMTX on TCP 1936, not reverse_proxy.
+# Configure MEDIA_TLS_CERT_PATH / MEDIA_TLS_KEY_PATH to the actual certificate
+# files on the host, and restart media after certificate renewal.
+proctorstream.example.org {
+	respond "" 404
+}
+
+# proctorrtc.example.org resolves directly to the media server IP.
+# WebRTC uses TCP/UDP 8189 and needs no HTTP reverse_proxy or public TLS cert.

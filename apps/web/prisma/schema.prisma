@@ -1,0 +1,1080 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum ExamPlatform {
+  HYDRO
+  NOVAJUDGE
+}
+
+enum ContestType {
+  INDIVIDUAL
+  TEAM
+}
+
+enum TeamAccountMode {
+  MEMBER_ACCOUNTS
+  TEAM_ACCOUNT
+}
+
+enum ContestRule {
+  GPLT
+  XCPC
+  LANQIAO
+  ACM
+  OI
+  IOI
+  KS
+}
+
+enum RoomLoginMode {
+  CREDENTIALS
+  SECOND_CAMERA_QR
+}
+
+enum LoginReviewMode {
+  MANUAL
+  AUTO
+}
+
+enum CandidateStatus {
+  NOT_REQUESTED
+  REQUESTING
+  REJECTED
+  APPROVED
+  ONLINE_NORMAL
+  ONLINE_ABNORMAL
+  OFFLINE
+  FINISHED
+}
+
+enum LoginRequestStatus {
+  REQUESTING
+  APPROVED
+  REJECTED
+}
+
+enum SessionStatus {
+  WAITING_REVIEW
+  APPROVED
+  IN_EXAM
+  LOCKED
+  FINISHED
+  OFFLINE
+}
+
+enum PrintMode {
+  DISABLED
+  VIRTUAL
+  PHYSICAL
+}
+
+enum PrintJobStatus {
+  SAVED
+  PENDING
+  PRINTED
+  REJECTED
+}
+
+enum AlertType {
+  SCREEN_SWITCH
+  SCREEN_CAPTURE_LOST
+  CAMERA_CAPTURE_LOST
+  MOBILE_CAMERA_LOST
+  PROCESS_POLICY
+  NETWORK_POLICY
+  PERIPHERAL_CHANGED
+  VIRTUAL_MACHINE
+  CLIENT_OFFLINE
+  SECOND_CAMERA_OFFLINE
+  MANUAL_NOTE
+  OJ_LOGIN_FAILED
+}
+
+enum MediaChannel {
+  DESKTOP_SCREEN
+  DESKTOP_CAMERA
+  MOBILE_CAMERA
+  IDENTITY_PHOTO
+  ROOM_VIDEO
+  EVIDENCE_CLIP
+}
+
+enum OJTicketStatus {
+  PENDING
+  ISSUED
+  FAILED
+  EXPIRED
+}
+
+enum VoiceSender {
+  ADMIN
+  MINIPROGRAM
+}
+
+enum VoiceCallStatus {
+  RINGING
+  CONNECTING
+  ACTIVE
+  ENDED
+}
+
+enum QuestionMessageSender {
+  CANDIDATE
+  ADMIN
+}
+
+model User {
+  id                 String              @id @default(cuid())
+  numberId           String?
+  username           String?             @unique
+  nickname           String?
+  realName           String?
+  school             String?
+  email              String?             @unique
+  role               Role                @default(ADMIN)
+  status             UserStatus          @default(ACTIVE)
+  passwordHash       String?
+  associationImported Boolean            @default(false)
+  associationUserId  String?             @unique
+  associationVerifiedAt DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  examsManaged       ExamAdministrator[]
+  examsCreated       Exam[]              @relation("ExamCreator")
+  reviewed           LoginRequest[]      @relation("LoginRequestReviewer")
+  rooms              ExamRoomProctor[]
+  cheatingRecords    CheatingRecord[]    @relation("CheatingMarkedBy")
+  cheatingCancels    CheatingRecord[]    @relation("CheatingCanceledBy")
+  problemSubmissions ProblemSubmission[]
+  examAnswers        ExamQuestion[]      @relation("ExamQuestionAnsweredBy")
+  examAnnouncements  ExamAnnouncement[]  @relation("ExamAnnouncementCreatedBy")
+  examQuestionMessages ExamQuestionMessage[] @relation("ExamQuestionMessageCreatedBy")
+  voiceCalls         VoiceCall[]
+
+  @@unique([realName, numberId])
+  @@index([numberId])
+}
+
+model Exam {
+  examCode           String              @unique @db.VarChar(10)
+  id                 String              @id @default(cuid())
+  name               String
+  startAt            DateTime
+  latestStartAt      DateTime
+  endAt              DateTime
+  durationMinutes    Int
+  platform           ExamPlatform
+  platformBaseUrl    String
+  platformContestId  String
+  novaJudgeApiKey     String?             @db.Text
+  novaJudgeTimezone   String              @default("Asia/Shanghai") @db.VarChar(100)
+  contestType        ContestType
+  teamAccountMode    TeamAccountMode     @default(MEMBER_ACCOUNTS)
+  contestRule        ContestRule         @default(IOI)
+  published          Boolean             @default(false)
+  flexible           Boolean             @default(false)
+  scoreboardFrozenAt DateTime?
+  freezeMinutes      Int?
+  allowedLanguages   Json                @default("[]")
+  showTestCaseCount  Boolean             @default(false)
+  showObjectiveScore Boolean             @default(false)
+  allowPrint         Boolean             @default(false)
+  printMode          PrintMode           @default(DISABLED)
+  allowTeamSubmissionView Boolean        @default(false)
+  leaderOnlySubmission Boolean           @default(false)
+  administrators     ExamAdministrator[]
+  rules              String              @db.Text
+  requireMiniProgram Boolean             @default(true)
+  requireFrontCamera Boolean             @default(true)
+  ipLoginRestrictionEnabled Boolean      @default(true)
+  saveFullRecording Boolean             @default(false)
+  saveIncidentRecording Boolean         @default(false)
+  externalBoardEnabled Boolean          @default(false)
+  externalBoardBaseUrl String?           @default("https://www.example.org/api") @db.VarChar(512)
+  externalBoardApiKey String?            @db.Text
+  externalBoardEventId String?           @db.VarChar(19)
+  externalBoardIntervalSeconds Int       @default(10)
+  externalBoardSync  ExternalBoardSync?
+  novaJudgeBoardRecords NovaJudgeBoardRecord[]
+  recordingsDeletedAt DateTime?
+  createdById        String?
+  createdBy          User?               @relation("ExamCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  rooms              ExamRoom[]
+  candidates         Candidate[]
+  loginRequests      LoginRequest[]
+  sessions           ClientSession[]
+  alerts             Alert[]
+  mediaSegments      MediaSegment[]
+  liveFrames         LiveFrame[]
+  ojTickets          OJLoginTicket[]
+  cheatingRecords    CheatingRecord[]
+  problems           ExamProblem[]
+  submissions        ContestSubmission[]
+  codeCheckJobs      CodeCheckJob[]
+  questions          ExamQuestion[]
+  announcements      ExamAnnouncement[]
+  printJobs          PrintJob[]
+  screenControlGroups ScreenControlGroup[]
+  screenControlDisplays ScreenControlDisplay[]
+
+  @@index([startAt])
+  @@index([platform, platformContestId])
+  @@index([externalBoardEnabled])
+}
+
+// Durable progress and a lease keep external HTTP requests out of exam/judge transactions.
+model ExternalBoardSync {
+  examId         String    @id
+  exam           Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
+  configHash     String?   @db.VarChar(64)
+  problemsHash   String?   @db.VarChar(64)
+  syncedThrough  DateTime?
+  scanUntil      DateTime?
+  cursorAt       DateTime?
+  cursorId       String?
+  leaseToken     String?   @db.VarChar(36)
+  leaseUntil     DateTime?
+  nextAttemptAt  DateTime?
+  lastSuccessAt  DateTime?
+  lastError      String?   @db.Text
+  updatedAt      DateTime  @updatedAt
+
+  @@index([nextAttemptAt])
+}
+
+// Successful remote submissions are checkpointed by payload, so rejudges are
+// forwarded and a restart never silently drops a partially pushed batch.
+model NovaJudgeBoardRecord {
+  examId      String
+  remoteId    String              @db.VarChar(191)
+  payloadHash String              @db.VarChar(64)
+  exam        Exam                @relation(fields: [examId], references: [id], onDelete: Cascade)
+
+  @@id([examId, remoteId])
+}
+
+model ExamProblem {
+  id             String              @id @default(cuid())
+  examId         String
+  order          Int
+  hydroDomain    String              @default("system")
+  hydroProblemId String
+  title          String
+  content        String              @db.LongText
+  html           Boolean             @default(false)
+  problemType    String              @default("default")
+  config         Json?
+  hydroScore     Int                 @default(100)
+  scorePercent   Int                 @default(100)
+  score          Int                 @default(100)
+  timeLimitMs    Int?
+  memoryLimitMb  Int?
+  languages      Json?
+  files          Json?
+  exam           Exam                @relation(fields: [examId], references: [id], onDelete: Cascade)
+  submissions    ContestSubmission[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@unique([examId, order])
+  @@unique([examId, hydroDomain, hydroProblemId])
+  @@index([examId, hydroProblemId])
+}
+
+model ContestSubmission {
+  id                   String      @id @default(cuid())
+  examId               String
+  candidateId          String
+  problemId            String
+  candidateExamNumber  String      @default("")
+  candidateName        String?
+  teamName             String?
+  teamMembers          String?     @db.Text
+  teamMemberStudentIds String?     @db.Text
+  actorKey             String      @default("")
+  hydroRecordId        String?
+  deferredJudge        Boolean     @default(false)
+  judgeClaimedAt       DateTime?
+  judgeError           String?     @db.Text
+  lang                 String
+  code                 String      @db.LongText
+  status               Int         @default(0)
+  statusText           String?
+  score                Float       @default(0)
+  manualScore          Float?
+  manualScoreUpdatedAt DateTime?
+  totalTestCases       Int         @default(0)
+  passedTestCases      Int         @default(0)
+  time                 Int         @default(0)
+  memory               Int         @default(0)
+  testCases            Json?
+  subtasks             Json?
+  judgeAt              DateTime?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+  exam                 Exam        @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate            Candidate   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  problem              ExamProblem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+
+  @@index([examId, candidateId, createdAt])
+  @@index([examId, actorKey, createdAt])
+  @@index([examId, problemId, createdAt])
+  @@index([hydroRecordId])
+  @@index([deferredJudge, judgeClaimedAt])
+  @@index([judgeAt, createdAt])
+  @@index([examId, updatedAt, id])
+}
+
+// Hydro 使用共享判题账号，题库页面的提交记录必须在本地保存提交用户和代码。
+model ProblemSubmission {
+  id              String    @id @default(cuid())
+  problemId       String
+  userId          String?
+  ownerKey        String    @default("")
+  recordExamId    String?   @default(cuid())
+  hydroRecordId   String?
+  lang            String
+  code            String    @db.LongText
+  status          Int       @default(0)
+  statusText      String    @default("Waiting")
+  score           Float     @default(0)
+  totalTestCases  Int       @default(0)
+  passedTestCases Int       @default(0)
+  time            Int       @default(0)
+  memory          Int       @default(0)
+  testCases       Json?
+  subtasks        Json?
+  judgeAt         DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([problemId, createdAt])
+  @@index([userId, createdAt])
+  @@index([ownerKey, problemId, createdAt])
+  @@index([recordExamId])
+  @@index([hydroRecordId])
+}
+
+model ExamRoom {
+  id                  String              @id @default(cuid())
+  examId              String
+  name                String
+  requireSecondCamera Boolean             @default(true)
+  requireFrontCamera  Boolean             @default(true)
+  loginMode           RoomLoginMode       @default(CREDENTIALS)
+  loginReviewMode     LoginReviewMode     @default(MANUAL)
+  exam                Exam                @relation(fields: [examId], references: [id], onDelete: Cascade)
+  proctors            ExamRoomProctor[]
+  candidates          ExamRoomCandidate[]
+  createdAt           DateTime            @default(now())
+
+  @@unique([examId, name])
+}
+
+model ExamRoomProctor {
+  roomId String
+  userId String
+  room   ExamRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+}
+
+model ExamRoomCandidate {
+  roomId      String
+  candidateId String
+  room        ExamRoom  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  candidate   Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, candidateId])
+}
+
+model Candidate {
+  id                   String              @id @default(cuid())
+  examId               String
+  name                 String?
+  studentId            String?
+  school               String?
+  college              String?
+  major                String?
+  gender               String?
+  gradeYear            String?
+  className            String?
+  advisor              String?
+  groupName            String?
+  teamName             String?
+  teamMembers          String?             @db.Text
+  teamMemberStudentIds String?             @db.Text
+  hydroAccount         String?
+  examNumber           String
+  password             String
+  seatNo               String
+  isTeamLeader         Boolean             @default(false)
+  ranked               Boolean             @default(true)
+  status               CandidateStatus     @default(NOT_REQUESTED)
+  startedAt            DateTime?
+  lateStartAllowedAt   DateTime?
+  loginIp              String?             @db.VarChar(45)
+  loginIpBoundAt       DateTime?
+  loginIpReleasedAt    DateTime?
+  abnormal             Boolean             @default(false)
+  exam                 Exam                @relation(fields: [examId], references: [id], onDelete: Cascade)
+  rooms                ExamRoomCandidate[]
+  loginRequests        LoginRequest[]
+  sessions             ClientSession[]
+  alerts               Alert[]
+  mediaSegments        MediaSegment[]
+  liveFrames           LiveFrame[]
+  ojTickets            OJLoginTicket[]
+  cheatingRecords      CheatingRecord[]
+  submissions          ContestSubmission[]
+  questions            ExamQuestion[]
+  announcements        ExamAnnouncement[]
+  announcementReceipts ExamAnnouncementReceipt[]
+  printJobs            PrintJob[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  publicTestAccount    PublicTestAccount?
+
+  @@unique([examId, examNumber])
+  @@index([school, studentId])
+  @@index([examId, hydroAccount])
+  @@index([examId, studentId])
+  @@index([examId, teamName])
+  @@index([status])
+}
+
+model PublicTestAccount {
+  externalUserId String    @id
+  candidateId    String    @unique
+  candidate      Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+}
+
+model CheatingRecord {
+  id             String         @id @default(cuid())
+  examId         String
+  candidateId    String
+  sessionId      String?
+  markedById     String?
+  reason         String         @db.Text
+  teamWide       Boolean        @default(false)
+  teamName       String?
+  canceledAt     DateTime?
+  canceledReason String?        @db.Text
+  canceledById   String?
+  finalizedAt    DateTime?
+  createdAt      DateTime       @default(now())
+  exam           Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate      Candidate      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  session        ClientSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  markedBy       User?          @relation("CheatingMarkedBy", fields: [markedById], references: [id], onDelete: SetNull)
+  canceledBy     User?          @relation("CheatingCanceledBy", fields: [canceledById], references: [id], onDelete: SetNull)
+
+  @@index([examId, createdAt])
+  @@index([candidateId, canceledAt])
+  @@index([teamName])
+}
+
+model PrintJob {
+  id              String         @id @default(cuid())
+  examId          String
+  candidateId     String
+  sessionId       String?
+  mode            PrintMode
+  status          PrintJobStatus
+  title           String
+  content         String         @db.LongText
+  teamName        String?
+  candidateName   String?
+  examNumber      String
+  teamMembers     String?        @db.Text
+  roomName        String?
+  seatNo          String?
+  rejectedReason  String?        @db.Text
+  reviewedById    String?
+  reviewedAt      DateTime?
+  printedAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  exam            Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate       Candidate      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  session         ClientSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([examId, createdAt])
+  @@index([candidateId, createdAt])
+  @@index([examId, teamName, createdAt])
+}
+
+model PairingSession {
+  id                     String        @id @default(cuid())
+  pairCode               String        @unique
+  purpose                String        @default("INITIAL")
+  pollTokenHash          String?
+  recoveryTokenHash      String?
+  recoverySessionId      String?
+  desktopDeviceId        String
+  desktopLoginIp         String?       @db.VarChar(45)
+  hostname               String?
+  os                     String?
+  clientVersion          String?
+  screenOk               Boolean       @default(false)
+  desktopCameraOk        Boolean       @default(false)
+  peripheralsFingerprint String?
+  loginRequestId         String?
+  loginRequest           LoginRequest? @relation(fields: [loginRequestId], references: [id], onDelete: SetNull)
+  expiresAt              DateTime
+  claimedAt              DateTime?
+  desktopTokenIssuedAt   DateTime?
+  createdAt              DateTime      @default(now())
+
+  @@index([desktopDeviceId])
+  @@index([expiresAt])
+  @@index([recoverySessionId])
+}
+
+model LoginRequest {
+  id                  String             @id @default(cuid())
+  examId              String
+  candidateId         String
+  memberStudentId     String?
+  memberName          String?
+  status              LoginRequestStatus @default(REQUESTING)
+  identityPhotoPath   String?
+  roomVideoPath       String?
+  miniProgramDeviceId String?
+  rejectReason        String?            @db.Text
+  reviewedById        String?
+  reviewedAt          DateTime?
+  exam                Exam               @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate           Candidate          @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  reviewedBy          User?              @relation("LoginRequestReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  pairingSessions     PairingSession[]
+  clientSessions      ClientSession[]
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([examId, status])
+  @@index([candidateId, createdAt])
+}
+
+model ClientSession {
+  id                             String           @id @default(cuid())
+  examId                         String
+  candidateId                    String
+  memberStudentId                String?
+  memberName                     String?
+  loginRequestId                 String?
+  desktopDeviceId                String?
+  miniProgramDeviceId            String?
+  desktopTokenHash               String?
+  miniProgramTokenHash           String?
+  status                         SessionStatus    @default(WAITING_REVIEW)
+  approvedAt                     DateTime?
+  startedAt                      DateTime?
+  endedAt                        DateTime?
+  revokedAt                      DateTime?
+  lastDesktopSeenAt              DateTime?
+  lastMiniProgramSeenAt          DateTime?
+  desktopOfflineAt               DateTime?
+  miniProgramOfflineAt           DateTime?
+  lockdown                       Boolean          @default(false)
+  lockdownReason                 String?          @db.Text
+  unlockNonce                    String?
+  peripheralsBaselineFingerprint String?
+  lastPeripheralsFingerprint     String?
+  monitoringAlertState           Json             @default("{}")
+  exam                           Exam             @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate                      Candidate        @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  loginRequest                   LoginRequest?    @relation(fields: [loginRequestId], references: [id], onDelete: SetNull)
+  alerts                         Alert[]
+  mediaSegments                  MediaSegment[]
+  liveFrames                     LiveFrame[]
+  ojTickets                      OJLoginTicket[]
+  cheatingRecords                CheatingRecord[]
+  printJobs                      PrintJob[]
+  voiceCalls                     VoiceCall[]
+  createdAt                      DateTime         @default(now())
+  updatedAt                      DateTime         @updatedAt
+
+  @@index([examId, status])
+  @@index([candidateId, createdAt])
+  @@index([desktopTokenHash])
+  @@index([miniProgramTokenHash])
+  @@index([status, lastDesktopSeenAt])
+  @@index([status, createdAt])
+  @@index([desktopDeviceId, createdAt])
+  @@index([miniProgramDeviceId, createdAt])
+}
+
+model Alert {
+  id             String         @id @default(cuid())
+  examId         String
+  candidateId    String?
+  sessionId      String?
+  type           AlertType
+  severity       Int            @default(3)
+  message        String         @db.Text
+  evidencePath   String?
+  evidenceDeletedAt DateTime?
+  acknowledgedAt DateTime?
+  exam           Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate      Candidate?     @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  session        ClientSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  createdAt      DateTime       @default(now())
+
+  @@index([examId, createdAt])
+  @@index([candidateId, createdAt])
+  @@index([candidateId, acknowledgedAt])
+  @@index([examId, acknowledgedAt, createdAt(sort: Desc)])
+  @@index([type])
+  @@index([evidencePath, evidenceDeletedAt])
+  @@index([sessionId, evidenceDeletedAt, createdAt])
+}
+
+model MediaSegment {
+  id          String         @id @default(cuid())
+  examId      String
+  candidateId String?
+  sessionId   String?
+  channel     MediaChannel
+  objectPath  String
+  startedAt   DateTime       @default(now())
+  endedAt     DateTime?
+  uploadGrantId String?
+  byteSize      Int            @default(0)
+  validatedAt   DateTime?
+  durationSeconds Float?
+  deletedAt     DateTime?
+  exam        Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate   Candidate?     @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  session     ClientSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([examId, channel, startedAt])
+  @@index([uploadGrantId])
+  @@index([objectPath, deletedAt])
+  @@index([sessionId, deletedAt, channel, startedAt])
+  @@index([examId, deletedAt, startedAt])
+}
+
+// Opaque credentials never expose the candidate password or a session token.
+model MaterialUploadGrant {
+  id String @id @default(cuid())
+  tokenHash String @unique
+  examId String
+  candidateId String
+  pairingId String
+  deviceId String
+  memberStudentId String?
+  memberName String?
+  expiresAt DateTime
+  consumedAt DateTime?
+  loginRequestId String?
+  createdAt DateTime @default(now())
+  @@index([expiresAt])
+  @@index([pairingId])
+}
+
+model UploadBudget {
+  scope String @id
+  bytes BigInt @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model UploadReservation {
+  id String @id
+  bytes BigInt @default(0)
+  createdAt DateTime @default(now())
+}
+
+model RequestRateBucket {
+  id String @id
+  count Int @default(0)
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model LiveFrame {
+  id          String        @id @default(cuid())
+  examId      String
+  candidateId String
+  sessionId   String
+  channel     MediaChannel
+  objectPath  String        @db.Text
+  capturedAt  DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  exam        Exam          @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate   Candidate     @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  session     ClientSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, channel])
+  @@index([examId, candidateId])
+  @@index([capturedAt])
+}
+
+model OJLoginTicket {
+  id          String         @id @default(cuid())
+  examId      String
+  candidateId String
+  sessionId   String?
+  status      OJTicketStatus @default(PENDING)
+  loginUrl    String?        @db.Text
+  error       String?        @db.Text
+  expiresAt   DateTime?
+  exam        Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate   Candidate      @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  session     ClientSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  createdAt   DateTime       @default(now())
+
+  @@index([examId, candidateId, createdAt])
+  @@index([status])
+}
+
+model LiveApiKey {
+  id        String   @id @default(cuid())
+  name      String   @db.VarChar(100)
+  keyHash   String   @unique @db.VarChar(64)
+  keyPrefix String   @db.VarChar(16)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  connections LiveWebRtcConnection[]
+}
+
+model LiveWebRtcConnection {
+  id        String   @id @db.VarChar(36)
+  keyId     String
+  sessionId String
+  channel   String   @db.VarChar(32)
+  createdAt DateTime @default(now())
+  key       LiveApiKey @relation(fields: [keyId], references: [id], onDelete: Cascade)
+
+  @@index([keyId])
+  @@index([sessionId])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+// Durable deletion outbox. It intentionally has no cascading foreign keys:
+// physical cleanup must survive deletion of the associated business records.
+model FileDeletionJob {
+  id String @id @default(cuid())
+  kind String
+  examId String?
+  objectPath String @db.Text
+  objectHash String @db.Char(64)
+  storage Json
+  requestedById String
+  createdAt DateTime @default(now())
+  completedAt DateTime?
+  claimUntil DateTime?
+  nextAttemptAt DateTime @default(now())
+  attempts Int @default(0)
+  lastError String? @db.Text
+
+  @@index([completedAt, nextAttemptAt])
+  @@index([examId, completedAt])
+  @@index([kind, objectHash])
+}
+
+model VoiceMessage {
+  id          String      @id @default(cuid())
+  examId      String
+  candidateId String
+  sessionId   String?
+  sender      VoiceSender
+  objectPath  String      @db.Text
+  durationMs  Int?
+  createdById String?
+  playedAt    DateTime?
+  createdAt   DateTime    @default(now())
+
+  @@index([examId, candidateId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([sender, createdAt])
+}
+
+model VoiceCall {
+  id                 String          @id @default(cuid())
+  sessionId          String
+  callerId           String
+  activeSessionId    String?         @unique
+  activeCallerId     String?         @unique
+  status             VoiceCallStatus @default(RINGING)
+  endReason          String?         @db.VarChar(32)
+  adminSeenAt        DateTime        @default(now())
+  desktopSeenAt      DateTime?
+  adminConnected     Boolean         @default(false)
+  desktopConnected   Boolean         @default(false)
+  acceptedAt         DateTime?
+  startedAt          DateTime?
+  endedAt            DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  session            ClientSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  caller             User            @relation(fields: [callerId], references: [id], onDelete: Cascade)
+  connections        VoiceCallConnection[]
+
+  @@index([sessionId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model VoiceCallConnection {
+  id        String    @id @db.VarChar(36)
+  callId    String
+  side      String    @db.VarChar(8)
+  mode      String    @db.VarChar(8)
+  createdAt DateTime  @default(now())
+  call      VoiceCall @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@unique([callId, side, mode])
+}
+
+model ExamQuestion {
+  id           String    @id @default(cuid())
+  examId       String
+  candidateId  String
+  sessionId    String?
+  problemPid   String?
+  problemIndex String?
+  problemTitle String?
+  content      String    @db.Text
+  answer       String?   @db.Text
+  answeredById String?
+  answeredAt   DateTime?
+  isPublished  Boolean   @default(false)
+  exam         Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate    Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  answeredBy   User?     @relation("ExamQuestionAnsweredBy", fields: [answeredById], references: [id], onDelete: SetNull)
+  messages     ExamQuestionMessage[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([examId, answeredAt, createdAt])
+  @@index([examId, updatedAt])
+  @@index([candidateId, createdAt])
+}
+
+model ExamQuestionMessage {
+  id             String                @id @default(cuid())
+  questionId     String
+  sender         QuestionMessageSender
+  content        String                @db.Text
+  createdById    String?
+  acknowledgedAt DateTime?
+  question       ExamQuestion          @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  createdBy      User?                 @relation("ExamQuestionMessageCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime              @default(now())
+
+  @@index([questionId, createdAt])
+}
+
+model ExamAnnouncement {
+  id          String     @id @default(cuid())
+  examId      String
+  candidateId String?
+  content     String     @db.Text
+  createdById String?
+  exam        Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate   Candidate? @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  createdBy   User?      @relation("ExamAnnouncementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  receipts    ExamAnnouncementReceipt[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([examId, createdAt])
+  @@index([candidateId, createdAt])
+}
+
+model ExamAnnouncementReceipt {
+  id             String           @id @default(cuid())
+  announcementId String
+  candidateId    String
+  acknowledgedAt DateTime         @default(now())
+  announcement   ExamAnnouncement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  candidate      Candidate        @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, candidateId])
+  @@index([candidateId, acknowledgedAt])
+}
+
+model ExamAdministrator {
+  examId String
+  userId String
+  exam   Exam   @relation(fields: [examId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([examId, userId])
+  @@index([userId])
+}
+
+model ExamCodeSequence {
+  date  String @id @db.VarChar(8)
+  value Int    @default(0)
+}
+
+model ScreenControlGroup {
+  id          String                 @id @default(cuid())
+  examId      String
+  name        String                 @db.VarChar(120)
+  deletedAt   DateTime?
+  createdById String?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  exam        Exam                   @relation(fields: [examId], references: [id], onDelete: Cascade)
+  images      ScreenControlImage[]
+  displays    ScreenControlDisplay[]
+
+  @@index([examId, deletedAt, createdAt])
+}
+
+model ScreenControlImage {
+  id          String             @id @default(cuid())
+  groupId     String
+  name        String             @db.VarChar(255)
+  objectPath  String             @db.Text
+  contentType String             @default("image/webp")
+  byteSize    Int
+  width       Int
+  height      Int
+  order       Int
+  template    Json?
+  createdAt   DateTime           @default(now())
+  group       ScreenControlGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, order])
+}
+
+model ScreenControlDisplay {
+  id          String             @id @default(cuid())
+  sequence    Int                @default(0)
+  examId      String
+  groupId     String
+  groupName   String             @db.VarChar(120)
+  startsAt    DateTime
+  endsAt      DateTime?
+  stoppedAt   DateTime?
+  canceledAt  DateTime?
+  createdById String?
+  createdAt   DateTime           @default(now())
+  exam        Exam               @relation(fields: [examId], references: [id], onDelete: Cascade)
+  group       ScreenControlGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  @@index([examId, startsAt, sequence])
+  @@index([groupId, startsAt])
+}
+
+// A report owns immutable source snapshots, so deleting or rejudging submissions
+// never changes the evidence used for an earlier comparison.
+model CodeCheckJob {
+  id              String   @id @default(cuid())
+  examId          String
+  activeExamId    String?  @unique
+  createdById     String
+  status          String   @default("queued")
+  phase           String   @default("等待开始")
+  problemId       String?
+  submissionScope String   @default("all")
+  minTokens       Int      @default(9)
+  engine          String   @default("Syntax tokens 1.1.1 (variables only; C/C++ family)")
+  total           Int      @default(0)
+  read            Int      @default(0)
+  compared        Int      @default(0)
+  skipped         Int      @default(0)
+  groups          Int      @default(0)
+  completedGroups Int      @default(0)
+  resultCount     Int      @default(0)
+  warnings        Json
+  leaseId         String?
+  leaseAt         DateTime?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  exam            Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  sources         CodeCheckSource[]
+  pairs           CodeCheckPair[]
+
+  @@index([examId, createdAt])
+  @@index([status, leaseAt])
+}
+
+model CodeCheckSource {
+  id           String   @id @default(cuid())
+  jobId        String
+  submissionId String
+  candidateId  String
+  actorKey     String
+  uid          Int
+  pid          Int
+  problemId    String
+  problemTitle String
+  problemOrder Int
+  candidateName String
+  examNumber   String
+  lang         String
+  code         String   @db.LongText
+  submittedAt  DateTime
+  job          CodeCheckJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, submissionId])
+  @@index([jobId, problemId])
+}
+
+model CodeCheckPair {
+  id                  String   @id @default(cuid())
+  jobId               String
+  problemId           String
+  problemTitle        String
+  problemOrder        Int
+  language            String
+  firstUid            Int
+  secondUid           Int
+  firstSourceId       String
+  secondSourceId      String
+  firstName           String
+  secondName          String
+  firstExamNumber     String
+  secondExamNumber    String
+  similarity          Float
+  firstSimilarity     Float
+  secondSimilarity    Float
+  versions            Int
+  matches             Json
+  job                 CodeCheckJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, problemId, language, firstUid, secondUid])
+  @@index([jobId, similarity])
+}
+
+// Serialize memory-intensive syntax workers across contests and processes.
+model CodeCheckEngineLease {
+  id        String   @id
+  ownerId   String?
+  leaseAt   DateTime?
+  updatedAt DateTime @updatedAt
+}

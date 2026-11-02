@@ -1,0 +1,8 @@
+# Keep dependency installation and compilation from running in parallel.
+[worker.oci]
+  max-parallelism = 1
+
+# Match the HTTPS mirrors already used by the production Docker daemon. Several
+# are listed because these public mirrors intermittently return 502 responses.
+[registry."docker.io"]
+  mirrors = ["docker.1ms.run", "docker.m.daocloud.io", "docker.xuanyuan.me"]

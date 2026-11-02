@@ -1,0 +1,135 @@
+{
+  "name": "@cwnupaa/proctor-desktop",
+  "version": "1.0.11",
+  "private": true,
+  "main": "dist/main/bootstrap.js",
+  "scripts": {
+    "build": "node scripts/build-desktop.mjs",
+    "dev": "pnpm build && electron .",
+    "dev:watch": "node scripts/dev-watch.mjs",
+    "pack": "node scripts/package-release.mjs pack unified",
+    "dist:mac": "node scripts/package-release.mjs mac unified x64",
+    "dist:win": "node scripts/package-release.mjs win unified",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dist:mac:arm64": "node scripts/package-release.mjs mac unified arm64",
+    "dist:mac:x64": "node scripts/package-release.mjs mac unified x64",
+    "dist:mac:intranet": "node scripts/package-release.mjs mac unified x64",
+    "dist:mac:intranet:arm64": "node scripts/package-release.mjs mac unified arm64",
+    "dist:win:intranet": "node scripts/package-release.mjs win unified",
+    "test:stream-quality": "electron scripts/test-stream-quality-runtime.cjs",
+    "test:submit": "tsc -p tsconfig.json && node --test tests/novajudge-submit.test.cjs",
+    "prepare:windows-prerequisites": "node scripts/prepare-windows-prerequisites.mjs",
+    "test:windows-prerequisites": "node --test tests/prepare-windows-prerequisites.test.mjs tests/windows-prerequisites.test.cjs tests/windows-prerequisites-nsis.test.cjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.3.0",
+    "hls.js": "^1.7.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/qrcode": "^1.5.6",
+    "electron": "22.3.27",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.9.3"
+  },
+  "build": {
+    "appId": "org.cwnupaa.proctor",
+    "productName": "程序设计算法协会监考客户端",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/main/*.js",
+      "dist/preload/*.js",
+      "dist/renderer/**/*",
+      "dist/shared/*.js",
+      "package.json"
+    ],
+    "afterPack": "scripts/ad-hoc-sign-mac.mjs",
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "resources/novajudge-submit",
+          "to": "novajudge-submit"
+        },
+        {
+          "from": "native/windows-token/${arch}/token-probe.exe",
+          "to": "security/token-probe.exe"
+        },
+        {
+          "from": "native/windows-launcher/${arch}/elevate-client.exe",
+          "to": "security/elevate-client.exe"
+        },
+        {
+          "from": "native/windows-screen-control/${arch}/screen-control-guard.exe",
+          "to": "security/screen-control-guard.exe"
+        },
+        {
+          "from": "native/windows-inventory/${arch}/inventory-probe.exe",
+          "to": "security/inventory-probe.exe"
+        },
+        {
+          "from": "build/ffmpeg/win32-${arch}/ffmpeg.exe",
+          "to": "ffmpeg/ffmpeg.exe"
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "proctor-${version}-windows-setup.${ext}"
+    },
+    "nsis": {
+      "include": "build/windows-prerequisites.nsh",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg"
+      ],
+      "extraResources": [
+        {
+          "from": "resources/novajudge-submit",
+          "to": "novajudge-submit"
+        },
+        {
+          "from": "build/ffmpeg/darwin-${arch}/ffmpeg",
+          "to": "ffmpeg/ffmpeg"
+        }
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.mac.plist",
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "This app needs screen recording access to monitor the exam desktop.",
+        "NSCameraUsageDescription": "This app needs camera access to monitor the exam room.",
+        "NSMicrophoneUsageDescription": "This app needs microphone access to record the exam environment.",
+        "NSAppleEventsUsageDescription": "This app needs to read the frontmost application name to detect exam window switching.",
+        "NSLocalNetworkUsageDescription": "This app needs local network access to connect to the proctoring server on the exam LAN."
+      },
+      "artifactName": "proctor-${version}-mac-${arch}.${ext}"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://proctoring.example.org/api/desktop/updates/public/windows/"
+    }
+  },
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,445 @@
+{
+  "date": "2026-10-15",
+  "source": "pnpm audit against npm registry",
+  "productionBefore": {
+    "info": 0,
+    "low": 2,
+    "moderate": 4,
+    "high": 6,
+    "critical": 3
+  },
+  "productionAfter": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0
+  },
+  "fullAfter": {
+    "info": 0,
+    "low": 5,
+    "moderate": 23,
+    "high": 13,
+    "critical": 0
+  },
+  "notes": [
+    "Production-only dependency classification excludes Electron even though it is bundled into the installed desktop app.",
+    "Electron 22 is retained for Windows 7 compatibility; its upstream security advisories remain unresolved.",
+    "The registry did not offer extract-zip 2.0.2 or sprintf-js 1.1.4 during this audit. These dependencies are used by the desktop build toolchain.",
+    "Dependency audits and static review do not prove absence of vulnerabilities."
+  ],
+  "remaining": [
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron vulnerable to Heap Buffer Overflow in NativeImage",
+      "advisory": "GHSA-6r2x-8pq8-9489",
+      "url": "https://github.com/advisories/GHSA-6r2x-8pq8-9489",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron has ASAR Integrity Bypass via resource modification",
+      "advisory": "GHSA-vmqv-hx8q-j7mg",
+      "url": "https://github.com/advisories/GHSA-vmqv-hx8q-j7mg",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: AppleScript injection in app.moveToApplicationsFolder on macOS",
+      "advisory": "GHSA-5rqw-r77c-jp79",
+      "url": "https://github.com/advisories/GHSA-5rqw-r77c-jp79",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Service worker can spoof executeJavaScript IPC replies",
+      "advisory": "GHSA-xj5x-m3f3-5x3h",
+      "url": "https://github.com/advisories/GHSA-xj5x-m3f3-5x3h",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Incorrect origin passed to permission request handler for iframe requests",
+      "advisory": "GHSA-r5p7-gp4j-qhrx",
+      "url": "https://github.com/advisories/GHSA-r5p7-gp4j-qhrx",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Out-of-bounds read in second-instance IPC on macOS and Linux",
+      "advisory": "GHSA-3c8v-cfp5-9885",
+      "url": "https://github.com/advisories/GHSA-3c8v-cfp5-9885",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: nodeIntegrationInWorker not correctly scoped in shared renderer processes",
+      "advisory": "GHSA-xwr5-m59h-vwqr",
+      "url": "https://github.com/advisories/GHSA-xwr5-m59h-vwqr",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Use-after-free in offscreen child window paint callback",
+      "advisory": "GHSA-532v-xpq5-8h95",
+      "url": "https://github.com/advisories/GHSA-532v-xpq5-8h95",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Registry key path injection in app.setAsDefaultProtocolClient on Windows",
+      "advisory": "GHSA-mwmh-mq4g-g6gr",
+      "url": "https://github.com/advisories/GHSA-mwmh-mq4g-g6gr",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Use-after-free in download save dialog callback",
+      "advisory": "GHSA-9w97-2464-8783",
+      "url": "https://github.com/advisories/GHSA-9w97-2464-8783",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Use-after-free in WebContents fullscreen, pointer-lock, and keyboard-lock permission callbacks",
+      "advisory": "GHSA-8337-3p73-46f4",
+      "url": "https://github.com/advisories/GHSA-8337-3p73-46f4",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Use-after-free in PowerMonitor on Windows and macOS",
+      "advisory": "GHSA-jjp3-mq3x-295m",
+      "url": "https://github.com/advisories/GHSA-jjp3-mq3x-295m",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "low",
+      "title": "Electron: Unquoted executable path in app.setLoginItemSettings on Windows",
+      "advisory": "GHSA-jfqx-fxh3-c62j",
+      "url": "https://github.com/advisories/GHSA-jfqx-fxh3-c62j",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: HTTP Response Header Injection in custom protocol handlers and webRequest",
+      "advisory": "GHSA-4p4r-m79c-wq3v",
+      "url": "https://github.com/advisories/GHSA-4p4r-m79c-wq3v",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "low",
+      "title": "Electron: USB device selection not validated against filtered device list",
+      "advisory": "GHSA-9899-m83m-qhpj",
+      "url": "https://github.com/advisories/GHSA-9899-m83m-qhpj",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "low",
+      "title": "Electron: Crash in clipboard.readImage() on malformed clipboard image data",
+      "advisory": "GHSA-f37v-82c4-4x64",
+      "url": "https://github.com/advisories/GHSA-f37v-82c4-4x64",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Named window.open targets not scoped to the opener's browsing context",
+      "advisory": "GHSA-f3pv-wv63-48x8",
+      "url": "https://github.com/advisories/GHSA-f3pv-wv63-48x8",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Renderer command-line switch injection via undocumented commandLineSwitches webPreference",
+      "advisory": "GHSA-9wfr-w7mm-pc7f",
+      "url": "https://github.com/advisories/GHSA-9wfr-w7mm-pc7f",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Parent process code-sign check is spoofable",
+      "advisory": "GHSA-jm7p-cc5g-qwxx",
+      "url": "https://github.com/advisories/GHSA-jm7p-cc5g-qwxx",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Custom protocol with supportFetchAPI but not corsEnabled allows cross-origin reads",
+      "advisory": "GHSA-v3j7-r9gq-3gjw",
+      "url": "https://github.com/advisories/GHSA-v3j7-r9gq-3gjw",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Extension tab APIs operate across session boundaries",
+      "advisory": "GHSA-m55f-7gqj-fr98",
+      "url": "https://github.com/advisories/GHSA-m55f-7gqj-fr98",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: shell.openPath path validation bypass via embedded null byte",
+      "advisory": "GHSA-5c9j-mhmv-5xgx",
+      "url": "https://github.com/advisories/GHSA-5c9j-mhmv-5xgx",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Context isolation bypass via Function.prototype.bind hijack",
+      "advisory": "GHSA-h7rp-cf8h-j98x",
+      "url": "https://github.com/advisories/GHSA-h7rp-cf8h-j98x",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "low",
+      "title": "Electron: Cross-origin iframe can position native autofill popup",
+      "advisory": "GHSA-x8rc-wpg4-grpf",
+      "url": "https://github.com/advisories/GHSA-x8rc-wpg4-grpf",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Permission Check Handler Receives Main Frame Origin Instead of Requesting Iframe Origin",
+      "advisory": "GHSA-9pf5-hg6p-4pwp",
+      "url": "https://github.com/advisories/GHSA-9pf5-hg6p-4pwp",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "low",
+      "title": "Electron: Off-screen rendering trusts GPU-supplied geometry over shared-memory size",
+      "advisory": "GHSA-pfmc-3mgc-p6fp",
+      "url": "https://github.com/advisories/GHSA-pfmc-3mgc-p6fp",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: HTTP redirect followed into local file loader",
+      "advisory": "GHSA-v64r-4m7r-3mvq",
+      "url": "https://github.com/advisories/GHSA-v64r-4m7r-3mvq",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: window.open features string controls some window options considered privileged",
+      "advisory": "GHSA-v93f-fgjr-hjrj",
+      "url": "https://github.com/advisories/GHSA-v93f-fgjr-hjrj",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Sandboxed iframe can bypass the allow-popups restriction via the OpenURL navigation path",
+      "advisory": "GHSA-9f4c-93c8-jc8g",
+      "url": "https://github.com/advisories/GHSA-9f4c-93c8-jc8g",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Sandboxed iframes can launch external protocol handlers",
+      "advisory": "GHSA-p2rr-rvmm-c5fp",
+      "url": "https://github.com/advisories/GHSA-p2rr-rvmm-c5fp",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: DevTools embedder handler executes arbitrary files via shell open",
+      "advisory": "GHSA-f2r8-jv7c-xqmp",
+      "url": "https://github.com/advisories/GHSA-f2r8-jv7c-xqmp",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: contextBridge object copy honors prototype setters",
+      "advisory": "GHSA-ff2p-hmqr-hxm4",
+      "url": "https://github.com/advisories/GHSA-ff2p-hmqr-hxm4",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: DevTools JavaScript Injection via Unsanitized Dock State Parameter",
+      "advisory": "GHSA-4f78-qhmw-8j8m",
+      "url": "https://github.com/advisories/GHSA-4f78-qhmw-8j8m",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "extract-zip",
+      "severity": "high",
+      "title": "extract-zip unvalidated symlink path traversal",
+      "advisory": "GHSA-jmr9-qjv8-65gv",
+      "url": "https://github.com/advisories/GHSA-jmr9-qjv8-65gv",
+      "paths": [
+        "apps__desktop>electron>extract-zip"
+      ]
+    },
+    {
+      "package": "extract-zip",
+      "severity": "high",
+      "title": "extract-zip allows arbitrary file writes through symlink archive entries",
+      "advisory": "GHSA-7pqw-9j4j-h8q3",
+      "url": "https://github.com/advisories/GHSA-7pqw-9j4j-h8q3",
+      "paths": [
+        "apps__desktop>electron>extract-zip"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron drops inherited HTML sandbox restrictions for popups opened through OpenURLFromTab",
+      "advisory": "GHSA-hq2x-r82h-9wj4",
+      "url": "https://github.com/advisories/GHSA-hq2x-r82h-9wj4",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: Windows opened from a sandboxed top-level document do not inherit its sandbox restrictions",
+      "advisory": "GHSA-gr2m-v5gq-v685",
+      "url": "https://github.com/advisories/GHSA-gr2m-v5gq-v685",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: File and HTTP protocol handlers allow cross-origin reads without corsEnabled",
+      "advisory": "GHSA-j84w-jfhq-vhvj",
+      "url": "https://github.com/advisories/GHSA-j84w-jfhq-vhvj",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "moderate",
+      "title": "Electron: Local race condition in Squirrel.Mac update installation on macOS",
+      "advisory": "GHSA-vv43-5jgx-7qv8",
+      "url": "https://github.com/advisories/GHSA-vv43-5jgx-7qv8",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    },
+    {
+      "package": "sprintf-js",
+      "severity": "moderate",
+      "title": "sprintf-js vulnerable to denial of service through unbounded precision specifiers",
+      "advisory": "GHSA-hp3w-g68c-fv3c",
+      "url": "https://github.com/advisories/GHSA-hp3w-g68c-fv3c",
+      "paths": [
+        "apps__desktop>electron>@electron/get>global-agent>roarr>sprintf-js",
+        "apps__desktop>electron-builder>app-builder-lib>@electron/get>global-agent>roarr>sprintf-js",
+        "apps__desktop>electron-builder>dmg-builder>app-builder-lib>@electron/get>global-agent>roarr>sprintf-js"
+      ]
+    },
+    {
+      "package": "electron",
+      "severity": "high",
+      "title": "Electron: <webview> can enable Node.js integration in Web Workers despite embedder restrictions",
+      "advisory": "GHSA-9qh4-3jw8-366w",
+      "url": "https://github.com/advisories/GHSA-9qh4-3jw8-366w",
+      "paths": [
+        "apps__desktop>electron"
+      ]
+    }
+  ]
+}

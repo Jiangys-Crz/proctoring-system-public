@@ -1,0 +1,60 @@
+# Requires a Caddy binary built with github.com/mholt/caddy-l4.
+# Merge this global block at the TOP of the existing Hydro Caddyfile.
+# Keep existing site blocks, then append the three site blocks below.
+{
+	servers :443 {
+		# Reserve UDP 443 for WebRTC; existing websites retain HTTP/1.1 and HTTP/2.
+		protocols h1 h2
+		listener_wrappers {
+			layer4 {
+				# Caddy terminates public RTMPS TLS using its managed certificate.
+				# HTTPS/ACME ALPN clients must remain with the HTTP server.
+				@rtmps {
+					tls sni proctorstream.example.org
+					not {
+						tls alpn h2 http/1.1 acme-tls/1
+					}
+				}
+				route @rtmps {
+					tls
+					proxy tcp/127.0.0.1:1935
+				}
+
+				# ICE-TCP starts with STUN, not a TLS ClientHello.
+				@ice not tls
+				route @ice {
+					proxy tcp/127.0.0.1:8189
+				}
+				# Unmatched TLS connections continue to normal HTTPS below.
+			}
+			tls
+		}
+	}
+
+	layer4 {
+		udp/:443 {
+			route {
+				proxy udp/127.0.0.1:8189
+			}
+		}
+	}
+}
+
+proctoring.example.org {
+	reverse_proxy 127.0.0.1:4031 {
+		flush_interval -1
+	}
+}
+
+proctorstu.example.org {
+	reverse_proxy 127.0.0.1:4032
+}
+
+# Ensures Caddy obtains and renews the RTMPS domain certificate itself.
+# The Layer 4 TLS handler shares Caddy's managed certificate cache.
+proctorstream.example.org {
+	respond "" 404
+}
+
+# proctorrtc.example.org resolves to THIS Caddy gateway's public IP.
+# Its ICE candidates use TCP/UDP 443. No HTTP website block is required.

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http: https:; media-src 'self' blob: data: http: https:; img-src 'self' data: blob: http: https:; frame-src http: https:; font-src 'self' data:;" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>程序设计算法协会监考客户端</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <section id="clientUpdateModal" class="clientUpdateModal hidden" role="dialog" aria-modal="true" aria-labelledby="clientUpdateTitle">
+      <div class="clientUpdateCard">
+        <div class="clientUpdateBadge">CWNU PAA · 客户端更新</div>
+        <h2 id="clientUpdateTitle">正在检查最新版本</h2>
+        <p id="clientUpdateVersions"></p>
+        <p id="clientUpdateMessage" role="status" aria-live="polite">正在检查客户端版本…</p>
+        <pre id="clientUpdateNotes"></pre>
+        <progress id="clientUpdateProgress" class="hidden" max="100" value="0"></progress>
+        <div id="clientUpdateProgressText"></div>
+        <div class="clientUpdateActions"><button id="clientUpdateDownload" class="primary hidden" type="button">更新至最新版</button><button id="clientUpdateRetry" class="primary hidden" type="button">重新检查</button><button id="clientUpdateExit" type="button">退出客户端</button></div>
+      </div>
+    </section>
+    <section id="examNoticeModal" class="finishConfirmModal hidden" role="alertdialog" aria-modal="true" aria-labelledby="examNoticeTitle">
+      <div class="finishConfirmCard">
+        <h2 id="examNoticeTitle">考试公告</h2>
+        <div id="examNoticeContent" class="examNoticeContent"></div>
+        <p id="examNoticeError" role="status"></p>
+        <button id="examNoticeConfirm" class="primary" type="button">确认已读</button>
+      </div>
+    </section>
+    <section id="appealModal" class="finishConfirmModal hidden" role="dialog" aria-modal="true" aria-labelledby="appealTitle">
+      <div class="finishConfirmCard">
+        <h2 id="appealTitle">作弊标记申诉</h2>
+        <label for="appealMessage">申诉内容</label>
+        <textarea id="appealMessage" rows="6" maxlength="2000" placeholder="请说明申诉原因"></textarea>
+        <p id="appealError" role="alert"></p>
+        <div class="actions"><button id="appealCancel" type="button">取消</button><button id="appealSubmit" class="primary" type="button">提交申诉</button></div>
+      </div>
+    </section>
+    <div id="actionToast" class="actionToast hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
+    <main id="app" class="app">
+      <section class="panel setup" id="setupPanel">
+        <div id="clientVersionStatus" class="clientVersionStatus" role="status">正在检查客户端版本…</div>
+        <div class="brand">
+          <img class="brandLogo" src="./assets/logo.png" alt="西华师范大学 Logo" />
+          <div>
+            <h1>
+              <span>程序设计算法协会</span>
+              <span>监考客户端</span>
+            </h1>
+            <p>本监考软件仅在监考过程中检测本机进程数据及网络请求</p>
+          </div>
+        </div>
+        <div class="serverStatus">
+          <span>监考服务器</span>
+          <strong id="serverStatusText">连接检测中</strong>
+        </div>
+        <div class="checks">
+          <div id="serverCheck" class="check hidden">本地网络：未检测</div>
+          <div id="screenCheck" class="check bad">屏幕检测：未通过</div>
+          <div id="cameraCheck" class="check bad">摄像头采集检测：未通过</div>
+          <div id="systemCheck" class="check bad">系统检查：未通过</div>
+        </div>
+        <div class="actions">
+          <button id="permissionStatusBtn" class="primary" type="button">检测系统权限</button>
+          <button id="permissionBtn" type="button" disabled>检测屏幕与摄像头</button>
+          <button id="networkPermissionBtn" class="hidden" type="button">打开本地网络权限设置</button>
+          <button id="screenPermissionBtn" class="hidden" type="button">打开屏幕录制权限设置</button>
+          <button id="cameraPermissionBtn" class="hidden" type="button">打开摄像头权限设置</button>
+          <button id="microphonePermissionBtn" class="hidden" type="button">打开麦克风权限设置</button>
+          <button id="accessibilityPermissionBtn" class="hidden" type="button">打开辅助功能权限设置</button>
+          <button id="adminRelaunchBtn" class="hidden" type="button">以管理员身份重新启动</button>
+          <button id="pairBtn" disabled>进入登录</button>
+        </div>
+        <div id="capabilityPanel" class="capabilityPanel" aria-label="权限列表"></div>
+        <div id="macPermissionHint" class="permissionHint hidden"></div>
+      </section>
+
+      <section class="panel hidden" id="loginPanel">
+        <h2>选择登录方式</h2>
+        <p>请使用所在考室允许的登录方式。</p>
+        <div class="loginChoices">
+          <button id="qrLoginBtn" class="primary" type="button">二维码登录</button>
+          <button id="credentialLoginBtn" type="button">账号密码登录</button>
+        </div>
+        <div id="qrLoginContent" class="pairing loginMethodContent hidden">
+          <div>
+            <h2 id="pairTitle">二维码登录</h2>
+            <p id="pairHint">二维码生成中</p>
+          </div>
+          <img id="pairQr" alt="配对二维码" />
+          <div class="pairCode" id="pairCode">------</div>
+          <div id="pairStatus" class="status">等待考生浏览器提交登录请求</div>
+          <button id="refreshPairBtn" type="button">刷新二维码</button>
+        </div>
+        <form id="credentialForm" class="credentialForm hidden">
+          <label>考试编号<input id="loginExamCode" inputmode="numeric" pattern="[0-9]{10}" minlength="10" maxlength="10" placeholder="10 位考试编号" required /></label>
+          <label>姓名<input id="loginName" autocomplete="name" required /></label>
+          <label>考号<input id="loginExamNumber" autocomplete="username" required /></label>
+          <label>密码<input id="loginPassword" type="password" autocomplete="current-password" required /></label>
+          <button id="credentialSubmitBtn" class="primary" type="submit">登录</button>
+        </form>
+        <div id="loginStatus" class="status" role="status" aria-live="polite"></div>
+        <button id="loginBackBtn" type="button">返回权限检查</button>
+      </section>
+
+      <section class="waiting hidden" id="waitingPanel">
+        <div class="spinner"></div>
+        <h2>正在等待监考审核</h2>
+        <p id="waitingHint">请勿触碰显示器及电脑。审核通过后将显示考试信息。</p>
+        <button id="cancelLoginRequestBtn" class="danger" type="button">取消请求登录</button>
+        <div id="rejectBox" class="reject hidden"></div>
+      </section>
+
+      <section class="exam hidden" id="examPanel">
+        <header class="side examTopbar" aria-label="考试网页工具栏">
+          <div class="browserTools">
+            <button id="browserBackBtn" type="button" aria-label="返回上级" title="返回上级" disabled>←</button>
+            <button id="browserForwardBtn" type="button" aria-label="下一页" title="下一页" disabled>→</button>
+            <button id="browserRefreshBtn" type="button" aria-label="刷新页面" title="刷新页面">↻</button>
+            <button id="browserZoomInBtn" type="button" aria-label="放大页面" title="放大页面">＋</button>
+            <button id="browserZoomOutBtn" type="button" aria-label="缩小页面" title="缩小页面">−</button>
+            <span id="browserZoomPercent" class="browserZoomPercent">100%</span>
+          </div>
+          <div id="browserUrl" class="browserUrl" title="考试页面地址">-</div>
+          <div id="submitCliStatus" class="submitCliStatus hidden" role="status" aria-live="polite">
+            <span id="submitCliMessage"></span>
+            <button id="submitCliRetry" class="hidden" type="button">重新准备 submit</button>
+          </div>
+          <div class="examTopbarActions">
+            <div class="examClock">
+              <span id="timeLabel">开考倒计时</span>
+              <strong id="timeValue">--:--:--</strong>
+            </div>
+            <span id="testStreamStatus" class="testStreamStatus hidden" aria-live="polite"></span>
+            <button id="testDisconnectBtn" class="hidden" type="button">断网重连测试</button>
+            <button id="startBtn" class="primary hidden">确认开始考试</button>
+            <button id="finishBtn" class="danger hidden">确认结束考试</button>
+          </div>
+          <strong id="examName" class="visuallyHidden">-</strong>
+          <div class="rules visuallyHidden" id="rulesBox"></div>
+          <div id="examStatus" class="status visuallyHidden" aria-live="polite"></div>
+        </header>
+        <section id="novaJudgeWaiting" class="novaJudgeWaiting hidden" aria-live="polite">
+          <p id="novaJudgeCountdown" class="hidden"></p>
+          <div id="novaJudgeLoading" class="hidden">
+            <p id="novaJudgeLoginStatus">正在自动登录NovaJudge 请稍等</p>
+            <div class="novaJudgeSpinner" aria-hidden="true"></div>
+          </div>
+          <button id="novaJudgeRetryBtn" class="primary hidden" type="button">重新登录</button>
+        </section>
+        <webview id="ojView" class="browser" src="about:blank" partition="persist:proctor-oj" webpreferences="contextIsolation=yes, nodeIntegration=no, sandbox=yes, webSecurity=yes, allowRunningInsecureContent=no"></webview>
+      </section>
+
+      <section class="lock hidden" id="lockPanel">
+        <div>
+          <h2>电脑已锁定</h2>
+          <p id="lockReason">检测到异常行为，等待管理员网页端解锁。</p>
+          <div id="cheatingActions" class="cheatingActions hidden">
+            <button id="appealCheatingBtn" type="button">申诉</button>
+            <button id="acceptCheatingBtn" class="danger" type="button">无异议结束考试</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="finishConfirmModal hidden" id="finishConfirmModal" role="dialog" aria-modal="true" aria-labelledby="finishConfirmTitle">
+        <div class="finishConfirmCard">
+          <h2 id="finishConfirmTitle">确认结束考试</h2>
+          <p>考试结束后将无法继续答题，也不能再次登录本场考试。</p>
+          <label for="finishConfirmInput">请输入：<strong id="finishConfirmExpected"></strong></label>
+          <input id="finishConfirmInput" type="text" autocomplete="off" spellcheck="false" />
+          <div class="finishConfirmActions">
+            <button id="finishConfirmCancel" type="button">取消</button>
+            <button id="finishConfirmSubmit" class="danger" type="button" disabled>确认结束考试</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="finishedScreen hidden" id="finishedPanel">
+        <div class="finishedCard">
+          <div class="finishedIcon">✓</div>
+          <h1>考试已结束</h1>
+          <p id="finishedMessage">本场考试已经结束，无法再次进入。</p>
+          <button id="exitExamBtn" class="primary" type="button">退出考试</button>
+        </div>
+      </section>
+
+      <div id="candidateWarning" class="candidateWarning hidden"></div>
+      <section id="desktopVoicePanel" class="desktopVoicePanel hidden" aria-label="监考语音通话" aria-live="polite">
+        <strong id="desktopVoiceTitle">监考老师来电</strong><span id="desktopVoiceStatus">等待接听</span>
+        <audio id="desktopVoiceAudio" autoplay></audio>
+        <div class="desktopVoiceActions"><button id="desktopVoiceAccept" class="primary" type="button">接听</button>
+          <button id="desktopVoiceMute" class="hidden" type="button">静音</button><button id="desktopVoicePlay" class="hidden" type="button">播放声音</button>
+          <button id="desktopVoiceHangup" class="danger" type="button">拒接</button></div>
+      </section>
+      <div id="examConnectionStatus" class="examConnectionStatus hidden" role="status" aria-live="polite"><span class="connectionDot" aria-hidden="true"></span><span id="examConnectionText">连接检测中…</span></div>
+      <section id="networkWarningModal" class="networkWarningModal hidden" role="dialog" aria-modal="true" aria-labelledby="networkWarningTitle">
+        <div class="networkWarningCard">
+          <h2 id="networkWarningTitle">监考连接已中断</h2>
+          <p>已无法连接监考后台超过 15 秒，请检查网络状态或联系监考老师。客户端正在自动重连，恢复连接后此提示会自动关闭。</p>
+          <p id="networkWarningDuration" role="status"></p>
+          <div class="networkWarningActions"><button id="networkReconnectNow" class="primary" type="button">立即重连</button><button id="networkWarningDismiss" type="button">我已知晓</button></div>
+        </div>
+      </section>
+      <section id="mobileReconnectQr" class="mobileReconnectQr hidden" aria-label="第二机位重连二维码">
+        <button id="mobileReconnectQrButton" class="mobileReconnectQrButton" type="button" aria-label="显示第二机位重连二维码"><span aria-hidden="true">▦</span>第二机位重连</button>
+        <div class="mobileReconnectQrPopover">
+          <strong id="mobileReconnectQrTitle">第二机位重连</strong>
+          <span>手机登录页或监考页点击“断网重连”后扫码</span>
+          <img id="mobileReconnectQrImage" alt="第二机位重连二维码" />
+          <b id="mobileReconnectQrCode">------</b>
+          <small id="mobileReconnectQrStatus">正在生成重连二维码</small>
+          <button id="mobileReconnectQrRefresh" type="button">刷新二维码</button>
+        </div>
+      </section>
+      <section class="monitorPreview hidden" id="monitorPreview" aria-label="监控画面预览">
+        <button id="monitorPreviewHide" class="monitorPreviewHide" type="button" aria-label="隐藏监控画面预览" title="隐藏监控画面预览">×</button>
+        <div class="previewTile" id="screenPreviewTile">
+          <video id="screenPreview" muted playsinline autoplay></video>
+          <div class="previewOverlay">
+            <span>电脑屏幕</span>
+            <strong id="screenPreviewStatus">未采集</strong>
+          </div>
+        </div>
+        <div class="previewTile hidden" id="cameraPreviewTile">
+          <video id="cameraPreview" muted playsinline autoplay></video>
+          <div class="previewOverlay">
+            <span>电脑摄像头</span>
+            <strong id="cameraPreviewStatus">未采集</strong>
+          </div>
+        </div>
+        <div class="candidate" id="candidateInfo" aria-label="考生信息"></div>
+      </section>
+      <button id="monitorPreviewRestore" class="monitorPreviewRestore hidden right" type="button" aria-label="显示监控画面预览" title="显示监控画面预览"><span>监控画面</span><b>‹</b></button>
+    </main>
+    <script src="./config.js"></script>
+    <script src="./window-policy.js"></script>
+    <script src="./permission-actions.js"></script>
+    <script src="./permission-state.js"></script>
+    <script src="./connection-monitor.js"></script>
+    <script src="./user-messages.js"></script>
+    <script src="./capture-policy.js"></script>
+    <script src="./recording-controller.js"></script>
+    <script src="./recording-buffer.js"></script>
+    <script src="./webrtc-codecs.js"></script>
+    <script src="./windows7-screen-capture.js"></script>
+    <script src="./exam-notices.js"></script>
+    <script src="./realtime-voice.js"></script>
+    <script src="./desktop-audio.js"></script>
+    <script src="./desktop-voice.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
