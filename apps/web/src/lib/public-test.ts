@@ -70,8 +70,14 @@ export async function isPublicTestExam(examId: string, client: Pick<Prisma.Trans
   return objectValue(marker?.value).examId === examId;
 }
 export async function getPublicTestExam() {
-  const examId = await ensurePublicTestExam();
-  const exam = await prisma.exam.findUnique({ where: { id: examId }, include: { rooms: true } });
+  // Instrumentation initializes the template once. Ordinary login reads must
+  // not lock and rewrite the same exam/rooms for every concurrent student.
+  let examId = await publicTestExamId();
+  let exam = examId ? await prisma.exam.findUnique({ where: { id: examId }, include: { rooms: true } }) : null;
+  if (!exam) {
+    examId = await ensurePublicTestExam();
+    exam = await prisma.exam.findUnique({ where: { id: examId }, include: { rooms: true } });
+  }
   const now = new Date();
   if (!exam || !exam.published || exam.platformContestId !== 'local' || !exam.flexible
     || now < exam.startAt || now >= exam.latestStartAt || now >= exam.endAt) throw new PublicTestError('测试考试暂未开放，请稍后再试', 503);

@@ -14,12 +14,12 @@ export const PUBLIC_USER_SELECT = {
 /** Safe default for public candidates, examinations and nested administrative actors. */
 export function publicDto<T>(value: T): T {
   return mapPublicValue(value, key => /^password(?:Hash)?$/i.test(key)
-    || (key === 'externalBoardApiKey' || key === 'novaJudgeApiKey' || key === 'monitoringAlertState')
+    || (key === 'externalBoardApiKey' || key === 'novaJudgeApiKey' || key === 'monitoringAlertState' || key === 'apiKeyCiphertext' || key === 'keyCiphertext' || key === 'apiKeyHash' || key === 'keyHash' || key === 'readKeyHash')
     || /(?:tokenHash|secret|credentialTicket)$/i.test(key)
     || /^(?:apiKey|secretAccessKey|privateKey|desktopSessionToken|miniProgramSessionToken|loginIp|loginIpBoundAt|loginIpReleasedAt|desktopLoginIp)$/i.test(key));
 }
 
 /** Response-wide safety net. Authorized token/password/config issuance remains explicit. */
 export function stripCredentialHashes<T>(value: T): T {
-  return mapPublicValue(value, key => (key === 'externalBoardApiKey' || key === 'novaJudgeApiKey' || key === 'monitoringAlertState') || /^passwordHash$/i.test(key) || /tokenHash$/i.test(key));
+  return mapPublicValue(value, key => (key === 'externalBoardApiKey' || key === 'novaJudgeApiKey' || key === 'monitoringAlertState' || key === 'apiKeyCiphertext' || key === 'keyCiphertext' || key === 'apiKeyHash' || key === 'keyHash' || key === 'readKeyHash') || /^passwordHash$/i.test(key) || /tokenHash$/i.test(key));
 }

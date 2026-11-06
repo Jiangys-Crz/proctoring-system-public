@@ -1,3 +1,4 @@
+import { admittedLogin } from '@/lib/request-admission';
 import { publicTestExamId } from '@/lib/public-test';
 import { LoginRequestCreateSchema } from '@cwnupaa/proctor-shared';
 import { prisma } from '@/lib/db';
@@ -46,6 +47,10 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  return admittedLogin(request, () => handlePost(request));
+}
+
+async function handlePost(request: Request) {
   try {
     const input = await parseBody(request, LoginRequestCreateSchema, 16 * 1024);
     const now = new Date();
@@ -85,7 +90,7 @@ export async function POST(request: Request) {
     if (!candidate) return fail('考号或密码错误', 401);
 
     const loginRequest = await createCandidateLoginRequest({
-      exam, pairing, candidateId: candidate.id, memberIdentity, materials: input, method: 'SECOND_CAMERA_QR', now
+      exam, pairing, candidateId: candidate.id, memberIdentity, materials: input, method: 'SECOND_CAMERA_QR', now, signal: request.signal
     });
     return ok(loginRequest, { status: 201 });
   } catch (error) {

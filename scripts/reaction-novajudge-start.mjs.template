@@ -1,0 +1,14 @@
+import { parseEnv } from 'node:util';
+import { spawn } from 'node:child_process';
+import { openSync, writeFileSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+const runtime = parseEnv(readFileSync('.local/reaction-e2e/runtime.env','utf8'));
+const database = new URL(runtime.DATABASE_URL);
+if (runtime.REACTION_TEST_RUNTIME !== '1' || !['localhost','127.0.0.1','[::1]'].includes(database.hostname) || !/^\/reaction_e2e_[a-z0-9_]+$/.test(database.pathname)) throw new Error('Refusing a non-test database');
+const base = new URL(runtime.NOVAJUDGE_URL);
+if (!['localhost','127.0.0.1','[::1]'].includes(base.hostname) || base.protocol !== 'http:') throw new Error('Local test HTTP origin required');
+const role=process.argv[2] || 'web';
+if (!['web', 'worker'].includes(role)) throw new Error('Expected web or worker');
+const args=role==='web'?[path.resolve('node_modules/next/dist/bin/next'),'dev','-H',base.hostname,'-p',base.port || '80']:[path.resolve('node_modules/tsx/dist/cli.mjs'),path.resolve('worker.ts'),'--id','reaction-e2e'];
+const child=spawn(process.execPath,args,{cwd:process.cwd(),env:{...process.env,...runtime},detached:true,windowsHide:true,stdio:['ignore',openSync(`.local/reaction-e2e/${role}.log`,'a'),openSync(`.local/reaction-e2e/${role}.err.log`,'a')]});
+child.unref(); writeFileSync(`.local/reaction-e2e/${role}.pid`,String(child.pid)); console.log(`${role} PID ${child.pid}`);

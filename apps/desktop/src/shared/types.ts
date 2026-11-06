@@ -119,7 +119,7 @@ export interface ProctorApi {
   getMacMediaAccessStatus(): Promise<null | { camera: string; microphone: string; screen: string }>;
   getSystemPermissionStatus(): Promise<SystemPermissionStatus>;
   askMacMediaAccess(mediaType: 'camera' | 'microphone'): Promise<boolean>;
-  openMacPrivacyPane(pane: 'screen' | 'camera' | 'microphone' | 'accessibility' | 'localNetwork'): Promise<boolean>;
+  openMacPrivacyPane(pane: 'screen' | 'camera' | 'microphone' | 'accessibility' | 'automation' | 'localNetwork'): Promise<boolean>;
   openWindowsPrivacyPane(pane: 'camera' | 'microphone' | 'network'): Promise<boolean>;
   promptMacAccessibility(): Promise<boolean>;
   relaunchAsAdmin(): Promise<boolean>;

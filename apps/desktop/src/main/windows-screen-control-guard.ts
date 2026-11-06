@@ -73,7 +73,8 @@ export class WindowsScreenControlGuard implements ScreenControlGuard {
       this.release(child);
       if (!this.active) return;
       this.options.onStatus('屏幕控制保护异常，请联系监考老师。');
-      if (this.attempts < 3) this.retryTimer = setTimeout(() => { this.retryTimer = null; this.launch(); }, 500 * this.attempts);
+      // Protection must keep recovering during a long server/network outage.
+      this.retryTimer = setTimeout(() => { this.retryTimer = null; this.launch(); }, Math.min(5000, 500 * this.attempts));
     };
     child.on('error', fail);
     child.on('exit', fail);

@@ -39,6 +39,7 @@ export function serializeContestState(session: ContestSummarySession, now = new 
   return {
     session: state,
     revision,
+    serverNow: now.toISOString(),
     // Legacy contests can end earlier in Hydro than the local exam deadline.
     // Only the full route knows that remote boundary. Tell the caller to use
     // that response before replacing its session, without fetching Hydro here.

@@ -21,7 +21,16 @@ export async function queueFileDeletion(tx: Prisma.TransactionClient, data: {
   await tx.fileDeletionJob.upsert({ where: { id }, create: { ...data, id, objectHash: objectHash(data.objectPath) }, update: reactivate ? { completedAt: null, claimUntil: null, lastError: null, nextAttemptAt: new Date(), storage: data.storage } : {} });
 }
 export async function mediaHasReferences(tx: Prisma.TransactionClient, key: string) {
+  const assetExam = /^reactions\/([a-zA-Z0-9_-]+)\/assets\//.exec(key)?.[1];
+  if (assetExam) {
+    if (assetExam === 'logo-library' && await tx.reactionLogo.count({ where: { objectPath: key } })) return true;
+    const config = await tx.reactionConfig.findUnique({ where: { examId: assetExam }, select: { presentation: true } });
+    // Exact JSON string membership also protects shared team/school logos.
+    if (config?.presentation && JSON.stringify(config.presentation).includes(JSON.stringify(key))) return true;
+  }
   return Boolean(await tx.mediaSegment.count({ where: { objectPath: key, deletedAt: null } })
+    || await tx.reaction.count({ where: { OR: [{cameraPath:key},{desktopPath:key},{metadataPath:key},{reactionPath:key}] } })
+    || await tx.reactionSegment.count({ where: { segment: {objectPath:key} } })
     || await tx.alert.count({ where: { evidencePath: key, evidenceDeletedAt: null } })
     || await tx.loginRequest.count({ where: { OR: [{ identityPhotoPath: key }, { roomVideoPath: key }] } })
     || await tx.voiceMessage.count({ where: { objectPath: key } })

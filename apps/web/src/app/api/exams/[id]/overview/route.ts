@@ -4,8 +4,9 @@ import { calculateLeaderboards } from '@/lib/leaderboards';
 import { canAccessExam, canManageExam } from '@/lib/permissions';
 import { fail, ok, options, toErrorMessage } from '@/lib/http';
 import { flexibleExam, IGNORED_SUBMISSION_STATUS } from '@/lib/contest-rules';
+import { admittedLeaderboardRead } from '@/lib/heavy-read-admission';
 
-export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+async function loadOverview(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser();
     const timePoint = new URL(request.url).searchParams.get('timePoint');
@@ -78,3 +79,6 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 }
 
 export const OPTIONS = options;
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+  return admittedLeaderboardRead(request, () => loadOverview(request, context));
+}

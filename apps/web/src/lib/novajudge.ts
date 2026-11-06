@@ -2,6 +2,8 @@ import type { Candidate, Exam } from '@prisma/client';
 
 type NovaExam = Pick<Exam, 'platformBaseUrl' | 'platformContestId'> & { novaJudgeApiKey?: string | null };
 
+export class NovaJudgeConnectionError extends Error {}
+
 export function novaJudgeOrigin(value: string) {
   let url: URL;
   try { url = new URL(value.includes('://') ? value : `https://${value}`); }
@@ -29,7 +31,7 @@ export function novaJudgeContestUrl(exam: Pick<NovaExam, 'platformBaseUrl' | 'pl
 export async function loginNovaJudge(exam: NovaExam, candidate: Pick<Candidate, 'examNumber' | 'password'>) {
   const origin = novaJudgeOrigin(exam.platformBaseUrl);
   const contestId = novaJudgeContestId(exam.platformContestId);
-  if (!exam.novaJudgeApiKey?.trim()) throw new Error('请填写 NovaJudge 外榜 API Key，以授权监考专用登录');
+  if (!exam.novaJudgeApiKey?.trim()) throw new Error('请填写 NovaJudge 外榜接口密钥，以授权监考专用登录');
   let response: Response;
   try {
     response = await fetch(`${origin}/api/cli/login`, {
@@ -37,11 +39,12 @@ export async function loginNovaJudge(exam: NovaExam, candidate: Pick<Candidate, 
       headers: { 'content-type': 'application/json', 'x-api-key': exam.novaJudgeApiKey.trim() },
       body: JSON.stringify({ username: candidate.examNumber, password: candidate.password, contestId, loginSource: 'PROCTORING' }),
     });
-  } catch { throw new Error('NovaJudge 连接失败或超时，请联系监考老师检查平台域名'); }
+  } catch { throw new NovaJudgeConnectionError('NovaJudge 连接失败或超时，正在等待恢复'); }
   if (response.status === 401) throw new Error('NovaJudge 考号或密码错误，请确认考生账号属于指定比赛且与监考名单一致');
-  if (response.status === 403) throw new Error('NovaJudge 监考登录未获授权，请检查外榜 API Key 是否有效且属于超级管理员');
+  if (response.status === 403) throw new Error('NovaJudge 监考登录未获授权，请检查外榜接口密钥是否有效且属于超级管理员');
+  if (response.status === 408 || response.status === 429 || response.status >= 500) throw new NovaJudgeConnectionError('NovaJudge 服务暂不可用，请稍后重试');
   if (!response.ok) throw new Error('NovaJudge 登录失败，请检查比赛 ID、账号和平台服务');
-  const body = await response.json().catch(() => null);
+  const body = await response.json().catch(() => { throw new NovaJudgeConnectionError('NovaJudge 响应中断或格式异常，请稍后重试'); });
   if (typeof body?.token !== 'string' || !body.token || body.token.length > 8192
     || body.user?.contestId !== contestId || body.user?.username !== candidate.examNumber || body.user?.role !== 'TEAM'
     || body.loginSource !== 'PROCTORING' || typeof body.proctoringKey !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.proctoringKey)) {
@@ -59,7 +62,7 @@ export async function loginNovaJudge(exam: NovaExam, candidate: Pick<Candidate, 
 }
 
 export async function readNovaJudgeArray(exam: NovaExam, kind: 'problems' | 'submissions', signal?: AbortSignal) {
-  if (!exam.novaJudgeApiKey?.trim()) throw new Error('请填写 NovaJudge 外榜 API Key');
+  if (!exam.novaJudgeApiKey?.trim()) throw new Error('请填写 NovaJudge 外榜接口密钥');
   const url = `${novaJudgeOrigin(exam.platformBaseUrl)}/api/contests/${novaJudgeContestId(exam.platformContestId)}/${kind}`;
   let response: Response;
   try {
@@ -67,7 +70,7 @@ export async function readNovaJudgeArray(exam: NovaExam, kind: 'problems' | 'sub
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
       headers: { 'x-api-key': exam.novaJudgeApiKey.trim() } });
   } catch { throw new Error('读取 NovaJudge 外榜数据失败或超时'); }
-  if (response.status === 401 || response.status === 403) throw new Error('NovaJudge 外榜 API Key 无效或未启用');
+  if (response.status === 401 || response.status === 403) throw new Error('NovaJudge 外榜接口密钥无效或未启用');
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok || !Array.isArray(body)) throw new Error('NovaJudge 外榜接口返回异常，请检查平台域名和比赛 ID');
   return body as Array<Record<string, unknown>>;

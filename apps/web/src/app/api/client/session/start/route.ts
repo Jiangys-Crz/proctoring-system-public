@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { isPublicTestExam } from '@/lib/public-test';
 import { testMediaState } from '@/lib/test-media-state';
-import { publicClientSession } from '@/lib/client-auth';
+import { publicClientSession, verifyClientTokenForSession } from '@/lib/client-auth';
 import { requireContestSession } from '@/lib/client-contest';
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
 import { LoginFlowError } from '@/lib/room-login-policy';
@@ -28,6 +28,7 @@ export async function POST(request: Request) {
     const updated = await withSessionWrite(session.id, async tx => {
       await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${session.candidateId} FOR UPDATE`;
       const current = await tx.clientSession.findUniqueOrThrow({ where: { id: session.id }, include: { candidate: true, exam: true } });
+      if (!verifyClientTokenForSession(request, current, 'DESKTOP')) throw new LoginFlowError('客户端会话令牌已改变，请重新连接', 401);
       if (current.revokedAt || current.candidate.status === 'FINISHED' || !['APPROVED', 'IN_EXAM'].includes(current.status) || current.lockdown) throw new LoginFlowError('当前状态不能开始考试', 409);
       const firstStart = current.candidate.startedAt || current.startedAt;
       const startedNow = new Date();
@@ -39,9 +40,10 @@ export async function POST(request: Request) {
       const changed = await tx.clientSession.updateMany({ where: { id: session.id, status: { in: ['APPROVED', 'IN_EXAM'] }, lockdown: false }, data: { status: 'IN_EXAM', startedAt: candidate.startedAt } });
       if (!changed.count) throw new Error('会话状态已改变，请刷新');
       await tx.candidate.update({ where: { id: candidate.id }, data: { status: 'ONLINE_NORMAL' } });
-      return tx.clientSession.findUniqueOrThrow({ where: { id: session.id } });
-    });
-    return ok({ ...publicClientSession(updated), effectiveEndAt: effectiveEnd(session.exam, updated.startedAt).toISOString() });
+      const refreshed = await tx.clientSession.findUniqueOrThrow({ where: { id: session.id } });
+      return { ...publicClientSession(refreshed), effectiveEndAt: effectiveEnd(current.exam, candidate.startedAt).toISOString() };
+    }, { signal: request.signal });
+    return ok(updated);
   } catch (error) {
     if (error instanceof SessionWriteQueueError) return fail(error.message, error.status);
     if (error instanceof LoginFlowError) return fail(error.message, error.status);

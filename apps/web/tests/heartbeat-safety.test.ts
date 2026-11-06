@@ -250,14 +250,14 @@ test('same-version changes, downgrades, cross-platform versions and malformed up
   }
 });
 
-test('explicit USB scan failure locks once without accepting a stale or migrated fingerprint', async () => {
+test('USB scan failure alerts once without locking the desktop or accepting a stale fingerprint', async () => {
   const session = fixture();
   for (let attempt = 0; attempt < 12; attempt++) {
     const result = await heartbeat(session, { system: { peripheralScanOk: false, peripheralsFingerprint: 'untrusted-new-sample' } });
     assert.equal(result.response.status, 200);
-    assert.equal(result.body.data.session.status, 'LOCKED');
-    assert.equal(result.body.data.session.lockdown, true);
-    assert.match(result.body.data.session.lockdownReason, /USB/);
+    assert.equal(result.body.data.session.status, 'IN_EXAM');
+    assert.equal(result.body.data.session.lockdown, false);
+    assert.equal(result.body.data.session.lockdownReason, null);
     assert.equal(result.body.data.alertsCreated, attempt === 0 ? 1 : 0);
     assert.equal(result.evidenceLookups, attempt === 0 ? 1 : 0);
     assert.equal('lastPeripheralsFingerprint' in result.sessionWrites[0], false);
@@ -265,7 +265,7 @@ test('explicit USB scan failure locks once without accepting a stale or migrated
     Object.assign(session, result.sessionWrites[0]);
   }
   const recovered = await heartbeat(session, { system: { peripheralScanOk: true, peripheralsFingerprint: 'baseline' } });
-  assert.equal(recovered.body.data.session.lockdown, true, 'restoring the scanner still requires a proctor unlock');
+  assert.equal(recovered.body.data.session.lockdown, false);
   assert.equal(recovered.body.data.alertsCreated, 0);
 });
 

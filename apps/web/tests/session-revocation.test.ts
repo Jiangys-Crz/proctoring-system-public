@@ -1,39 +1,25 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ClientSession, Prisma } from '@prisma/client';
-import { sessionFullyOfflineForRelogin, SESSION_RELOGIN_OFFLINE_GRACE_MS } from '../src/lib/client-session-policy';
-import { revokeFullyOfflineSession } from '../src/lib/session-revocation';
+import { revokeSupersededSession } from '../src/lib/session-revocation';
 import { createPairSecret, hashPairSecret, verifyPairSecret } from '../src/lib/pairing-security';
 import { ensureBootstrapAdministrator } from '../src/lib/bootstrap-admin';
 import { digestPasswordForStorage } from '../src/lib/password-crypto';
 import bcrypt from 'bcryptjs';
 
-test('two-minute logout requires every required side, including exact deadline and no-camera rooms', () => {
-  const now = new Date('2026-10-07T08:00:00Z');
-  const old = new Date(now.getTime() - 120_000);
-  const fresh = new Date(now.getTime() - 119_999);
-  const s = { createdAt: old, lastDesktopSeenAt: old, lastMiniProgramSeenAt: old };
-  assert.equal(SESSION_RELOGIN_OFFLINE_GRACE_MS, 120_000);
-  assert.equal(sessionFullyOfflineForRelogin(s, now, true), true);
-  assert.equal(sessionFullyOfflineForRelogin({ ...s, lastMiniProgramSeenAt: fresh }, now, true), false);
-  assert.equal(sessionFullyOfflineForRelogin({ ...s, lastDesktopSeenAt: fresh }, now, true), false);
-  assert.equal(sessionFullyOfflineForRelogin({ ...s, lastMiniProgramSeenAt: fresh }, now, false), true);
-  assert.equal(sessionFullyOfflineForRelogin({ ...s, lastDesktopSeenAt: null, lastMiniProgramSeenAt: null }, now, true), true);
-});
-
-test('offline revocation clears both tokens and pairing secrets while preserving personal time and newer login', async () => {
+test('replacement login revokes both tokens and pairing secrets without changing personal time', async () => {
   const now = new Date();
   const old = new Date(now.getTime() - 120_001);
   const session = { id: 's', candidateId: 'c', loginRequestId: 'l', status: 'IN_EXAM', createdAt: old, startedAt: old, lastDesktopSeenAt: old, lastMiniProgramSeenAt: old } as ClientSession;
   let written: any; let candidateWrites = 0; let pairWrite: any;
   const tx = { clientSession: { update: async (q: any) => { written = q.data; }, count: async () => 1 },
     candidate: { update: async () => { candidateWrites++; } }, pairingSession: { updateMany: async (q: any) => { pairWrite = q.data; } }, loginRequest: { updateMany: async () => ({ count: 0 }) } } as unknown as Prisma.TransactionClient;
-  assert.equal(await revokeFullyOfflineSession(tx, session, true, now), true);
+  assert.equal(await revokeSupersededSession(tx, session, now), true);
   assert.equal(written.desktopTokenHash, null); assert.equal(written.miniProgramTokenHash, null);
   assert.equal(written.revokedAt, now); assert.equal(written.status, 'FINISHED');
   assert.equal('startedAt' in written, false); assert.equal(candidateWrites, 0);
   assert.equal(pairWrite.pollTokenHash, null); assert.equal(pairWrite.recoveryTokenHash, null);
-  assert.equal(await revokeFullyOfflineSession(tx, { ...session, status: 'FINISHED' }, true, now), false);
+  assert.equal(await revokeSupersededSession(tx, { ...session, status: 'FINISHED' }, now), false);
 });
 
 test('pair secrets are 256 bits, stored as hashes, checked in their own purpose', () => {

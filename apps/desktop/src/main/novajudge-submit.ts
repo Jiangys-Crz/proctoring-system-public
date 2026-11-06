@@ -246,7 +246,7 @@ export class NovaJudgeSubmit {
     const generation = this.generation;
     const current = () => generation === this.generation && submitContextAllows(this.dependencies.context(), login);
     if (!current()) { await cleanup; return; }
-    this.set({ phase: 'installing', message: '正在准备 submit 命令…' });
+    this.set({ phase: 'installing', message: '正在准备 submit / printfile 命令…' });
     let grant: Grant | null = null;
     let issuedToken = '';
     try {
@@ -267,7 +267,7 @@ export class NovaJudgeSubmit {
       this.store.write(config);
       this.owned = config;
       issuedToken = '';
-      this.set({ phase: 'ready', message: 'submit 已就绪：新开终端运行 submit A.cpp，核对后输入 y。' });
+      this.set({ phase: 'ready', message: 'submit / printfile 已就绪：新开终端运行 submit A.cpp 或 printfile A.cpp；加 -y 自动确认，--help 查看用法。' });
     } catch (error) {
       if (current()) this.set({ phase: 'error', message: submitFailureMessage(error) });
     } finally {

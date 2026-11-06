@@ -26,6 +26,17 @@ interface TicketRecord {
 const INTERNAL_RECORD_UID = 1;
 
 const tickets = new Map<string, TicketRecord>();
+const MAX_TICKETS = 4096;
+function pruneTickets(now = Date.now()) {
+    for (const [token, record] of tickets) if (record.expiresAt <= now) tickets.delete(token);
+}
+function ticketRedirect(value: string, prefix: string) {
+    if (!value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(value)) throw new BadRequestError('redirect');
+    const target = new URL(value, 'https://proctor.invalid');
+    const allowed = new URL(prefix, 'https://proctor.invalid').pathname.replace(/\/+$/, '') || '/';
+    if (target.origin !== 'https://proctor.invalid' || (allowed !== '/' && target.pathname !== allowed && !target.pathname.startsWith(allowed + '/'))) throw new BadRequestError('redirect');
+    return target.pathname + target.search + target.hash;
+}
 
 let legacyConfig: ProctorConfig = DEFAULT_CONFIG;
 
@@ -391,10 +402,11 @@ class ProctorContestFileHandler extends Handler {
 }
 
 function consumeToken(token: string) {
+    pruneTickets();
     const record = tickets.get(token);
     if (!record) return null;
     tickets.delete(token);
-    if (record.expiresAt < Date.now()) return null;
+    if (record.expiresAt <= Date.now()) return null;
     return record;
 }
 
@@ -466,13 +478,17 @@ class ProctorLoginTicketHandler extends Handler {
         if (!timingSafeEqual(signature, expected)) throw new ForbiddenError('invalid proctor signature');
 
         const account = (`${body.account || ''}` || runtimeConfig().judgeAccount).trim();
-        const redirect = `${body.redirect || `/contest/${body.contestId || ''}`}`.trim();
+        const redirect = ticketRedirect(`${body.redirect || `/contest/${body.contestId || ''}`}`.trim(), runtimeConfig().allowedRedirectPrefix);
         if (!account) throw new BadRequestError('account');
-        if (!redirect.startsWith(runtimeConfig().allowedRedirectPrefix)) throw new BadRequestError('redirect');
+        pruneTickets();
+        if (tickets.size >= MAX_TICKETS) throw new BadRequestError('too many outstanding login tickets; retry after expiry');
 
         const udoc = await ensureUserByAccount(domainId || 'system', account, this.request.ip);
         if (!udoc) throw new NotFoundError('user');
 
+        // Recheck after user creation: other issuers may have filled the cache.
+        pruneTickets();
+        if (tickets.size >= MAX_TICKETS) throw new BadRequestError('too many outstanding login tickets; retry after expiry');
         const token = crypto.randomBytes(32).toString('base64url');
         tickets.set(token, {
             uid: udoc._id,
@@ -642,19 +658,30 @@ class ProctorProblemSyncHandler extends Handler {
         const title = `${body.title || ''}`.trim();
         const content = `${body.content || ''}`;
         if (!title || !content) throw new BadRequestError('title/content');
-        const requestedId = Number(body.id || body.hydroProblemId || 0);
+        const rawId = body.id ?? body.hydroProblemId ?? 0;
+        if (!['number', 'string'].includes(typeof rawId) || (typeof rawId === 'string' && !/^\d+$/.test(rawId))) throw new BadRequestError('problem id');
+        const requestedId = Number(rawId);
+        if (!Number.isSafeInteger(requestedId) || requestedId < 0) throw new BadRequestError('problem id');
+        if (body.testdata !== undefined && (!body.testdata || typeof body.testdata !== 'object' || Array.isArray(body.testdata))) throw new BadRequestError('testdata');
+        const testdata = Object.entries(body.testdata || {}).map(([original, value]) => {
+            const name = original.trim();
+            if (!name || name.length > 1024 || /[\\\u0000-\u001f\u007f]/.test(name) || name.split('/').some(part => !part || part === '.' || part === '..') || typeof value !== 'string') throw new BadRequestError('testdata file name/content');
+            return { name, value };
+        });
+        if (new Set(testdata.map(file => file.name)).size !== testdata.length) throw new BadRequestError('duplicate testdata file name');
         let pdoc = requestedId ? await ProblemModel.get(targetDomain, requestedId, ProblemModel.PROJECTION_PUBLIC, true) : null;
+        if (requestedId && !pdoc) throw new NotFoundError('problem');
+        let targetId = requestedId;
         if (pdoc) {
             await ProblemModel.edit(targetDomain, requestedId, {
                 title,
                 content,
                 html: Boolean(body.html),
                 tag: Array.isArray(body.tags) ? body.tags : pdoc.tag,
-                difficulty: Number(body.difficulty || pdoc.difficulty || 0),
+                difficulty: Number(body.difficulty ?? pdoc.difficulty ?? 0),
                 hidden: Boolean(body.hidden),
                 ...(body.config !== undefined ? { config: typeof body.config === 'string' ? body.config : JSON.stringify(body.config) } : {}),
             } as any);
-            pdoc = await ProblemModel.get(targetDomain, requestedId, ProblemModel.PROJECTION_PUBLIC, true);
         } else {
             const createdId = await ProblemModel.add(
                 targetDomain,
@@ -668,29 +695,28 @@ class ProctorProblemSyncHandler extends Handler {
                     hidden: Boolean(body.hidden),
                 },
             );
-            pdoc = await ProblemModel.get(targetDomain, createdId, ProblemModel.PROJECTION_PUBLIC, true);
+            targetId = createdId;
             if (body.config !== undefined) {
                 await ProblemModel.edit(targetDomain, createdId, {
                     config: typeof body.config === 'string' ? body.config : JSON.stringify(body.config),
                 } as any);
             }
-            if (body.testdata && typeof body.testdata === 'object') {
-                for (const [name, value] of Object.entries(body.testdata)) {
-                    await ProblemModel.addTestdata(targetDomain, createdId, name, Buffer.from(String(value)));
-                }
-            }
-            pdoc = await ProblemModel.get(targetDomain, createdId, ProblemModel.PROJECTION_PUBLIC, true);
         }
-        this.response.body = { ok: true, data: pdoc ? publicProblem(pdoc) : { id: requestedId } };
+        // Existing problems need these writes too; metadata updates alone leave
+        // the old judge files in place while reporting a successful sync.
+        for (const { name, value } of testdata) await ProblemModel.addTestdata(targetDomain, targetId, name, Buffer.from(value));
+        pdoc = await ProblemModel.get(targetDomain, targetId, ProblemModel.PROJECTION_PUBLIC, true);
+        if (!pdoc) throw new NotFoundError('problem');
+        this.response.body = { ok: true, data: publicProblem(pdoc) };
     }
 }
 
-function publicRecordForApi(rdoc: any) {
+function publicRecordForApi(rdoc: any, includeCode = true) {
     return {
         id: rdoc._id?.toHexString?.() || String(rdoc._id),
         pid: rdoc.pid,
         lang: rdoc.lang,
-        code: rdoc.code || '',
+        ...(includeCode ? { code: rdoc.code || '' } : {}),
         status: Number(rdoc.status || 0),
         statusText: STATUS_TEXTS[rdoc.status] || 'Waiting',
         score: Number(rdoc.score || 0),
@@ -713,6 +739,7 @@ class ProctorJudgeSubmitHandler extends Handler {
         let lang = `${body.lang || ''}`.trim();
         const code = `${body.code || ''}`.replace(/\r\n/g, '\n');
         if (!Number.isSafeInteger(pid) || pid <= 0 || !lang || !code) throw new BadRequestError('pid/lang/code');
+        if (lang.length > 64 || code.length > 512 * 1024) throw new BadRequestError('language or code too long');
         await ensureProblemDomain();
         const pdoc = await ProblemModel.get(problemDomain(), pid, ProblemModel.PROJECTION_PUBLIC);
         if (!pdoc) throw new NotFoundError('problem');
@@ -746,7 +773,7 @@ class ProctorJudgeStatusHandler extends Handler {
         assertApiRequest(this, body);
         const record = await RecordModel.get(problemDomain(), rid);
         if (!record) throw new NotFoundError('record');
-        this.response.body = { ok: true, data: publicRecordForApi(record) };
+        this.response.body = { ok: true, data: publicRecordForApi(record, false) };
     }
 }
 
@@ -756,17 +783,27 @@ class ProctorJudgeBatchStatusHandler extends Handler {
     async post({ domainId }) {
         const body = this.request.body || {};
         assertApiRequest(this, body);
-        const ids = Array.isArray(body.ids) ? body.ids.slice(0, 200) : [];
+        const values = Array.isArray(body.ids) ? body.ids.slice(0, 200) : [];
         const convert = (Types.ObjectId as readonly any[])[0];
-        const records = await Promise.all(ids.map(async (value: unknown) => {
+        const ids = new Map<string, any>();
+        for (const value of values) {
             try {
                 const rid = convert(`${value || ''}`);
-                return await RecordModel.get(problemDomain(), rid);
+                ids.set(rid.toHexString(), rid);
             } catch {
-                return null;
+                // Ignore malformed IDs only. Database failures below must be
+                // retryable failures, never a successful empty status response.
             }
-        }));
-        this.response.body = { ok: true, data: records.filter(Boolean).map(publicRecordForApi) };
+        }
+        // One bounded query instead of 200 parallel lookups. Status polling
+        // does not need the code already saved by the monitoring backend.
+        const records = ids.size ? await RecordModel.getMulti(problemDomain(), { _id: { $in: [...ids.values()] } })
+            .project({ code: 0 }).limit(200).toArray() : [];
+        const byId = new Map(records.map(record => [record._id.toHexString(), record]));
+        this.response.body = { ok: true, data: [...ids.keys()].flatMap(id => {
+            const record = byId.get(id);
+            return record ? [publicRecordForApi(record, false)] : [];
+        }) };
     }
 }
 

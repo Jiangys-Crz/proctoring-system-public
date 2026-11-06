@@ -135,9 +135,10 @@ const windowsUsbEvents = new WindowsUsbEvents(() => app.isPackaged
   : path.join(__dirname, '../../native/windows-inventory', process.arch, 'inventory-probe.exe'), windowsUsbInventory,
   { diagnostic: detail => writeStartupDiagnostic(app, 'usb-events', detail) });
 const appBundleId = 'org.cwnupaa.proctor';
-type MacPrivacyPane = 'screen' | 'camera' | 'microphone' | 'accessibility' | 'localNetwork';
+type MacPrivacyPane = 'screen' | 'camera' | 'microphone' | 'accessibility' | 'automation' | 'localNetwork';
 
 const macPrivacyPaneUrls: Record<MacPrivacyPane, string> = {
+  automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
   camera: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Camera',
   microphone: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
@@ -644,14 +645,27 @@ class ServerResponseError extends Error {}
 
 function assertOkResponse(statusCode: number | undefined, body: JsonResponseBody | null) {
   if (body?.code === 'CLIENT_SESSION_REVOKED') throw new ServerResponseError('[CLIENT_SESSION_REVOKED] 会话已注销，请重新登录');
+  if (body?.code === 'CLIENT_DESKTOP_REPLACED') throw new ServerResponseError('[CLIENT_DESKTOP_REPLACED] 当前电脑连接已被新电脑替换，请在新电脑继续考试');
+  if (body?.code === 'OJ_LOGIN_REJECTED') throw new ServerResponseError(`[OJ_LOGIN_REJECTED] ${body.message || '考试平台拒绝登录，请联系监考老师'}`);
+  if (body?.code === 'PAIRING_EXPIRED' || body?.code === 'PAIRING_INVALID') throw new ServerResponseError(`[${body.code}] ${body.message || '登录二维码已失效，请重新生成'}`);
   if (!statusCode || statusCode < 200 || statusCode >= 300 || !body?.ok) {
     throw new ServerResponseError(body?.message || `请求失败：HTTP ${statusCode || 'unknown'}`);
   }
   return body.data;
 }
 
+function jsonRequestTimeout(target: URL, options: JsonRequestOptions) {
+  if ((options.method || 'GET').toUpperCase() === 'POST' && target.pathname === '/api/client/oj-cookie') return 60_000;
+  // Login can spend eight seconds in admission before its transaction starts.
+  // Preserve a single POST while it completes instead of timing it out at 8s.
+  return (options.method || 'GET').toUpperCase() === 'POST' && [
+    '/api/login-requests', '/api/client/credential-login', '/api/client/candidate-verify', '/api/client/pair', '/api/client/material-upload-ticket', '/api/client/reconnect'
+  ].includes(target.pathname) ? 40_000 : 8000;
+}
+
 function electronNetJsonRequest(target: URL, options: JsonRequestOptions = {}) {
   const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+  const timeoutMs = jsonRequestTimeout(target, options);
   return new Promise((resolve, reject) => {
     const request = net.request({
       method: options.method || 'GET',
@@ -666,15 +680,24 @@ function electronNetJsonRequest(target: URL, options: JsonRequestOptions = {}) {
     };
     const timeout = setTimeout(() => {
       request.abort();
-      finish(() => reject(new Error('请求超时：8000ms')));
-    }, 8000);
+      finish(() => reject(new Error(`请求超时：${timeoutMs}ms`)));
+    }, timeoutMs);
     request.setHeader('content-type', 'application/json');
     request.setHeader('x-proctor-client', 'desktop');
     Object.entries(options.headers || {}).forEach(([key, value]) => request.setHeader(key, value));
     request.on('response', (response) => {
       const chunks: Buffer[] = [];
-      response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      let bytes = 0;
+      response.on('error', (error: Error) => finish(() => reject(error)));
+      response.on('data', (chunk) => {
+        bytes += chunk.length;
+        if (bytes > 16 * 1024 * 1024) {
+          finish(() => reject(new Error('服务器响应过大，请联系监考老师')));
+          request.abort();
+        } else if (!settled) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
       response.on('end', () => {
+        if (settled) return;
         const raw = Buffer.concat(chunks).toString('utf8');
         try {
           const data = assertOkResponse(response.statusCode, parseJsonResponse(raw));
@@ -693,7 +716,15 @@ function electronNetJsonRequest(target: URL, options: JsonRequestOptions = {}) {
 function nodeHttpJsonRequest(target: URL, options: JsonRequestOptions = {}) {
   const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
   const transport = target.protocol === 'https:' ? https : http;
+  const timeoutMs = jsonRequestTimeout(target, options);
   return new Promise((resolve, reject) => {
+    let settled = false, deadline: ReturnType<typeof setTimeout> | undefined;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      callback();
+    };
     const request = transport.request(
       {
         protocol: target.protocol,
@@ -701,7 +732,7 @@ function nodeHttpJsonRequest(target: URL, options: JsonRequestOptions = {}) {
         port: target.port || (target.protocol === 'https:' ? 443 : 80),
         path: `${target.pathname}${target.search}`,
         method: options.method || 'GET',
-        timeout: 8000,
+        timeout: timeoutMs,
         headers: {
           'content-type': 'application/json',
           'x-proctor-client': 'desktop',
@@ -711,21 +742,35 @@ function nodeHttpJsonRequest(target: URL, options: JsonRequestOptions = {}) {
       },
       (response) => {
         const chunks: Buffer[] = [];
-        response.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        let bytes = 0;
+        // A server restart can abort a response after headers arrived. Handle
+        // that stream error as a retryable request failure, not a process crash.
+        response.on('error', error => finish(() => reject(error)));
+        response.on('aborted', () => finish(() => reject(new Error('服务器响应中断，请稍后重连'))));
+        response.on('data', (chunk) => {
+          if (settled) return;
+          bytes += chunk.length;
+          if (bytes > 16 * 1024 * 1024) request.destroy(new Error('服务器响应过大，请联系监考老师'));
+          else chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
         response.on('end', () => {
+          if (settled) return;
           const raw = Buffer.concat(chunks).toString('utf8');
           try {
-            resolve(assertOkResponse(response.statusCode, parseJsonResponse(raw)));
+            const data = assertOkResponse(response.statusCode, parseJsonResponse(raw));
+            finish(() => resolve(data));
           } catch (error) {
-            reject(error);
+            finish(() => reject(error));
           }
         });
       }
     );
     request.on('timeout', () => {
-      request.destroy(new Error('请求超时：8000ms'));
+      request.destroy(new Error(`请求超时：${timeoutMs}ms`));
     });
-    request.on('error', (error) => reject(error));
+    request.on('error', error => finish(() => reject(error)));
+    // Socket inactivity alone does not bound a response that trickles bytes.
+    deadline = setTimeout(() => request.destroy(new Error(`请求超时：${timeoutMs}ms`)), timeoutMs);
     if (payload) request.write(payload);
     request.end();
   });
@@ -733,12 +778,13 @@ function nodeHttpJsonRequest(target: URL, options: JsonRequestOptions = {}) {
 
 function curlJsonRequest(target: URL, options: JsonRequestOptions = {}) {
   const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
+  const timeoutMs = jsonRequestTimeout(target, options);
   const args = [
     '--fail-with-body',
     '--silent',
     '--show-error',
     '--max-time',
-    '8',
+    String(timeoutMs / 1000),
     '--request',
     options.method || 'GET',
     '--header',
@@ -753,13 +799,20 @@ function curlJsonRequest(target: URL, options: JsonRequestOptions = {}) {
   args.push(target.toString());
 
   return new Promise((resolve, reject) => {
-    execFile('curl', args, { timeout: 9000, windowsHide: true }, (error, stdout, stderr) => {
+    execFile('curl', args, { timeout: timeoutMs + 1000, windowsHide: true }, (error, stdout, stderr) => {
+      const body = parseJsonResponse(stdout);
+      // --fail-with-body returns a nonzero exit status for application errors.
+      // Preserve explicit revoked/expired pairing codes on this fallback too.
+      if (body?.ok === false) {
+        try { assertOkResponse(400, body); }
+        catch (responseError) { reject(responseError); }
+        return;
+      }
       if (error) {
         reject(new Error(stderr.trim() || error.message));
         return;
       }
       try {
-        const body = parseJsonResponse(stdout);
         resolve(assertOkResponse(200, body));
       } catch (parseError) {
         reject(parseError);
@@ -909,7 +962,10 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: false,
       webSecurity: true,
-      webviewTag: true
+      webviewTag: true,
+      // This renderer captures exam evidence even when another app has focus.
+      // Chromium's hidden-page timer/render throttling otherwise drops it to 1fps.
+      backgroundThrottling: false
     }
   });
 
@@ -1233,6 +1289,18 @@ handleClient('desktop:getSources', async () => {
 });
 
 handleClient('desktop:testScreenCapture', async () => {
+  // Windows 7 uses the bundled GDI producer, not Chromium desktop capture.
+  // Probe the same path used in the exam so a working fallback can pass setup.
+  if (process.platform === 'win32' && /^6\.1(?:\.|$)/.test(osRelease())) {
+    let lease: string | undefined;
+    try {
+      lease = windows7ScreenCapture.start(screen.dipToScreenRect(null, screen.getPrimaryDisplay().bounds));
+      await windows7ScreenCapture.read(lease, 0);
+      return { ok: true, sourceCount: 1 };
+    } catch (error) {
+      return { ok: false, sourceCount: 0, reason: error instanceof Error ? error.message : 'Windows 7 完整桌面采集失败' };
+    } finally { if (lease) windows7ScreenCapture.stop(lease); }
+  }
   try {
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
@@ -1272,12 +1340,16 @@ handleClient('permissions:getMacMediaAccessStatus', () => {
 });
 
 handleClient('permissions:getSystemPermissionStatus', () => {
+  const status = (kind: 'camera' | 'microphone' | 'screen') => {
+    try { return systemPreferences.getMediaAccessStatus(kind); }
+    catch { return 'unknown'; } // Unsupported OS status is resolved by real capture.
+  };
   const mediaStatus =
     process.platform === 'darwin' || process.platform === 'win32'
       ? {
-          camera: systemPreferences.getMediaAccessStatus('camera'),
-          microphone: systemPreferences.getMediaAccessStatus('microphone'),
-          screen: systemPreferences.getMediaAccessStatus('screen')
+          camera: status('camera'),
+          microphone: status('microphone'),
+          screen: status('screen')
         }
       : null;
   const accessibility = process.platform === 'darwin' ? systemPreferences.isTrustedAccessibilityClient(false) : true;

@@ -55,8 +55,9 @@ test('downscaling stops only derived tracks and keeps the 1080p/30fps live strea
   const video = { readyState: 2, play: async () => {}, pause() {}, srcObject: null };
   const clone = { stop: () => stopped.push('audio-clone') };
   const audio = { clone: () => clone, stop: () => stopped.push('source-audio') };
-  const output = { tracks: [{ stop: () => stopped.push('canvas') }], addTrack(track) { this.tracks.push(track); }, getTracks() { return this.tracks; } };
-  const canvas = { getContext: () => ({ drawImage() {} }), captureStream: fps => { assert.equal(fps, 20); return output; } };
+  let frames = 0, draws = 0;
+  const output = { tracks: [{ requestFrame: () => frames++, stop: () => stopped.push('canvas') }], addTrack(track) { this.tracks.push(track); }, getTracks() { return this.tracks; }, getVideoTracks() { return this.tracks.slice(0, 1); } };
+  const canvas = { getContext: () => ({ drawImage() { draws++; } }), captureStream: fps => { assert.equal(fps, 0); return output; } };
   const context = vm.createContext({ document: { createElement: tag => tag === 'video' ? video : canvas },
     setInterval: fn => { timers.set(1, fn); return 1; }, clearInterval: id => timers.delete(id) });
   vm.runInContext(source, context);
@@ -65,10 +66,41 @@ test('downscaling stops only derived tracks and keeps the 1080p/30fps live strea
   assert.equal(canvas.width, 1280);
   assert.equal(canvas.height, 720);
   assert.equal(video.srcObject, stream);
+  await Promise.resolve();
+  timers.get(1)();
+  assert.equal(draws, 2, 'ready playback and the recording timer each draw one frame');
+  assert.equal(frames, draws, 'each painted frame is explicitly captured without animation-frame scheduling');
+  const paint = timers.get(1);
   recording.stop(); recording.stop();
+  paint();
+  assert.equal(frames, 2, 'late timer callbacks cannot capture after stop');
   assert.deepEqual(stopped, ['canvas', 'audio-clone']);
   assert.equal(timers.size, 0);
   assert.deepEqual(stream.settings, { width: 1920, height: 1080, frameRate: 30 });
+});
+
+test('older canvas tracks fall back to automatic capture without leaking the probe stream', async () => {
+  const rates = [], stopped = [], timers = new Map();
+  const video = { readyState: 1, play: async () => {}, pause() {} };
+  let draws = 0;
+  const canvas = { getContext: () => ({ drawImage() { draws++; } }), captureStream: fps => {
+    rates.push(fps);
+    const track = { stop: () => stopped.push(fps) };
+    return { getVideoTracks: () => [track], getTracks: () => [track], addTrack: assert.fail };
+  } };
+  const context = vm.createContext({ document: { createElement: tag => tag === 'video' ? video : canvas },
+    setInterval: callback => { timers.set(1, callback); return 1; }, clearInterval: id => timers.delete(id) });
+  vm.runInContext(source, context);
+  const recording = context.createProctorRecordingStream({ getAudioTracks: () => [] }, { width: 640, height: 360, frameRate: 20, onError: assert.fail });
+  await Promise.resolve();
+  assert.deepEqual(rates, [0, 20]);
+  assert.deepEqual(stopped, [0]);
+  assert.equal(draws, 0, 'unready video is not fabricated as a captured frame');
+  video.readyState = 2; timers.get(1)();
+  assert.equal(draws, 1);
+  recording.stop();
+  assert.deepEqual(stopped, [0, 20]);
+  assert.equal(timers.size, 0);
 });
 
 test('without either opt-in, incidents save nothing and disabled footage cannot be recovered later', async () => {

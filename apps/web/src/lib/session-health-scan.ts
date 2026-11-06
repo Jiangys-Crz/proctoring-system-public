@@ -1,25 +1,17 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from './db';
-import { SESSION_RELOGIN_OFFLINE_GRACE_MS } from './client-session-policy';
 
 export const HEALTH_SCAN_PAGE_SIZE = 200;
 
 /** Find only rows that can require a transition; recheck under the write lock. */
-export async function healthSessionIds(examId: string | undefined, now: Date, afterId?: string, onlyRevocations = false) {
+export async function healthSessionIds(examId: string | undefined, now: Date, afterId?: string) {
   const offlineCutoff = new Date(now.getTime() - 20_000);
-  const revokeCutoff = new Date(now.getTime() - SESSION_RELOGIN_OFFLINE_GRACE_MS);
   const secondCamera = Prisma.sql`COALESCE(r.requireSecondCamera, e.requireMiniProgram)`;
-  const fullyOffline = Prisma.sql`
-    (cs.lastDesktopSeenAt <= ${revokeCutoff} OR (cs.lastDesktopSeenAt IS NULL AND cs.createdAt <= ${revokeCutoff}))
-    AND (${secondCamera} = 0 OR cs.lastMiniProgramSeenAt <= ${revokeCutoff}
-      OR (cs.lastMiniProgramSeenAt IS NULL AND cs.createdAt <= ${revokeCutoff}))
-  `;
-  const transition = onlyRevocations ? fullyOffline : Prisma.sql`
-    (${fullyOffline})
-    OR (cs.desktopOfflineAt IS NULL AND (cs.lastDesktopSeenAt < ${offlineCutoff}
-      OR (cs.lastDesktopSeenAt IS NULL AND cs.approvedAt < ${offlineCutoff})))
+  const transition = Prisma.sql`
+    (cs.desktopOfflineAt IS NULL AND (cs.lastDesktopSeenAt < ${offlineCutoff}
+      OR (cs.lastDesktopSeenAt IS NULL AND COALESCE(cs.approvedAt, cs.createdAt) < ${offlineCutoff})))
     OR (${secondCamera} = 1 AND cs.miniProgramOfflineAt IS NULL AND (cs.lastMiniProgramSeenAt < ${offlineCutoff}
-      OR (cs.lastMiniProgramSeenAt IS NULL AND cs.approvedAt < ${offlineCutoff})))
+      OR (cs.lastMiniProgramSeenAt IS NULL AND COALESCE(cs.approvedAt, cs.createdAt) < ${offlineCutoff})))
     OR (${secondCamera} = 0 AND cs.miniProgramOfflineAt IS NOT NULL)
     OR e.endAt <= ${now}
     OR (e.flexible = 1 AND e.contestRule NOT IN ('XCPC', 'ACM')

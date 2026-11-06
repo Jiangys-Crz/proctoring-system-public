@@ -1,8 +1,8 @@
+import { queueContestRejudge } from '@/lib/contest-rejudge';
+import { federationChange } from '@/lib/exam-federation-store';
 import { z } from 'zod';
 import { requireUser, AuthError } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { resolveJudgeLanguage } from '@/lib/exam-languages';
-import { judgeStatistics, requestHydroLanguages, submitHydroJudge } from '@/lib/hydro-contest';
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 import { canManageExam } from '@/lib/permissions';
 
@@ -24,7 +24,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       await prisma.contestSubmission.update({
         where: { id: submission.id },
         data: {
-          status: 30,
+          ...federationChange(), judgeForced: false, status: 30,
           statusText: '成绩已取消',
           score: 0,
           deferredJudge: false,
@@ -36,37 +36,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return ok({ id: submission.id, action: input.action });
     }
 
-    let judgeLanguage = submission.lang;
-    if (!['objective', 'submit_answer'].includes(submission.problem.problemType)) {
-      const availableLanguages = await requestHydroLanguages().catch(() => []);
-      if (availableLanguages.length && !availableLanguages.some(language => language.id === judgeLanguage)) {
-          judgeLanguage = resolveJudgeLanguage(judgeLanguage, availableLanguages.map(language => language.id)) || judgeLanguage;
-      }
-    }
-    const result = await submitHydroJudge(submission.exam, {
-      pid: Number(submission.problem.hydroProblemId),
-      lang: judgeLanguage,
-      code: submission.code,
-    });
-    await prisma.contestSubmission.update({
-      where: { id: submission.id },
-      data: {
-        hydroRecordId: result.id,
-        lang: judgeLanguage,
-        status: result.status,
-        statusText: result.statusText,
-        score: result.score,
-        ...judgeStatistics(result.testCases),
-        time: result.time,
-        memory: result.memory,
-        testCases: result.testCases as any,
-        subtasks: result.subtasks as any,
-        judgeAt: result.judgeAt ? new Date(result.judgeAt) : null,
-        deferredJudge: !result.judgeAt,
-        judgeClaimedAt: null,
-        judgeError: null,
-      },
-    });
+    const queued = await queueContestRejudge(id, submission.id);
+    if (!queued) return fail('该提交已有重测任务，请等待结果后再操作', 409);
     return ok({ id: submission.id, action: input.action });
   } catch (error) {
     if (error instanceof AuthError) return fail(error.message, error.status);

@@ -38,9 +38,21 @@ async function boundedJson(request: Request, maxBytes: number) {
   if (!reader) throw new RequestParseError('请求体必须是 JSON');
   const chunks: Uint8Array[] = [];
   let size = 0;
+  let failure: RequestParseError | undefined;
+  const cancel = (message: string) => {
+    if (failure) return;
+    failure = new RequestParseError(message);
+    void reader.cancel().catch(() => {});
+  };
+  const abort = () => cancel('请求已断开，请重新提交');
+  const timer = setTimeout(() => cancel('请求读取超时，请检查网络后重试'), 15_000);
+  request.signal.addEventListener('abort', abort, { once: true });
+  if (request.signal.aborted) abort();
   try {
     for (;;) {
+      if (failure) throw failure;
       const { done, value } = await reader.read();
+      if (failure) throw failure;
       if (done) break;
       size += value.byteLength;
       if (size > maxBytes) {
@@ -49,7 +61,11 @@ async function boundedJson(request: Request, maxBytes: number) {
       }
       chunks.push(value);
     }
-  } finally { reader.releaseLock(); }
+  } finally {
+    clearTimeout(timer);
+    request.signal.removeEventListener('abort', abort);
+    reader.releaseLock();
+  }
   return JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
 }
 

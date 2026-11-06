@@ -1,3 +1,4 @@
+import { assertFederationDefinitionMutable } from './exam-federation-contract';
 import type { CreateExamInput } from '@cwnupaa/proctor-shared';
 import type { Prisma } from '@prisma/client';
 import { nextExamCode } from './exam-code';
@@ -38,6 +39,7 @@ export async function saveExam(input: CreateExamInput, userId: string, examId?: 
     } };
   })) : undefined;
   return prisma.$transaction(async tx => {
+    if (examId) await assertFederationDefinitionMutable(tx, examId);
     const allData = {
       ...fields, ...settings, platformBaseUrl: hydro ? hydro.baseUrl : settings.platformBaseUrl,
       platformContestId: hydro ? 'local' : input.platformContestId,

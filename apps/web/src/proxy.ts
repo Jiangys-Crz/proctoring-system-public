@@ -27,5 +27,5 @@ export function proxy(request: NextRequest) {
 export const config = {
   // Upload handlers own CORS and bounded streaming reads. Avoid the proxy's
   // request-body clone before their credential validation.
-  matcher: ['/dashboard/system', '/api/((?!settings/desktop-releases/upload$|client/(?:upload|live-frame|voice|qa/image)$|voice$|exams/[^/]+/(?:qa/image|screen-control/groups)$|uploads$).*)']
+  matcher: ['/dashboard/system', '/api/((?!live-relay/(?:media-auth|streams|publish/[^/]+)$|live/[^/]+$|exam-sync/|settings/(?:live-api-keys(?:/reveal)?|desktop-releases/upload)$|client/(?:upload|public-test-login|live-frame|voice|qa/image)$|voice$|exams/[^/]+/(?:qa/image|screen-control/groups)$|uploads$).*)']
 };

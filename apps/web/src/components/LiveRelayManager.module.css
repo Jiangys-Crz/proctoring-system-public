@@ -1,0 +1,16 @@
+.keyForm { display: grid; grid-template-columns: minmax(180px, 1fr) 160px auto; gap: 12px; align-items: end; }
+.issued { display: grid; gap: 12px; padding: 16px; border: 1px solid #cbdfe8; background: #f5fbff; }
+.table { overflow-x: auto; }
+.streams { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 18px; }
+.stream { display: grid; gap: 12px; min-width: 0; }
+.stream header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.stream h3, .stream p { margin: 0; overflow-wrap: anywhere; }
+.stream small { overflow-wrap: anywhere; }
+.online { color: #187b52; }.offline { color: #7b8791; }
+.placeholder { min-height: 200px; display: grid; place-content: center; justify-items: center; gap: 12px; border: 1px solid #dfe6eb; background: #f3f7fa; color: #617581; cursor: pointer; }
+.placeholder:disabled { cursor: default; opacity: .7; }
+.preview { position: relative; aspect-ratio: 16 / 9; background: #101419; }
+.preview video { width: 100%; height: 100%; object-fit: contain; }
+.previewError { position: absolute; inset: 0; display: grid; place-content: center; gap: 12px; padding: 20px; text-align: center; background: #111e; color: #fff; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 700px) { .keyForm { grid-template-columns: 1fr; } }

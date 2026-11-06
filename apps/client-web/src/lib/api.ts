@@ -73,6 +73,16 @@ export function isExpiredClientSessionError(error: unknown) {
   return error instanceof ClientApiError && [401, 410].includes(error.status);
 }
 
+function waitDownloadRetry(milliseconds: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); };
+    const abort = () => { cleanup(); reject(new DOMException('下载已取消或超时', 'AbortError')); };
+    const timer = setTimeout(() => { cleanup(); resolve(); }, milliseconds);
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+
 export function restoreBoundSession(storage: Pick<Storage, 'getItem' | 'removeItem'>, prefix: string, base: string) {
   const savedBase = storage.getItem(`${prefix}.sessionApiBase`) || storage.getItem(`${prefix}.apiBase`);
   const id = storage.getItem(`${prefix}.sessionId`) || '';
@@ -90,6 +100,12 @@ export function absoluteMediaUrl(apiBase: string, value: string) {
 }
 
 export class ClientApi {
+  private serverClock?: { serverAt: number; observedAt: number };
+
+  now() {
+    return this.serverClock ? this.serverClock.serverAt + Math.max(0, performance.now() - this.serverClock.observedAt) : Date.now();
+  }
+
   constructor(
     public base: string,
     public token = ''
@@ -112,10 +128,30 @@ export class ClientApi {
     if (init.body && !(init.body instanceof FormData) && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
     }
-    const response = await fetch(`${this.base}${path}`, { ...init, headers, redirect: 'error' });
-    const body = (await response.json().catch(() => null)) as ApiEnvelope<T> | null;
-    if (!response.ok || !body?.ok) throw new ClientApiError(body?.message || `请求失败（${response.status}）`, response.status);
-    return body.data;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    init.signal?.addEventListener('abort', abort, { once: true });
+    if (init.signal?.aborted) abort();
+    const loginPost = (init.method || 'GET').toUpperCase() === 'POST' && [
+      '/api/login-requests', '/api/client/credential-login', '/api/client/candidate-verify', '/api/client/pair', '/api/client/material-upload-ticket', '/api/client/reconnect'
+    ].includes(path.split('?')[0]);
+    const contestLoad = (init.method || 'GET').toUpperCase() === 'GET' && path.split('?')[0] === '/api/client/contest';
+    const ojLogin = (init.method || 'GET').toUpperCase() === 'POST' && path.split('?')[0] === '/api/client/oj-cookie';
+    const timeout = setTimeout(abort, init.body instanceof FormData || ojLogin ? 60_000 : loginPost ? 40_000 : contestLoad ? 30_000 : 15_000);
+    try {
+      const response = await fetch(`${this.base}${path}`, { ...init, signal: controller.signal, headers, redirect: 'error' });
+      const body = (await response.json().catch(() => null)) as ApiEnvelope<T> | null;
+      if (!response.ok || !body?.ok) throw new ClientApiError(body?.message || `请求失败（${response.status}）`, response.status);
+      const data = body.data;
+      if (data && typeof data === 'object' && 'serverNow' in data && typeof data.serverNow === 'string') {
+        const serverAt = Date.parse(data.serverNow);
+        if (Number.isFinite(serverAt)) this.serverClock = { serverAt, observedAt: performance.now() };
+      }
+      return data;
+    } finally {
+      clearTimeout(timeout);
+      init.signal?.removeEventListener('abort', abort);
+    }
   }
 
   async upload<T>(path: string, file: Blob, filename: string, fields: Record<string, string>, headers?: HeadersInit) {
@@ -136,16 +172,35 @@ export class ClientApi {
     if (init.body && !(init.body instanceof FormData) && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
     }
-    const response = await fetch(`${this.base}${path}`, {
-      ...init,
-      headers,
-      redirect: 'error',
-    });
-    if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as ApiEnvelope<unknown> | null;
-      throw new ClientApiError(body?.message || `下载失败（${response.status}）`, response.status);
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    init.signal?.addEventListener('abort', abort, { once: true });
+    if (init.signal?.aborted) abort();
+    const timeout = setTimeout(abort, 60_000);
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const response = await fetch(`${this.base}${path}`, {
+          ...init, signal: controller.signal, headers, redirect: 'error',
+        });
+        // Busy download slots are transient. Retry read-only downloads within
+        // the same deadline; do not turn a brief queue peak into a broken image.
+        if ([429, 503].includes(response.status) && attempt < 3) {
+          const retryAfter = Number(response.headers.get('retry-after')) || 1;
+          await response.body?.cancel().catch(() => {});
+          await waitDownloadRetry(Math.min(8000, Math.max(retryAfter * 1000, 1000 * 2 ** attempt)) + Math.random() * 500, controller.signal);
+          continue;
+        }
+        if (!response.ok) {
+          const body = (await response.json().catch(() => null)) as ApiEnvelope<unknown> | null;
+          throw new ClientApiError(body?.message || `下载失败（${response.status}）`, response.status);
+        }
+        // Keep the deadline until all bytes have arrived, not just the headers.
+        return await response.blob();
+      }
+    } finally {
+      clearTimeout(timeout);
+      init.signal?.removeEventListener('abort', abort);
     }
-    return response.blob();
   }
 
   whipEndpoint(sessionId: string, channel = 'MOBILE_CAMERA') {

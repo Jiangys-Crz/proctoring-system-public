@@ -16,7 +16,7 @@ const session = { id: 'session', examId: exam.id, candidateId: 'owner', status: 
 const row = { id: 'submission', candidateId: 'owner', actorKey: 'actor', problemId: 'problem',
   status: 22, statusText: 'Waiting', score: 0, totalTestCases: 0, passedTestCases: 0,
   time: 0, memory: 0, code: 'secret code', lang: 'cpp', testCases: [], subtasks: {},
-  createdAt: new Date(), hydroRecordId: 'remote', judgeAt: null, deferredJudge: true,
+  createdAt: new Date(), hydroRecordId: 'remote', judgeAt: null, deferredJudge: true, federationWriteToken: 'observed-write',
   judgeClaimedAt: null, judgeError: null };
 const remote = { id: 'remote', pid: 1, lang: 'cpp', code: 'secret code', status: 22, statusText: 'Waiting',
   score: 0, time: 0, memory: 0, testCases: [], subtasks: {}, judgeAt: null, createdAt: row.createdAt.toISOString() };
@@ -274,7 +274,7 @@ test('changed status preserves complete results and cannot overwrite a replaced/
   replace(t, prisma.contestSubmission, 'updateMany', async (query: any) => { updates.push(query); return { count: 1 }; });
   await syncContestSubmissionStatuses({ platformBaseUrl: 'https://judge.example.org' }, [row]);
   assert.equal(updates.length, 1);
-  assert.deepEqual(updates[0].where, { id: row.id, hydroRecordId: row.hydroRecordId, judgeAt: null, status: { not: 30 } });
+  assert.deepEqual(updates[0].where, { id: row.id, federationWriteToken: row.federationWriteToken, hydroRecordId: row.hydroRecordId, judgeAt: null, status: { not: 30 } });
   assert.equal(updates[0].data.passedTestCases, 1);
   assert.equal(updates[0].data.deferredJudge, false);
   assert.deepEqual(updates[0].data.testCases, result.testCases);

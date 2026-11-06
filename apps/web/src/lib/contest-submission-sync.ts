@@ -1,5 +1,7 @@
+import { federationChange } from '@/lib/exam-federation-store';
 import type { Exam, Prisma } from '@prisma/client';
 import { prisma } from './db';
+import { settleReads as settleOperations } from './request-admission';
 import {
   judgeStatistics,
   HydroRequestError,
@@ -9,18 +11,19 @@ import {
 } from './hydro-contest';
 
 export const contestSubmissionStatusSelect = {
-  id: true, hydroRecordId: true, judgeAt: true, status: true,
+  id: true, federationWriteToken: true, hydroRecordId: true, judgeAt: true, status: true,
   statusText: true, score: true, totalTestCases: true, passedTestCases: true,
   time: true, memory: true, testCases: true, subtasks: true,
   deferredJudge: true, judgeClaimedAt: true, judgeError: true,
 } satisfies Prisma.ContestSubmissionSelect;
 
 type SubmissionStatus = Prisma.ContestSubmissionGetPayload<{ select: typeof contestSubmissionStatusSelect }>;
-type PendingSubmission = Pick<SubmissionStatus, 'id' | 'hydroRecordId' | 'judgeAt' | 'status'> & Partial<SubmissionStatus>;
+type PendingSubmission = Pick<SubmissionStatus, 'id' | 'federationWriteToken' | 'hydroRecordId' | 'judgeAt' | 'status'> & Partial<SubmissionStatus>;
 
 // Admin refreshes and the worker can overlap. Share work for the same remote
 // record; never let stale responses race a rejudge to overwrite newer results.
-const inFlight = new Map<string, Promise<void>>();
+const shared = globalThis as typeof globalThis & { contestStatusInFlight?: Map<string, Promise<void>> };
+const inFlight = shared.contestStatusInFlight ??= new Map<string, Promise<void>>();
 
 function updateData(result: HydroRecordPayload) {
   return {
@@ -61,7 +64,7 @@ export async function syncContestSubmissionStatuses(
     for (const submission of fresh) inFlight.set(key(submission), task);
     waiting.add(task);
   }
-  await Promise.all(waiting);
+  await settleOperations([...waiting]);
 }
 
 async function syncPending(exam: Pick<Exam, 'platformBaseUrl'>, pending: PendingSubmission[]) {
@@ -77,13 +80,16 @@ async function syncPending(exam: Pick<Exam, 'platformBaseUrl'>, pending: Pending
     for (let index = 0; index < ids.length; index += 5) {
       const settled = await Promise.allSettled(ids.slice(index, index + 5).map(id => requestHydroJudgeStatus(exam, id)));
       results.push(...settled.flatMap(item => item.status === 'fulfilled' ? [item.value] : []));
-      // Stop probing an old plugin when its individual endpoint is unavailable.
-      if (settled.every(item => item.status === 'rejected')) break;
+      // A missing remote record is not a failed service: stopping after five
+      // deleted records would permanently starve valid runs later in the page.
+      // Network/auth/overload failures still stop the compatibility probes.
+      if (settled.every(item => item.status === 'rejected'
+        && !(item.reason instanceof HydroRequestError && [404, 410].includes(item.reason.status)))) break;
     }
   }
   const resultById = new Map(results.map(result => [result.id, result]));
   for (let index = 0; index < pending.length; index += 5) {
-    await Promise.all(pending.slice(index, index + 5).map(async submission => {
+    await settleOperations(pending.slice(index, index + 5).map(async submission => {
       const result = resultById.get(submission.hydroRecordId!);
       if (!result) return;
       const data = updateData(result);
@@ -96,8 +102,8 @@ async function syncPending(exam: Pick<Exam, 'platformBaseUrl'>, pending: Pending
         && (data.subtasks === undefined || JSON.stringify(submission.subtasks) === JSON.stringify(data.subtasks));
       if (unchanged) return;
       await prisma.contestSubmission.updateMany({
-        where: { id: submission.id, hydroRecordId: submission.hydroRecordId, judgeAt: null, status: { not: 30 } },
-        data,
+        where: { id: submission.id, federationWriteToken: submission.federationWriteToken, hydroRecordId: submission.hydroRecordId, judgeAt: null, status: { not: 30 } },
+        data: { ...data, ...federationChange() },
       });
     }));
   }

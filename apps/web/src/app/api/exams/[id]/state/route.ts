@@ -10,8 +10,9 @@ import { flexibleExam } from '@/lib/contest-rules';
 import { evidenceForAlerts } from '@/lib/alert-evidence';
 import { publicDto } from '@/lib/public-dto';
 import { monitorLiveStatus } from '@/lib/monitor-live-status';
+import { admittedMonitorRead } from '@/lib/heavy-read-admission';
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+async function loadState(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser();
     const { id } = await context.params;
@@ -78,3 +79,6 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 }
 
 export const OPTIONS = options;
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+  return admittedMonitorRead(request, () => loadState(request, context));
+}

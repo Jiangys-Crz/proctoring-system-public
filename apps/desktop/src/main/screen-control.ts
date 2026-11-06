@@ -140,7 +140,14 @@ export class ScreenControlWatcher {
     if (sameSession) {
       const tokenChanged = this.identity!.token !== identity.token;
       this.identity = identity;
-      if (tokenChanged && !this.polling) await this.poll();
+      if (tokenChanged) {
+        // An old token's delayed retirement response must not clear a display
+        // after this same desktop has already installed its new credential.
+        this.generation += 1;
+        this.polling = false;
+        this.loadingImages = '';
+        await this.poll();
+      }
       return;
     }
     this.stop();
@@ -187,8 +194,9 @@ export class ScreenControlWatcher {
     const delay = Math.min(2_147_483_647, Math.max(0, this.current.endsAtLocal - this.now()));
     this.expiryTimer = this.setTimer(() => {
       if (generation !== this.generation || !this.current) return;
-      if (this.current.endsAtLocal !== null && this.now() >= this.current.endsAtLocal) this.clearDisplay();
-      else this.scheduleExpiry(generation);
+      // A local timer is not authorization to unlock while disconnected. Ask
+      // the server to confirm completion; keep the current overlay on failure.
+      void this.poll();
     }, delay);
   }
 
@@ -256,7 +264,7 @@ export class ScreenControlWatcher {
     } catch (error) {
       if (generation === this.generation) this.dependencies.reportError?.(error);
     } finally {
-      if (this.loadingImages === imageKey) this.loadingImages = '';
+      if (generation === this.generation && this.loadingImages === imageKey) this.loadingImages = '';
     }
   }
 }

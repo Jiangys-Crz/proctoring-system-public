@@ -17,7 +17,9 @@
 
 tmp
 apps/desktop/build/ffmpeg
-
 output
 **/xcuserdata
 **/*.xcuserstate
+**/.local
+**/__pycache__
+**/*.pyc

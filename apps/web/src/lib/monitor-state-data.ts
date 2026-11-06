@@ -1,5 +1,6 @@
 import { prisma } from './db';
 import { PUBLIC_USER_SELECT } from './public-dto';
+import { settleReads } from './request-admission';
 
 type MonitorExam = Awaited<ReturnType<typeof readMonitorExam>>;
 type MonitorData = Awaited<ReturnType<typeof readMonitorData>>;
@@ -65,7 +66,7 @@ async function readMonitorData(examId: string, userId: string, manageable: boole
           }
         };
 
-  const [candidates, loginRequests, sessions, alerts, mediaSegments, rooms, cheatingRecords, printJobs] = await Promise.all([
+  const [candidates, loginRequests, sessions, alerts, mediaSegments, rooms, cheatingRecords, printJobs] = await settleReads([
     prisma.candidate.findMany({ where: { examId, ...candidateScope }, orderBy: [{ seatNo: 'asc' }, { examNumber: 'asc' }], omit: { password: true } }),
     prisma.loginRequest.findMany({
       where: { examId, status: 'REQUESTING', candidate: candidateScope },

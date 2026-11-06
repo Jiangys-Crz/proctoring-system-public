@@ -58,6 +58,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const merged = CreateExamSchema.parse({ ...current, ...input });
     const normalized = normalizeExamSettings(merged);
     if (current.platform === 'NOVAJUDGE' && (normalized.platformBaseUrl !== current.platformBaseUrl || merged.platformContestId !== current.platformContestId)
+      && await prisma.reactionConfig.count({where:{examId:id,initializedAt:{not:null}}})) {
+      return fail('本场 Reaction 已绑定 CCS 比赛，请新建考试关联其他比赛，避免混用历史提交与录像',409);
+    }
+    if (current.platform === 'NOVAJUDGE' && (normalized.platformBaseUrl !== current.platformBaseUrl || merged.platformContestId !== current.platformContestId)
       && await prisma.clientSession.count({ where: { examId: id, status: { not: 'FINISHED' } } })) {
       return fail('已有未结束的监考会话时不能更换 NovaJudge 域名或比赛 ID，请先结束这些会话', 409);
     }

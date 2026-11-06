@@ -1,10 +1,15 @@
 import { prisma } from '@/lib/db';
 import { clientSessionTokenFromRequest, verifyClientTokenForAnySide } from '@/lib/client-auth';
 import { qaEventHub, qaEventSessionSelect } from '@/lib/qa-event-hub';
+import { createRequestAdmission, isRequestAdmissionError, RequestAdmissionError } from '@/lib/request-admission';
+import { fail } from '@/lib/http';
+
+const shared = globalThis as typeof globalThis & { qaEventConnectAdmission?: ReturnType<typeof createRequestAdmission> };
+const acquireConnect = shared.qaEventConnectAdmission ??= createRequestAdmission(8, 128, 3000);
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: Request) {
+async function openEvents(request: Request) {
   const url = new URL(request.url);
   const sessionId = url.searchParams.get('sessionId') || '';
   const session = sessionId ? await prisma.clientSession.findUnique({ where: { id: sessionId }, select: qaEventSessionSelect }) : null;
@@ -37,9 +42,25 @@ export async function GET(request: Request) {
       if (request.signal.aborted) unsubscribe();
     },
     cancel() { unsubscribe(); },
-  }, { highWaterMark: 256 * 1024, size: chunk => chunk.byteLength });
+  }, { highWaterMark: 64 * 1024, size: chunk => chunk.byteLength });
   return new Response(stream, { headers: {
     'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform',
     connection: 'keep-alive', 'x-accel-buffering': 'no',
   } });
+}
+
+export async function GET(request: Request) {
+  let release: (() => void) | undefined;
+  try {
+    // This slot covers authentication/registration only. The hub separately
+    // accounts for the complete connection lifetime and releases on close.
+    release = await acquireConnect(request.signal);
+    if (request.signal.aborted) throw new RequestAdmissionError();
+    return await openEvents(request);
+  } catch (error) {
+    if (!isRequestAdmissionError(error) && !(error && typeof error === 'object' && 'code' in error && error.code === 'PROCTOR_QA_EVENT_CAPACITY')) throw error;
+    const response = fail('答疑推送连接繁忙，请稍后重试', 503);
+    response.headers.set('Retry-After', '3');
+    return response;
+  } finally { release?.(); }
 }

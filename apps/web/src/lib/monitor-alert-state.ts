@@ -11,10 +11,11 @@ type Episode = { active: boolean; alertId: string; severity: number; healthySinc
 export const MONITOR_RECOVERY_MS = 10_000;
 const MAX_HEALTHY_GAP_MS = 15_000;
 const MAX_EVENT_IDS = 32;
-export const USB_SCAN_FAILURE_MESSAGE = 'USB 外设检测不可用或结果已过期，请恢复检测后联系监考员解锁';
+const LEGACY_USB_SCAN_FAILURE_MESSAGE = 'USB 外设检测不可用或结果已过期，请恢复检测后联系监考员解锁';
+export const USB_SCAN_FAILURE_MESSAGE = 'USB 外设检测不可用或结果已过期，请检查客户端检测组件并联系监考员';
 
 export function monitoredCondition(type: AlertType, message = ''): Condition | undefined {
-  if (type === 'PERIPHERAL_CHANGED' && message === USB_SCAN_FAILURE_MESSAGE) return 'USB_SCAN_FAILED';
+  if (type === 'PERIPHERAL_CHANGED' && [USB_SCAN_FAILURE_MESSAGE, LEGACY_USB_SCAN_FAILURE_MESSAGE].includes(message)) return 'USB_SCAN_FAILED';
   if (type === 'NETWORK_POLICY' && /^(?:整机域名检测状态：|内置浏览器尝试访问非考试范围页面：)/.test(message)) return undefined;
   if (['SCREEN_CAPTURE_LOST', 'CAMERA_CAPTURE_LOST', 'MOBILE_CAMERA_LOST'].includes(type)
     && /录像|录屏保存|录屏编码|手动上报/.test(message)) return undefined;

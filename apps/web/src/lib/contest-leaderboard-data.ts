@@ -1,8 +1,10 @@
 import { prisma } from './db';
 import { IGNORED_SUBMISSION_STATUS } from './contest-rules';
+import { admittedLeaderboardDataRead } from './heavy-read-admission';
+import { RequestAdmissionError, settleReads } from './request-admission';
 
 async function loadLeaderboardData(examId: string) {
-  const [candidates, submissions] = await Promise.all([
+  const [candidates, submissions] = await settleReads([
     prisma.candidate.findMany({ where: { examId }, select: {
       id: true, examNumber: true, name: true, teamName: true, groupName: true,
       school: true, college: true, ranked: true, gender: true, teamMembers: true,
@@ -16,7 +18,8 @@ async function loadLeaderboardData(examId: string) {
   return { candidates, submissions };
 }
 
-const pending = new Map<string, ReturnType<typeof loadLeaderboardData>>();
+const shared = globalThis as typeof globalThis & { leaderboardDataPending?: Map<string, ReturnType<typeof loadLeaderboardData>> };
+const pending = shared.leaderboardDataPending ??= new Map<string, ReturnType<typeof loadLeaderboardData>>();
 
 // Call only after authenticating the current candidate. Concurrent requests
 // share the scoring inputs, never an authorized response or a completed cache.
@@ -24,7 +27,10 @@ const pending = new Map<string, ReturnType<typeof loadLeaderboardData>>();
 export function readContestLeaderboardData(examId: string) {
   const running = pending.get(examId);
   if (running) return running;
-  const task = loadLeaderboardData(examId).finally(() => {
+  // Bound distinct waiting exams as well as active queries. Same-exam callers
+  // still share one pending promise and retain fresh caller authorization.
+  if (pending.size >= 128) return Promise.reject(new RequestAdmissionError());
+  const task = admittedLeaderboardDataRead(() => loadLeaderboardData(examId)).finally(() => {
     if (pending.get(examId) === task) pending.delete(examId);
   });
   pending.set(examId, task);

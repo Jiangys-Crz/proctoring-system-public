@@ -134,7 +134,7 @@ test('every cookie-authenticated route passes request context into the mutation 
   }
   let checked = 0;
   for (const filename of await walk(apiRoot)) {
-    if (!filename.endsWith('/route.ts')) continue;
+    if (path.basename(filename) !== 'route.ts') continue;
     const source = ts.createSourceFile(filename, await readFile(filename, 'utf8'), ts.ScriptTarget.Latest, true);
     function visit(node: ts.Node, isMutation: boolean) {
       if (ts.isFunctionDeclaration(node) && node.name && ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(node.name.text)) {
@@ -142,9 +142,9 @@ test('every cookie-authenticated route passes request context into the mutation 
       }
       if (isMutation && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
         const name = node.expression.text;
-        if (['requireUser', 'requireSuperAdmin', 'requireScreenControlAdmin'].includes(name)) {
+        if (['requireUser', 'requireSuperAdmin', 'requireScreenControlAdmin', 'requireReactionAdmin'].includes(name)) {
           checked++;
-          assert.ok(node.arguments.length >= (name === 'requireScreenControlAdmin' ? 2 : 1), `${filename}: ${name} must receive the Request`);
+          assert.ok(node.arguments.length >= (['requireScreenControlAdmin', 'requireReactionAdmin'].includes(name) ? 2 : 1), `${filename}: ${name} must receive the Request`);
         }
       }
       ts.forEachChild(node, child => visit(child, isMutation));

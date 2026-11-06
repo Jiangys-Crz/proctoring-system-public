@@ -21,3 +21,42 @@ The vendored comparison engine is distributed under GNU AGPL v3. Its source, bun
 JavaScript, native and mobile dependencies retain their own licenses. Package manifests, the pnpm lockfile, Swift package resolution and Android build definitions identify those dependencies. Preserve applicable notices when redistributing compiled applications.
 
 The software license does not grant trademark rights to organizational names, school marks, logos or third-party product names. Use your own deployment identity and avoid implying an endorsement.
+
+---
+
+# Reaction integration notices
+
+The Reaction integration and its recording changes were developed against
+[proctoring-system-public](https://github.com/Jiangys-Crz/proctoring-system-public),
+whose source is distributed under **AGPL-3.0-only**. The imported source retains
+that license; the complete text is preserved in
+[licenses/reaction/AGPL-3.0-only.txt](licenses/reaction/AGPL-3.0-only.txt).
+Existing upstream copyright and license notices remain applicable. This notice
+does not replace the separate licenses of dependencies or grant trademark rights.
+
+## Optional ICPC generator
+
+The worker invokes the separately installed
+[ICPC reactions-generator](https://github.com/icpc/reactions-generator), tested at
+revision `59fd21d50e8bf4c69bd6e4b5c19a60726f30a20b`. Its `pyproject.toml` declares MIT
+and credits Azat Ismagilov; that revision does not contain a standalone project
+license file. The source and official template assets are not vendored here.
+Preserve upstream notices when redistributing the optional package.
+
+Its Nimbus fonts retain `fonts/nimbus/LICENSE.OFL`. The upstream `example/README.md`
+credits the CC0 sounds `notify.wav` and `critical_fail.wav` by martcraft
+([success](https://freesound.org/s/651629/), [failure](https://freesound.org/s/651626/)).
+The background, default badge, and missing-camera placeholder in this repository
+are repository-owned SVG assets; organization badges are supplied by administrators.
+Fonts installed on the host are not copied into the repository.
+
+## ZIP and media tools
+
+Reaction exports use [yazl](https://github.com/thejoshwolfe/yazl), MIT license,
+copyright (c) 2014 Josh Wolfe. The installed package retains its original LICENSE.
+MP4 files are stored in the archive without re-encoding.
+
+FFmpeg remains a separate runtime dependency under the license of the exact build.
+Desktop FFmpeg distributions retain their bundled license and source-distribution
+notices. Playwright retains its license in `deployment/LICENSE.playwright`.
+All other package dependencies retain their own licenses and notices.

@@ -1,3 +1,5 @@
+import type { ExamProblem, Prisma } from '@prisma/client';
+import { assertFederationDefinitionMutable } from '@/lib/exam-federation-contract';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { AuthError, requireSuperAdmin, requireUser } from '@/lib/auth';
@@ -34,7 +36,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const exam = await prisma.exam.findUnique({ where: { id } });
     if (!exam) return fail('考试不存在', 404);
     const hydroSettings = await getHydroSettings();
-    const imported = [];
+    const prepared: Array<{ existing: ExamProblem | null; data: Omit<Prisma.ExamProblemUncheckedCreateInput, 'examId'> }> = [];
     for (const [index, problemId] of input.problemIds.entries()) {
       const hydro = await requestHydroProblem({ platformBaseUrl: exam.platformBaseUrl }, problemId);
       const config = hydro.config && typeof hydro.config === 'object' ? hydro.config : {};
@@ -60,12 +62,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         languages: languages as any,
         files: (hydro.files || []) as any,
       };
-      const saved = existing
-        ? await prisma.examProblem.update({ where: { id: existing.id }, data })
-        : await prisma.examProblem.create({ data: { ...data, examId: id } });
-      imported.push(saved);
+      prepared.push({ existing, data });
     }
-    await prisma.exam.update({ where: { id }, data: { published: true } });
+    const imported = await prisma.$transaction(async tx => {
+      await assertFederationDefinitionMutable(tx, id);
+      const saved = [];
+      for (const { existing, data } of prepared) saved.push(existing
+        ? await tx.examProblem.update({ where: { id: existing.id }, data })
+        : await tx.examProblem.create({ data: { ...data, examId: id } }));
+      await tx.exam.update({ where: { id }, data: { published: true } });
+      return saved;
+    }, { timeout: 15000 });
     return ok(imported, { status: 201 });
   } catch (error) {
     if (error instanceof AuthError) return fail(error.message, error.status);

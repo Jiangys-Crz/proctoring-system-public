@@ -1,0 +1,31 @@
+# Dedicated external relay. Do not merge into the examination media config.
+logLevel: warn
+api: true
+apiAddress: :9997
+authMethod: http
+authHTTPExclude: []
+# Overridden by the optional compose overlay with a private callback secret.
+authHTTPAddress: http://web:4031/api/live-relay/media-auth
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 64
+rtsp: false
+srt: false
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+webrtcLocalUDPAddress: :1940
+webrtcLocalTCPAddress: :1940
+webrtcIPsFromInterfaces: false
+# Override via MTX_WEBRTCADDITIONALHOSTS with this server's reachable address.
+moq: false
+playback: false
+rtmp: false
+hls: false
+pathDefaults:
+  source: publisher
+  overridePublisher: false
+  record: false
+  maxReaders: 16
+paths:
+  '~^relay/[A-Za-z0-9_-]{1,64}$':

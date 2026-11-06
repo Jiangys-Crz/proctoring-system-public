@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, Eye, EyeOff, LoaderCircle, MessageCircleQuestion, RefreshCw, Send } from 'lucide-react';
 import { api } from './api';
 import { MarkdownComposer, MarkdownContent } from './MarkdownComposer';
@@ -8,13 +8,13 @@ import { MarkdownComposer, MarkdownContent } from './MarkdownComposer';
 type Person = { id: string; realName: string | null; nickname: string | null; username: string | null };
 type Question = {
   id: string; content: string; answer: string | null; answeredAt: string | null; createdAt: string;
-  isPublished: boolean; messages: Array<{ id: string; sender: 'CANDIDATE' | 'ADMIN'; content: string; createdAt: string; createdBy: Person | null }>;
+  isPublished: boolean; messages: Array<{ id: string; sender: 'CANDIDATE' | 'ADMIN'; content: string; createdAt: string; createdBy: Person | null; creatorLabel?: string | null }>;
   problemPid: string | null; problemIndex: string | null; problemTitle: string | null;
   candidate: { id: string; examNumber: string; name: string | null; teamName: string | null; seatNo: string };
-  answeredBy: Person | null;
+  answeredBy: Person | null; answeredByLabel?: string | null;
 };
 type Candidate = { id: string; examNumber: string; name: string | null; teamName: string | null; seatNo: string };
-type Announcement = { id: string; content: string; createdAt: string; createdBy: Person | null; candidateId: string | null; candidate: Pick<Candidate, 'id' | 'examNumber' | 'name' | 'teamName'> | null };
+type Announcement = { creatorLabel?: string | null; id: string; content: string; createdAt: string; createdBy: Person | null; candidateId: string | null; candidate: Pick<Candidate, 'id' | 'examNumber' | 'name' | 'teamName'> | null };
 type QAData = { questions: Question[]; announcements: Announcement[]; candidates: Candidate[] };
 
 function personName(person: Person | null) {
@@ -22,6 +22,7 @@ function personName(person: Person | null) {
 }
 
 export function ExamQAPanel({ examId, canManage = false }: { examId: string; canManage?: boolean }) {
+  const reading = useRef(false), version = useRef(0), mounted = useRef(true);
   const [data, setData] = useState<QAData>({ questions: [], announcements: [], candidates: [] });
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [announcement, setAnnouncement] = useState('');
@@ -30,20 +31,23 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const load = useCallback(async (quiet = false) => {
+    if (reading.current) return;
+    reading.current = true; const requestedVersion = version.current;
     if (!quiet) setLoading(true);
     try {
-      setData(await api<QAData>(`/api/exams/${examId}/qa`));
-      setError('');
+      const next = await api<QAData>(`/api/exams/${examId}/qa`);
+      if (mounted.current && requestedVersion === version.current) { setData(next); setError(''); }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '赛时答疑加载失败');
+      if (mounted.current && requestedVersion === version.current) setError(cause instanceof Error ? cause.message : '赛时答疑加载失败');
     } finally {
-      if (!quiet) setLoading(false);
+      reading.current = false;
+      if (!quiet && mounted.current) setLoading(false);
     }
   }, [examId]);
   useEffect(() => {
-    void load();
+    mounted.current = true; void load();
     const timer = window.setInterval(() => void load(true), 4000);
-    return () => window.clearInterval(timer);
+    return () => { mounted.current = false; version.current++; window.clearInterval(timer); };
   }, [load]);
   const pending = useMemo(() => data.questions.filter(question => !question.messages.length ? !question.answeredAt : question.messages.at(-1)?.sender === 'CANDIDATE').length, [data.questions]);
 
@@ -51,7 +55,7 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
     const content = announcement.trim();
     if (!content) return;
     if (!canManage && !announcementTarget) return;
-    setBusy('announcement');
+    version.current++; setBusy('announcement');
     try {
       await api(`/api/exams/${examId}/qa`, { method: 'POST', body: JSON.stringify({ action: 'announce', content, candidateId: announcementTarget || null }) });
       setAnnouncement('');
@@ -71,7 +75,7 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
   async function reply(questionId: string) {
     const content = (answers[questionId] || '').trim();
     if (!content) return;
-    setBusy(`reply-${questionId}`);
+    version.current++; setBusy(`reply-${questionId}`);
     try {
       await api(`/api/exams/${examId}/qa`, { method: 'POST', body: JSON.stringify({ action: 'reply', questionId, content }) });
       setAnswers(current => ({ ...current, [questionId]: '' }));
@@ -82,7 +86,7 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
   }
 
   async function setPublished(questionId: string, published: boolean) {
-    setBusy(`publish-${questionId}`);
+    version.current++; setBusy(`publish-${questionId}`);
     try {
       await api(`/api/exams/${examId}/qa`, { method: 'POST', body: JSON.stringify({ action: 'publish', questionId, published }) });
       await load(true);
@@ -104,7 +108,7 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
       {data.questions.map(question => { const messages = question.messages.length ? question.messages : [{ id: `${question.id}-question`, sender: 'CANDIDATE' as const, content: question.content, createdAt: question.createdAt, createdBy: null }, ...(question.answer ? [{ id: `${question.id}-answer`, sender: 'ADMIN' as const, content: question.answer, createdAt: question.answeredAt || question.createdAt, createdBy: question.answeredBy }] : [])]; const waiting = messages.at(-1)?.sender === 'CANDIDATE'; return <article className={`exam-question-card ${waiting ? 'pending' : 'answered'} ${question.isPublished ? 'published' : ''}`} key={question.id}>
         <header><div><strong>{question.candidate.teamName || question.candidate.name || question.candidate.examNumber}</strong><span>考号 {question.candidate.examNumber} · 座位 {question.candidate.seatNo || '-'}</span></div><div className="exam-question-header-actions"><time>{new Date(question.createdAt).toLocaleString('zh-CN')}</time><button className="button secondary compact-button" onClick={() => void setPublished(question.id, !question.isPublished)} disabled={busy === `publish-${question.id}`}>{question.isPublished ? <EyeOff size={14} /> : <Eye size={14} />}{question.isPublished ? '取消公布' : '公布完整会话'}</button></div></header>
         {question.problemIndex ? <div className="exam-question-problem">题目 {question.problemIndex} · {question.problemTitle || question.problemPid}</div> : <div className="exam-question-problem">综合提问</div>}
-        <div className="exam-question-thread">{messages.map(message => <div className={`exam-question-message ${message.sender === 'ADMIN' ? 'admin' : 'candidate'}`} key={message.id}><div><strong>{message.sender === 'ADMIN' ? personName(message.createdBy || question.answeredBy) : question.candidate.name || question.candidate.examNumber}</strong><time>{new Date(message.createdAt).toLocaleString('zh-CN')}</time></div><MarkdownContent content={message.content} /></div>)}</div>
+        <div className="exam-question-thread">{messages.map(message => <div className={`exam-question-message ${message.sender === 'ADMIN' ? 'admin' : 'candidate'}`} key={message.id}><div><strong>{message.sender === 'ADMIN' ? (message.creatorLabel || (message.createdBy ? personName(message.createdBy) : question.answeredByLabel || personName(question.answeredBy))) : question.candidate.name || question.candidate.examNumber}</strong><time>{new Date(message.createdAt).toLocaleString('zh-CN')}</time></div><MarkdownContent content={message.content} /></div>)}</div>
         <div className="exam-question-reply markdown-reply"><MarkdownComposer value={answers[question.id] || ''} onChange={value => setAnswers(current => ({ ...current, [question.id]: value }))} onUploadImage={uploadImage} placeholder="继续回复该问题会话，可使用 Markdown 和粘贴图片" maxLength={10000} rows={4} /><button className="button" onClick={() => void reply(question.id)} disabled={!answers[question.id]?.trim() || busy === `reply-${question.id}`}>{busy === `reply-${question.id}` ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}发送回复</button></div>
       </article>; })}
       {!data.questions.length && !loading ? <div className="exam-qa-empty"><MessageCircleQuestion size={26} /><strong>暂无考生提问</strong><span>新问题会自动出现在这里。</span></div> : null}
@@ -112,7 +116,7 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
     </section>
     <section className="card exam-qa-section">
       <div className="exam-panel-heading"><div><h2>已发布公告</h2><p>按发布时间倒序显示。</p></div><Bell size={20} /></div>
-      {data.announcements.map(item => <article className="exam-announcement-card" key={item.id}><div className="exam-announcement-target-badge">{item.candidate ? `指定：${item.candidate.examNumber} · ${item.candidate.teamName || item.candidate.name || '未命名考生'}` : '全体考生'}</div><MarkdownContent content={item.content} /><span>{personName(item.createdBy)} · {new Date(item.createdAt).toLocaleString('zh-CN')}</span></article>)}
+      {data.announcements.map(item => <article className="exam-announcement-card" key={item.id}><div className="exam-announcement-target-badge">{item.candidate ? `指定：${item.candidate.examNumber} · ${item.candidate.teamName || item.candidate.name || '未命名考生'}` : '全体考生'}</div><MarkdownContent content={item.content} /><span>{(item.creatorLabel || personName(item.createdBy))} · {new Date(item.createdAt).toLocaleString('zh-CN')}</span></article>)}
       {!data.announcements.length ? <div className="muted">暂无公告</div> : null}
     </section>
   </div>;

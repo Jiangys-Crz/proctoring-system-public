@@ -1,3 +1,4 @@
+import { resumedSessionStatus } from '@/lib/session-resume';
 import crypto from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
@@ -25,7 +26,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const item = await tx.clientSession.update({
         where: { id },
         data: {
-          status: firstStartedAt ? 'IN_EXAM' : 'APPROVED',
+          status: resumedSessionStatus({ ...current, lockdown: false }, firstStartedAt),
           startedAt: firstStartedAt,
           lockdown: false,
           lockdownReason: null,

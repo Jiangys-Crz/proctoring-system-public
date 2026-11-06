@@ -1,4 +1,4 @@
-export const PROCTOR_PLUGIN_VERSION = '0.2.1';
+export const PROCTOR_PLUGIN_VERSION = '0.2.4';
 export const PROCTOR_SETTING_PREFIX = 'cwnupaaProctor';
 export const DEFAULT_SECRET = 'PLEASE_SET_HYDRO_PROCTOR_SHARED_SECRET';
 export const DEFAULT_API_KEY = 'PLEASE_SET_HYDRO_PROCTOR_API_KEY';
@@ -104,7 +104,8 @@ export function resolveProctorConfig(readSystem: (key: string) => unknown, legac
     // Kept only for existing contest-page CORS behavior. Backend-to-Hydro judge requests need no site address.
     const websiteUrl = legacy.websiteUrl || '';
     const allowedRedirectPrefix = String(get('allowedRedirectPrefix') ?? '').trim();
-    if (!allowedRedirectPrefix.startsWith('/') || allowedRedirectPrefix.startsWith('//') || /[\\\0]/.test(allowedRedirectPrefix)) {
+    if (!allowedRedirectPrefix.startsWith('/') || allowedRedirectPrefix.startsWith('//') || /[\\?#\u0000-\u001f\u007f]/.test(allowedRedirectPrefix)
+        || /(?:^|\/)(?:\.|%2e){1,2}(?:\/|$)/i.test(allowedRedirectPrefix)) {
         throw new ProctorConfigError(proctorSettingKey('allowedRedirectPrefix'), '跳转前缀须为站内绝对路径，例如 /contest/');
     }
     const judgeAccount = String(get('judgeUsername', 'judgeAccount') ?? '').trim();

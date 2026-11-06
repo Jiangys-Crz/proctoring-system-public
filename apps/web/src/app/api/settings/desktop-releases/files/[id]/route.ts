@@ -17,3 +17,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return fail('安装包读取失败', 400);
   }
 }
+
+export const HEAD = GET;

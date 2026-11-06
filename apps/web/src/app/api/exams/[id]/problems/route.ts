@@ -1,3 +1,4 @@
+import { assertFederationDefinitionMutable } from '@/lib/exam-federation-contract';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
@@ -19,12 +20,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const input = await parseBody(request, ProblemScoresSchema);
     const current = await prisma.examProblem.findMany({ where: { examId: id, id: { in: input.problems.map(item => item.id) } } });
     if (current.length !== input.problems.length) return fail('部分题目不存在或不属于该考试', 400);
-    await prisma.$transaction(input.problems.map(item => {
-      return prisma.examProblem.update({
+    await prisma.$transaction(async tx => {
+      await assertFederationDefinitionMutable(tx, id);
+      for (const item of input.problems) await tx.examProblem.update({
         where: { id: item.id },
         data: { scorePercent: item.scorePercent, score: item.scorePercent }
       });
-    }));
+    });
     return ok(await prisma.examProblem.findMany({ where: { examId: id }, orderBy: { order: 'asc' } }));
   } catch (error) {
     if (error instanceof AuthError) return fail(error.message, error.status);

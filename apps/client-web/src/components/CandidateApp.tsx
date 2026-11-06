@@ -26,7 +26,7 @@ import {
   X
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ClientApi, absoluteMediaUrl, defaultApiBase, trustedApiBase, restoreBoundSession, isExpiredClientSessionError } from '@/lib/api';
+import { ClientApi, ClientApiError, absoluteMediaUrl, defaultApiBase, trustedApiBase, restoreBoundSession, isExpiredClientSessionError } from '@/lib/api';
 import { extensionForMime, publishWhip, supportedRecordingMime, whipErrorMessage, type WhipPublisher } from '@/lib/whip';
 import { readWithDeadline, startSerialPolling } from '@/lib/contest-polling';
 import { deleteMediaUpload, listMediaUploads, queueMediaUpload, queuedMediaToken, type QueuedMediaUpload } from '@/lib/offline-media';
@@ -665,8 +665,12 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
   const voiceGenerationRef = useRef(0);
   const voiceTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const heartbeatFailuresRef = useRef(0);
   const clipUploadBusyRef = useRef(false);
+  const clipUploadBackoffRef = useRef({ until: 0, failures: 0 });
+  const clipUploadRetryRef = useRef(new Map<string, { at: number; apiBase: string; sessionId: string; token: string }>());
   const unsavedClipsRef = useRef(new Map<string, QueuedMediaUpload>());
+  const recentClipsRef = useRef(new Map<string, QueuedMediaUpload>());
   const recordingBuffersRef = useRef(new Map<string, { full: boolean; incidents: boolean; buffer: RecordingBuffer<BufferedMobileClip> }>());
   const lastVoiceAtRef = useRef('');
   const playedVoicesRef = useRef(new Set<string>());
@@ -1157,29 +1161,52 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
   }, [reportAlert, sessionId, sessionToken, step]);
 
   const flushClipUploads = useCallback(async () => {
-    if (clipUploadBusyRef.current) return;
+    if (clipUploadBusyRef.current || performance.now() < clipUploadBackoffRef.current.until) return;
     clipUploadBusyRef.current = true;
     try {
-      const queued = await listMediaUploads().catch(() => []);
-      const savedIds = new Set(queued.map(item => item.id));
+      const deferred = new Set<string>();
+      for (const [id, retry] of clipUploadRetryRef.current) {
+        if (retry.apiBase === apiBase && retry.sessionId === sessionId && retry.token !== sessionToken) clipUploadRetryRef.current.delete(id);
+        else if (retry.at > performance.now()) deferred.add(id);
+      }
+      const queued = await listMediaUploads(deferred, 8, apiBase).catch(() => []);
+      const savedIds = new Set([...queued.map(item => item.id), ...recentClipsRef.current.keys()]);
       const pending = new Map(queued.map(item => [item.id, item]));
-      for (const [id, item] of unsavedClipsRef.current) pending.set(id, item);
-      for (const item of [...pending.values()].sort((left, right) => left.createdAt - right.createdAt)) {
+      for (const [id, item] of recentClipsRef.current) {
+        if (!deferred.has(id) && item.apiBase === apiBase) pending.set(id, item);
+      }
+      for (const [id, item] of unsavedClipsRef.current) {
+        if (!deferred.has(id) && (!item.apiBase || item.apiBase === apiBase)) pending.set(id, item);
+      }
+      let attempts = 0;
+      const priority = (item: QueuedMediaUpload) => item.apiBase === apiBase && item.fields.sessionId === sessionId
+        && (recentClipsRef.current.has(item.id) || unsavedClipsRef.current.has(item.id)) ? 0 : 1;
+      for (const item of [...pending.values()].sort((left, right) => priority(left) - priority(right) || left.createdAt - right.createdAt)) {
+        if (attempts++ >= 8) break;
+        let targetBase = item.apiBase || apiBase, token = item.token;
         try {
-          const targetBase = trustedApiBase(configuredApiBase, item.apiBase || apiBase);
-          const token = queuedMediaToken({ ...item, apiBase: targetBase }, { apiBase, sessionId, token: sessionToken });
+          targetBase = trustedApiBase(configuredApiBase, item.apiBase || apiBase);
+          token = queuedMediaToken({ ...item, apiBase: targetBase }, { apiBase, sessionId, token: sessionToken });
           await new ClientApi(targetBase, token).upload('/api/client/upload', item.blob, item.filename, {
             ...item.fields,
             uploadId: item.fields.uploadId || item.id
           });
           if (savedIds.has(item.id)) await deleteMediaUpload(item.id);
           unsavedClipsRef.current.delete(item.id);
+          recentClipsRef.current.delete(item.id);
+          clipUploadRetryRef.current.delete(item.id);
+          clipUploadBackoffRef.current = { until: 0, failures: 0 };
         } catch (cause) {
           const reason = cause instanceof Error ? cause.message : '';
-          if (/补传窗口已关闭|令牌无效|考试已结束|客户端会话不存在/.test(reason)) {
+          if (cause instanceof ClientApiError && [401, 403, 404, 410].includes(cause.status)
+            || /补传窗口已关闭|令牌无效|考试已结束|客户端会话不存在/.test(reason)) {
             // Authorization expiry must not destroy the only saved copy.
+            clipUploadRetryRef.current.set(item.id, { at: performance.now() + 60_000 + Math.random() * 10_000,
+              apiBase: targetBase, sessionId: item.fields.sessionId, token });
             continue;
           }
+          const failures = Math.min(clipUploadBackoffRef.current.failures + 1, 4);
+          clipUploadBackoffRef.current = { failures, until: performance.now() + Math.min(30_000, 2000 * 2 ** failures) * (0.75 + Math.random() * 0.5) };
           break;
         }
       }
@@ -1210,7 +1237,15 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
           saveIncidents: () => value.incidents,
           onSave: async (clip, evidenceOnly) => {
             const item = { ...clip, fields: { ...clip.fields, evidenceOnly: String(evidenceOnly) } };
-            try { await queueMediaUpload(item); }
+            try {
+              await queueMediaUpload(item);
+              recentClipsRef.current.set(item.id, item);
+              while (recentClipsRef.current.size > 8) {
+                const oldest = recentClipsRef.current.keys().next().value;
+                if (oldest === undefined) break;
+                recentClipsRef.current.delete(oldest);
+              }
+            }
             catch {
               unsavedClipsRef.current.set(item.id, item);
               setRecordingIssue('录像暂存失败，正在尝试直接补传；请保持页面开启、检查手机存储空间并联系监考老师');
@@ -1387,7 +1422,7 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
   useEffect(() => {
     if (!secondCameraRequired || step !== 'monitor' || streamState !== 'failed' || sessionFinished || captureMode || capturePermissionBlocked) return;
     reconnectAttemptsRef.current += 1;
-    const delay = Math.min(15_000, 2_000 * 2 ** Math.min(reconnectAttemptsRef.current - 1, 3));
+    const delay = Math.min(15_000, 2_000 * 2 ** Math.min(reconnectAttemptsRef.current - 1, 3)) * (0.75 + Math.random() * 0.5);
     const timer = window.setTimeout(() => {
       const stopped = stopPublisher();
       const generation = publishGenerationRef.current;
@@ -1411,6 +1446,7 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
         })
       }), signal, 10_000);
       if (signal.aborted || generation !== connectionGenerationRef.current || joiningPairRef.current || testDisconnectingRef.current) return;
+      heartbeatFailuresRef.current = 0;
       if (result.miniProgramSessionToken && result.miniProgramSessionToken !== sessionToken) {
         localStorage.setItem(STORAGE.sessionToken, result.miniProgramSessionToken);
         setSessionToken(result.miniProgramSessionToken);
@@ -1451,6 +1487,7 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
         return;
       }
       const reason = cause instanceof Error ? cause.message : '心跳上报失败';
+      heartbeatFailuresRef.current = Math.min(heartbeatFailuresRef.current + 1, 3);
       void reportAlert('MOBILE_CAMERA_LOST', '第二机位网络连接中断');
       setConnectionLost(true);
       setMessage(/令牌/.test(reason) ? '会话已失效，请重新登录' : '网络连接中断，正在自动重连…');
@@ -1461,7 +1498,8 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
     // Keep the authenticated phone connected when its camera is optional so
     // enabling the second camera in the room can refresh policy and start it.
     if (step !== 'monitor' || sessionFinished) return;
-    return startSerialPolling(heartbeat, () => 5000);
+    return startSerialPolling(heartbeat, () => heartbeatFailuresRef.current
+      ? Math.min(20_000, 5000 * 2 ** (heartbeatFailuresRef.current - 1)) * (0.75 + Math.random() * 0.5) : 5000);
   }, [heartbeat, sessionFinished, step]);
 
   const pollVoice = useCallback(async (signal: AbortSignal) => {

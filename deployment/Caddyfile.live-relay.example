@@ -1,0 +1,7 @@
+# WebRTC signaling uses the existing backend HTTPS proxy:
+# /api/live-relay/publish/{id} (WHIP) and /api/live/{id} (WHEP/player).
+# No /relay-stream HLS route or independent Nginx gateway is needed anymore.
+# Remove the old handle /relay-stream/* pointing at 8090 when upgrading.
+# Media bypasses HTTP and reaches relay-media via LIVE_RELAY_ICE_PORT (1940),
+# both UDP (preferred) and TCP (fallback). Do not proxy ICE with reverse_proxy.
+# Keep the original exam media's TCP/UDP 443 and LAN 18189 routing unchanged.

@@ -6,7 +6,7 @@ import { prisma } from './db';
 import { canPublishChannel } from './media-publish-access';
 import { mediaStreamPath, type LiveChannel } from './media-read-token';
 import { fail, toErrorMessage } from './http';
-import { kickLiveWebRtc, liveWebRtcResource } from './live-webrtc';
+import { deleteLiveWebRtcResource, liveWebRtcResource } from './live-webrtc';
 import { browserIceAnswer } from './browser-ice';
 
 export type LiveStreamParams = { examCode: string; examNumber: string; camera: string; stream?: string[] };
@@ -30,6 +30,7 @@ function playerPage() {
 }
 export async function serveLiveStream(request: Request, params: LiveStreamParams) {
   let created: string | undefined;
+  let createdTarget: { sessionId: string; channel: LiveChannel } | undefined;
   try {
     const parsed = parseLiveStreamRequest(request, params), keyId = await authorizeLiveApiKey(parsed.key);
     const session = await prisma.clientSession.findFirst({ where: { exam: { examCode: params.examCode }, candidate: { examNumber: params.examNumber, exam: { examCode: params.examCode } }, revokedAt: null,
@@ -45,6 +46,7 @@ export async function serveLiveStream(request: Request, params: LiveStreamParams
       const response = await fetch(`${base}${streamPath}/whep`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/sdp' }, body, cache: 'no-store', signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]) });
       if (!response.ok) return new Response(null, { status: response.status, headers });
       created = liveWebRtcResource(response.headers.get('location') || '', base, streamPath);
+      createdTarget = { sessionId: session.id, channel: parsed.channel };
       const answer = browserIceAnswer(await response.text());
       await prisma.$transaction(async tx => {
         await tx.$queryRaw`SELECT id FROM LiveApiKey WHERE id = ${keyId} FOR UPDATE`;
@@ -70,7 +72,9 @@ export async function serveLiveStream(request: Request, params: LiveStreamParams
     if (request.method === 'DELETE' && (response.ok || response.status === 404)) await prisma.liveWebRtcConnection.deleteMany({ where: { id: parsed.resource, keyId } });
     return new Response(response.status === 204 ? null : await response.text(), { status: response.status, headers });
   } catch (error) {
-    if (created) { await kickLiveWebRtc(created).catch(() => {}); await prisma.liveWebRtcConnection.deleteMany({ where: { id: created } }).catch(() => {}); }
+    if (created && createdTarget) {
+      try { await deleteLiveWebRtcResource(created, createdTarget.sessionId, createdTarget.channel); await prisma.liveWebRtcConnection.deleteMany({ where: { id: created } }); } catch {}
+    }
     if (error instanceof AuthError) return fail(error.message, error.status);
     return fail(toErrorMessage(error), 502);
   }

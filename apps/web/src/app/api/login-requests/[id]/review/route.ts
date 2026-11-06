@@ -1,4 +1,5 @@
-import { SessionWriteQueueError } from '@/lib/session-write';
+import { effectiveEnd } from '@/lib/contest-rules';
+import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
@@ -37,15 +38,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!boundSession) return fail('登录请求没有有效客户端会话，请重新登录', 409);
     const requirePending = async (tx: Prisma.TransactionClient) => {
       await tx.$queryRaw`SELECT id FROM ClientSession WHERE id = ${boundSession.id} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${loginRequest.candidateId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM LoginRequest WHERE id = ${id} FOR UPDATE`;
       const [current, session] = await Promise.all([
-        tx.loginRequest.findUnique({ where: { id } }), tx.clientSession.findUnique({ where: { id: boundSession.id } })
+        tx.loginRequest.findUnique({ where: { id } }), tx.clientSession.findUnique({ where: { id: boundSession.id }, include: { candidate: true, exam: true } })
       ]);
-      if (!current || current.status !== 'REQUESTING' || !session || session.revokedAt || session.status !== 'WAITING_REVIEW' || loginRequest.exam.endAt <= new Date()) throw new LoginFlowError('登录请求已处理或客户端会话已注销，请重新登录', 409);
+      if (!current || current.status !== 'REQUESTING' || !session || session.revokedAt || (session.status !== 'WAITING_REVIEW' && !(session.status === 'LOCKED' && session.lockdown && !session.approvedAt)) || session.candidate.status === 'FINISHED' || effectiveEnd(session.exam, session.candidate.startedAt || session.startedAt) <= new Date()) throw new LoginFlowError('登录请求已处理或客户端会话已注销，请重新登录', 409);
+      return session;
     };
 
     if (!input.approved) {
-      const rejected = await prisma.$transaction(async (tx) => {
+      const rejected = await withSessionWrite(boundSession.id, async (tx) => {
         await requirePending(tx);
         const updated = await tx.loginRequest.update({
           where: { id },
@@ -73,11 +76,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!pairing) return fail('该登录请求没有绑定电脑客户端，请重新扫码提交', 400);
 
     const storage = await getStorageSettings();
-    const approved = await prisma.$transaction(async (tx) => {
-      await requirePending(tx);
-      await assertReviewMaterials(tx, id, loginRequest.candidateId, loginRequest.examId, storage);
-      const firstStartedAt = loginRequest.candidate.startedAt;
-      const sessionStatus = firstStartedAt ? 'IN_EXAM' : 'APPROVED';
+    const verifiedFiles = await assertReviewMaterials(prisma, id, loginRequest.candidateId, loginRequest.examId, storage);
+    const approved = await withSessionWrite(boundSession.id, async (tx) => {
+      const pendingSession = await requirePending(tx);
+      await assertReviewMaterials(tx, id, loginRequest.candidateId, loginRequest.examId, storage, verifiedFiles);
+      const firstStartedAt = pendingSession.candidate.startedAt || pendingSession.startedAt;
+      const sessionStatus = pendingSession.lockdown ? 'LOCKED' : firstStartedAt ? 'IN_EXAM' : 'APPROVED';
       const updated = await tx.loginRequest.update({
         where: { id },
         data: {
@@ -86,49 +90,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           reviewedAt: new Date()
         }
       });
-      const existingSession = loginRequest.clientSessions[0];
-      const session = existingSession
-        ? await tx.clientSession.update({
-            where: { id: existingSession.id },
-            data: {
-              desktopDeviceId: pairing.desktopDeviceId,
-              miniProgramDeviceId: loginRequest.miniProgramDeviceId,
-              status: sessionStatus,
-              approvedAt: new Date(),
-              startedAt: firstStartedAt,
-              endedAt: null,
-              peripheralsBaselineFingerprint: pairing.peripheralsFingerprint,
-              lastPeripheralsFingerprint: pairing.peripheralsFingerprint
-            }
-          })
-        : await tx.clientSession.create({
-            data: {
-              examId: loginRequest.examId,
-              candidateId: loginRequest.candidateId,
-              loginRequestId: id,
-              desktopDeviceId: pairing.desktopDeviceId,
-              miniProgramDeviceId: loginRequest.miniProgramDeviceId,
-              status: sessionStatus,
-              approvedAt: new Date(),
-              startedAt: firstStartedAt,
-              peripheralsBaselineFingerprint: pairing.peripheralsFingerprint,
-              lastPeripheralsFingerprint: pairing.peripheralsFingerprint
-            }
-          });
+      // Heartbeats/recovery may already have updated device bindings and USB
+      // fingerprints while waiting for review. Approval must preserve them.
+      const session = await tx.clientSession.update({ where: { id: boundSession.id }, data: {
+        status: sessionStatus, approvedAt: new Date(), startedAt: firstStartedAt, endedAt: null
+      } });
       await tx.candidate.update({
         where: { id: loginRequest.candidateId },
-        data: { status: firstStartedAt ? 'ONLINE_NORMAL' : 'APPROVED' }
+        data: { status: pendingSession.lockdown || pendingSession.candidate.abnormal ? 'ONLINE_ABNORMAL' : firstStartedAt ? 'ONLINE_NORMAL' : 'APPROVED' }
       });
-      return { updated, session };
+      return { updated, session, exam: pendingSession.exam, candidate: pendingSession.candidate };
     });
 
-    await issueApprovedSessionOjTicket({
-      exam: loginRequest.exam,
-      candidate: loginRequest.candidate,
+    void issueApprovedSessionOjTicket({
+      exam: approved.exam,
+      candidate: approved.candidate,
       sessionId: approved.session.id
-    });
+    }).catch(error => console.error('Failed to issue OJ ticket after review', error));
 
-    return ok({ ...approved, session: publicClientSession(approved.session) });
+    return ok({ updated: approved.updated, session: publicClientSession(approved.session) });
   } catch (error) {
     if (error instanceof SessionWriteQueueError) return fail(error.message, error.status);
     if (error instanceof LoginFlowError) return fail(error.message, error.status);

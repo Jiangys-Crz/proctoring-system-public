@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
+const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const vm = require('node:vm');
 const { NovaJudgeSubmit, SubmitConfigStore, submitServiceError } = require('../dist/main/novajudge-submit');
@@ -222,6 +223,78 @@ test('Windows manager installs the bundled client offline in a Chinese path, kee
 test('Windows preparation rejects a home belonging to another user and does not carry secrets in errors', { skip: process.platform !== 'win32' }, () => {
   const { assertWindowsSubmitUser } = require('../dist/main/novajudge-submit-windows');
   assert.throws(() => assertWindowsSubmitUser(path.join(os.tmpdir(), 'different-user')), error => error.code === 'WINDOWS_USER_MISMATCH');
+});
+
+test('Windows bundled commands submit and print with -y after a real HTTP monitoring grant', { skip: process.platform !== 'win32' }, async t => {
+  const calls = [];
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null;
+    calls.push({ method: request.method, url: request.url, body, authorization: request.headers.authorization });
+    response.setHeader('Content-Type', 'application/json; charset=utf-8');
+    if (request.url === '/api/cli/device/proctoring') response.end(JSON.stringify(grant()));
+    else if (request.method === 'GET') response.end(JSON.stringify({ ...grant(), status: 'ready' }));
+    else if (request.url === '/api/cli/device/print') response.end(JSON.stringify({ success: true, printJob: { id: 1, status: 'PENDING' } }));
+    else if (request.url === '/api/cli/device/submit') response.end(JSON.stringify({ success: true, submission: { displayId: 21 } }));
+    else response.end(JSON.stringify({ success: true }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'proctor bundled 中文 '));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const h = fixture(t, { home, install: undefined, request: undefined,
+    bundleDirectory: path.resolve(__dirname, '../resources/novajudge-submit'),
+    windowsInstallation: { localAppData: home, updatePath: false } });
+  h.context.scope = h.login.scope = { ...scope, origin };
+  await h.manager.connect(h.login);
+  assert.equal(h.manager.status.phase, 'ready', h.manager.status.message);
+  const code = '// 中文 snapshot\r\nint main(){}\n';
+  fs.writeFileSync(path.join(home, 'source file.cpp'), '\ufeff' + code);
+  const run = (command, args) => new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-Command',
+      '[string[]]$CliArguments = ConvertFrom-Json $env:NOVAJUDGE_TEST_ARGUMENTS; & $env:NOVAJUDGE_TEST_COMMAND @CliArguments; exit $LASTEXITCODE'], {
+      cwd: home, windowsHide: true, env: { ...process.env, USERPROFILE: home,
+        NOVAJUDGE_TEST_COMMAND: path.join(home, 'NovaJudge/submit', `${command}.cmd`),
+        NOVAJUDGE_TEST_ARGUMENTS: JSON.stringify(args) },
+    });
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Bundled command timed out')); }, 15000);
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', value => { stdout += value; });
+    child.stderr.on('data', value => { stderr += value; });
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    child.stdin.end();
+  });
+  try {
+    for (const [command, args, heading] of [
+      ['printfile', ['-y', 'source file.cpp'], 'Print information:'],
+      ['submit', ['--problem', 'A', 'source file.cpp', '--yes'], 'Submission information:'],
+    ]) {
+      const result = await run(command, args);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, new RegExp(heading));
+      assert.match(result.stdout, /filename:    source file.cpp/);
+      assert.doesNotMatch(result.stdout, /int main|njcli_/);
+      assert.equal(calls.at(-1).body.code, code);
+      assert.equal(calls.at(-1).authorization, `Bearer ${grant().deviceToken}`);
+      if (command === 'printfile') {
+        assert.match(result.stdout, /Print request 1 entered the NovaJudge print queue/);
+        assert.ok(result.stdout.includes(`size:        ${Buffer.byteLength(code)} bytes`));
+        assert.equal(calls.at(-1).body.sourceFilename, 'source file.cpp');
+      } else assert.match(result.stdout, /Submitted #21 A cpp/);
+    }
+    const version = await run('submit', ['version']);
+    assert.equal(version.status, 0, version.stderr); assert.match(version.stdout, /2026\.11\.05\.2/);
+    const help = await run('printfile', ['--help']);
+    assert.equal(help.status, 0, help.stderr); assert.match(help.stdout, /NovaJudge printfile/); assert.match(help.stdout, /-y, --yes/);
+    assert.deepEqual(calls.map(call => [call.method, call.url]), [
+      ['POST', '/api/cli/device/proctoring'], ['GET', '/api/cli/device/print'], ['POST', '/api/cli/device/print'],
+      ['GET', '/api/cli/device'], ['POST', '/api/cli/device/submit'],
+    ]);
+  } finally { await h.manager.shutdown(); }
 });
 
 test('Electron grant transport uses system trust, scoped URLs, no session cookies and rejects redirects', async () => {

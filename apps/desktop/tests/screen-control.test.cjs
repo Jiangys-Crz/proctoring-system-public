@@ -99,13 +99,15 @@ test('administrator STOP is polled while an image is still downloading; late ima
   env.watcher.release();
 });
 
-test('disconnect retains the lock; a server-relative deadline releases despite local clock skew', async () => {
-  const env = runtime([response({ endsAt: epoch + 5000 }), new Error('offline'), new Error('offline')]);
+test('disconnect past the deadline retains the lock until the server confirms completion', async () => {
+  const env = runtime([response({ endsAt: epoch + 5000 }), new Error('offline'), new Error('offline'), response({ stopped: true })]);
   await env.watcher.watch(identity);
   await env.advance(2000);
   assert.equal(env.watcher.isDisplaying, true);
   assert.equal(env.errors.length, 1);
   await env.advance(3000);
+  assert.equal(env.watcher.isDisplaying, true);
+  await env.advance(2000);
   assert.equal(env.watcher.isDisplaying, false);
   env.watcher.release();
 });

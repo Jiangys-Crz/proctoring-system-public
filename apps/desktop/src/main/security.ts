@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, platform, release, userInfo } from 'node:os';
 import { basename, join, normalize } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readlinkSync, renameSync, rmSync } from 'node:fs';
 import { app } from 'electron';
 import { getNetworkDomainStatus, networkRemotes } from './network-domains';
 import { installedProcessPolicy, trustedProcessExecutable } from './process-policy';
@@ -38,7 +38,8 @@ interface ProcessEntry {
 
 function execResult(command: string, args: string[] = [], timeout = 5000) {
   return new Promise<ExecResult>((resolve) => {
-    execFile(command, args, { timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(command, args, { timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024,
+      env: process.platform === 'darwin' ? { ...process.env, LANG: 'C', LC_ALL: 'C' } : process.env }, (error, stdout, stderr) => {
       const failure = error as (NodeJS.ErrnoException & { code?: number | string }) | null;
       resolve({
         stdout: stdout || '',
@@ -146,9 +147,18 @@ export function getDeviceId() {
   const dir = app.getPath('userData');
   mkdirSync(dir, { recursive: true });
   const file = join(dir, 'device-id');
-  if (existsSync(file)) return readFileSync(file, 'utf8').trim();
+  if (existsSync(file)) {
+    const saved = readFileSync(file, 'utf8').trim();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved)) return saved;
+    // An interrupted first write can leave an empty/truncated ID that every
+    // login request rejects. Device labels are not authentication credentials.
+  }
   const id = randomUUID();
-  writeFileSync(file, id);
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, id, { mode: 0o600, flag: 'wx' });
+    renameSync(temporary, file);
+  } finally { rmSync(temporary, { force: true }); }
   return id;
 }
 
@@ -161,7 +171,16 @@ export function getDesktopInfo() {
   };
 }
 
+let pendingProcesses: Promise<ProcessEntry[]> | null = null;
 async function listProcessEntries(): Promise<ProcessEntry[]> {
+  if (pendingProcesses) return pendingProcesses;
+  const pending = readProcessEntries();
+  pendingProcesses = pending;
+  try { return await pending; }
+  finally { if (pendingProcesses === pending) pendingProcesses = null; }
+}
+
+async function readProcessEntries(): Promise<ProcessEntry[]> {
   if (process.platform === 'win32') {
     const output = await exec(windowsInventoryProbe(), ['processes']);
     const entries = output
@@ -214,12 +233,15 @@ export async function disallowedProcesses() {
 }
 
 let macUsbDataTypePromise: Promise<'SPUSBHostDataType' | 'SPUSBDataType'> | null = null;
+let macHasThunderboltDataType = true;
 
 async function macUsbDataType() {
   if (!macUsbDataTypePromise) {
-    macUsbDataTypePromise = exec('/usr/sbin/system_profiler', ['-listDataTypes']).then((available) => {
-      if (/^SPUSBHostDataType$/m.test(available)) return 'SPUSBHostDataType' as const;
-      if (/^SPUSBDataType$/m.test(available)) return 'SPUSBDataType' as const;
+    macUsbDataTypePromise = exec('/usr/sbin/system_profiler', ['-listDataTypes'], 10_000).then((available) => {
+      const types = new Set(available.split(/\r?\n/).map(value => value.trim()));
+      macHasThunderboltDataType = types.has('SPThunderboltDataType');
+      if (types.has('SPUSBHostDataType')) return 'SPUSBHostDataType' as const;
+      if (types.has('SPUSBDataType')) return 'SPUSBDataType' as const;
       throw new Error('当前 macOS 未提供 USB 外设信息');
     }).catch((error) => {
       macUsbDataTypePromise = null;
@@ -331,11 +353,13 @@ function hardwareHex(entry: HardwareEntry, keys: string[]) {
   return value.match(/0x([0-9a-f]+)/)?.[1].replace(/^0+(?=.)/, '') || value;
 }
 
-function normalizedMacDevices(output: string, usbType: string) {
+function normalizedMacDevices(output: string, usbType: string, requireThunderbolt = true) {
   let report: HardwareEntry;
   try { report = JSON.parse(output); }
   catch { throw new Error('USB 外设报告不完整，请重新检测'); }
-  if (!report || typeof report !== 'object' || !Array.isArray(report[usbType]) || !report[usbType].length || !Array.isArray(report.SPThunderboltDataType)) {
+  if (!report || typeof report !== 'object' || !Array.isArray(report[usbType]) || !report[usbType].length
+    || requireThunderbolt && !Array.isArray(report.SPThunderboltDataType)
+    || report.SPThunderboltDataType !== undefined && !Array.isArray(report.SPThunderboltDataType)) {
     throw new Error('USB 外设报告缺少硬件信息');
   }
   const devices = new Set<string>();
@@ -369,7 +393,7 @@ function normalizedMacDevices(output: string, usbType: string) {
     }
   };
   walk(report[usbType] as unknown[], 'usb');
-  walk(report.SPThunderboltDataType as unknown[], 'thunderbolt');
+  walk((report.SPThunderboltDataType || []) as unknown[], 'thunderbolt');
   return [...devices].sort();
 }
 
@@ -379,9 +403,9 @@ async function scanPeripherals() {
     identities = await windowsUsbInventory();
   } else {
     const usbType = await macUsbDataType();
-    const result = await execResult('/usr/sbin/system_profiler', [usbType, 'SPThunderboltDataType', '-json'], 10000);
+    const result = await execResult('/usr/sbin/system_profiler', [usbType, ...(macHasThunderboltDataType ? ['SPThunderboltDataType'] : []), '-json'], 10000);
     if (result.code || /timed?\s*out|timeout|incomplete|failed|error/i.test(result.stderr)) throw new Error(result.error || 'USB 外设检测未完成');
-    identities = normalizedMacDevices(result.stdout, usbType);
+    identities = normalizedMacDevices(result.stdout, usbType, macHasThunderboltDataType);
   }
   const hash = createHash('sha256').update(JSON.stringify(identities)).digest('hex');
   return `${process.platform === 'darwin' ? 'mac-usb-v3' : 'usb-v6'}:${hash}`;
@@ -408,17 +432,34 @@ async function scanVmSignals() {
   const output =
     process.platform === 'win32'
       ? await exec(windowsInventoryProbe(), ['hardware'])
-      : await exec('/usr/sbin/system_profiler', ['SPHardwareDataType']);
+      : await exec('/usr/sbin/system_profiler', ['SPHardwareDataType', '-json'], 10_000);
   if (!output.trim()) throw new Error('未读取到设备信息');
+  let identities: string[];
   if (process.platform === 'win32') {
     const rows = output.replace(/^\uFEFF/, '').trim().split(/\r?\n/).map(parseCsvLine);
     if (rows.length !== 2 || rows[0].join(',') !== 'Manufacturer,Model' || rows[1].length !== 2 || !rows[1].some(Boolean)) {
       throw new Error('设备型号信息不完整');
     }
+    identities = rows[1];
+  } else {
+    // Structured keys avoid relying on the user's display language or text
+    // formatting. Serial numbers and UUIDs remain outside the VM decision.
+    let hardware: unknown;
+    try { hardware = JSON.parse(output)?.SPHardwareDataType; }
+    catch { throw new Error('设备型号报告无效，请重新检测'); }
+    if (!Array.isArray(hardware) || !hardware.length) throw new Error('设备型号报告不完整，请重新检测');
+    identities = hardware.flatMap(entry => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('设备型号报告无效，请重新检测');
+      return ['machine_name', 'machine_model', 'manufacturer', 'model_name', 'model_identifier'].flatMap(key => {
+        const value = (entry as Record<string, unknown>)[key];
+        return typeof value === 'string' && value.trim() ? [value.trim()] : [];
+      });
+    });
+    if (!identities.length) throw new Error('设备型号信息不完整，请重新检测');
   }
-  const lower = normalized(output);
+  const lower = normalized(identities.join(' '));
   const signals = ['vmware', 'virtualbox', 'innotek', 'parallels', 'qemu', 'hyper-v', 'kvm', 'xen', 'bhyve', 'bochs']
-    .filter((needle) => lower.includes(needle));
+    .filter(needle => ['kvm', 'xen'].includes(needle) ? new RegExp(`\\b${needle}\\b`).test(lower) : lower.includes(needle));
   if (/microsoft/.test(lower) && /virtual machine/.test(lower)) signals.push('hyper-v');
   return [...new Set(signals)];
 }
@@ -447,7 +488,16 @@ export async function isElevated() {
   return await elevationStatus() === 'elevated';
 }
 
+let pendingCapabilities: Promise<Awaited<ReturnType<typeof readSecurityCapabilities>>> | null = null;
 export async function securityCapabilities() {
+  if (pendingCapabilities) return pendingCapabilities;
+  const pending = readSecurityCapabilities();
+  pendingCapabilities = pending;
+  try { return await pending; }
+  finally { if (pendingCapabilities === pending) pendingCapabilities = null; }
+}
+
+async function readSecurityCapabilities() {
   const [elevation, processes, fingerprint, vm, activeWindow] = await Promise.all([
     elevationStatus(),
     listProcessEntries().then(() => ({ ok: true, message: '' })).catch(error => {
@@ -464,7 +514,9 @@ export async function securityCapabilities() {
     }),
     activeWindowTitle().then(() => ({ ok: true, message: '' })).catch(error => {
       writeStartupDiagnostic(app, 'window-scan-failed', String(error));
-      return { ok: false, message: '活动窗口读取失败，请重新检测，并检查客户端检测组件。' };
+      return { ok: false, message: process.platform === 'darwin'
+        ? '活动窗口读取失败，请检查辅助功能，以及“隐私与安全性 > 自动化”中允许客户端控制 System Events。'
+        : '活动窗口读取失败，请重新检测，并检查客户端检测组件。' };
     })
   ]);
 

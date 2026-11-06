@@ -5,6 +5,9 @@ type RankingExam = Timing & {
   contestType: 'INDIVIDUAL' | 'TEAM';
   scoreboardFrozenAt?: Date | null;
 };
+const teamIdentity = (candidate: RankingCandidate) => JSON.stringify([
+  candidate.teamName ? 'team' : 'candidate', candidate.teamName || candidate.examNumber,
+]);
 
 export function calculateLeaderboards(
   exam: RankingExam,
@@ -34,19 +37,25 @@ export function calculateLeaderboards(
       groups: [...leaderboardGroups(exam.contestRule)] };
   }
 
+  // Different installations have different candidate IDs and insertion order.
+  // Pick team representatives and assemble member names by the shared exam number.
+  candidates = [...candidates].sort((a, b) => a.examNumber < b.examNumber ? -1 : a.examNumber > b.examNumber ? 1 : 0);
   const representatives = new Map<string, string>();
   const candidateIds = new Map<string, string>();
+  const membersByTeam = new Map<string, RankingCandidate[]>();
   for (const candidate of candidates) {
-    const key = candidate.teamName || candidate.examNumber;
+    const key = teamIdentity(candidate);
     if (!representatives.has(key)) representatives.set(key, candidate.id);
     candidateIds.set(candidate.id, representatives.get(key)!);
+    const members = membersByTeam.get(key);
+    if (members) members.push(candidate); else membersByTeam.set(key, [candidate]);
   }
   const representativeIds = new Set(representatives.values());
   const result = scoreRows(
     exam,
     problems,
     candidates.filter(candidate => representativeIds.has(candidate.id) && (candidate.ranked !== false || exam.contestRule === 'LANQIAO' || isXcpcLeaderboard(exam.contestRule))).map(candidate => {
-      const members = candidates.filter(member => (member.teamName || member.examNumber) === (candidate.teamName || candidate.examNumber));
+      const members = membersByTeam.get(teamIdentity(candidate))!;
       return { ...candidate, teamMembers: candidate.teamMembers || members.map(member => member.name).filter(Boolean).join(', '),
         gender: members.every(member => isFemale(member.gender)) ? '女' : null };
     }),

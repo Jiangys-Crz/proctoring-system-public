@@ -14,13 +14,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
       '考试管理',
       '发布考试、选择题目和编辑考试信息'
     ] as const,
-    ['/dashboard/monitor', '考试监考', '进入尚未结束的考试并进行监考'] as const,
     ...(user.role === 'SUPER_ADMIN' ? [[
       '/dashboard/proctor-records',
       '监考记录',
       '管理监考记录'
     ] as const] : []),
     ['/dashboard/recordings', '历史录像', '管理历史录像'] as const,
+    ...(user.role === 'SUPER_ADMIN' ? [['/dashboard/live', '直播管理', '管理外部直播接收与转发'] as const] : []),
     ...(user.role === 'SUPER_ADMIN' ? [[
       '/dashboard/problems',
       '题库管理',

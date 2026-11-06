@@ -5,14 +5,19 @@ import { judgeStatistics, requestHydroProblem, submitHydroJudge } from '@/lib/hy
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 import { canAccessHydroProblem } from '@/lib/permissions';
 import { z } from 'zod';
-const Submit = z.object({ lang: z.string().min(1), code: z.string().min(1) });
+import { createRequestAdmission, isRequestAdmissionError } from '@/lib/request-admission';
+const shared = globalThis as typeof globalThis & { problemSubmitAdmission?: ReturnType<typeof createRequestAdmission> };
+const acquire = shared.problemSubmitAdmission ??= createRequestAdmission(2, 64, 5000);
+const Submit = z.object({ lang: z.string().trim().min(1).max(64), code: z.string().min(1).max(512 * 1024) });
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) { try { const user = await requireUser(); const { id } = await context.params; if (!await canAccessHydroProblem(user, id)) return fail('无权查看该题目', 403); return ok(await requestHydroProblem({ platformBaseUrl: process.env.HYDRO_PROCTOR_BASE_URL || 'http://localhost' }, id)); } catch (error) { if (error instanceof AuthError) return fail(error.message, error.status); return fail(toErrorMessage(error), 502); } }
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  let release: (() => void) | undefined;
   try {
+    release = await acquire(request.signal);
     const user = await requireUser(request);
     const { id } = await context.params;
     if (!await canAccessHydroProblem(user, id)) return fail('无权提交该题目', 403);
-    const input = await parseBody(request, Submit);
+    const input = await parseBody(request, Submit, 4 * 1024 * 1024);
     const remote = await submitHydroJudge({ platformBaseUrl: process.env.HYDRO_PROCTOR_BASE_URL || 'http://localhost' }, { pid: Number(id), ...input });
     const ownerKey = user.id;
     const local = await prisma.problemSubmission.create({
@@ -38,6 +43,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       }
     });
     return ok({ ...remote, id: local.id, recordExamId: local.recordExamId, ownerKey: local.ownerKey, hydroRecordId: remote.id, createdAt: local.createdAt.toISOString(), code: input.code, totalTestCases: local.totalTestCases, passedTestCases: local.passedTestCases });
-  } catch (error) { if (error instanceof AuthError) return fail(error.message, error.status); if (error instanceof RequestParseError) return fail(error.message, 400, error.details); return fail(toErrorMessage(error), 502); }
+  } catch (error) {
+    if (error instanceof AuthError) return fail(error.message, error.status);
+    if (error instanceof RequestParseError) return fail(error.message, 400, error.details);
+    if (isRequestAdmissionError(error)) { const response = fail('题库试做服务繁忙，请稍后重试', 503); response.headers.set('Retry-After', '2'); return response; }
+    return fail(toErrorMessage(error), 502);
+  } finally { release?.(); }
 }
 export const OPTIONS = options;

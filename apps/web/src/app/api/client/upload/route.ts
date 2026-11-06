@@ -14,6 +14,8 @@ import { isIncidentRecording } from '@/lib/recording-policy';
 import { acquireMaterialUploadSlot } from '@/lib/upload-admission';
 import { withMediaSegmentWrite } from '@/lib/media-segment-write';
 import type { MaterialUploadGrant, Prisma } from '@prisma/client';
+import { pinReactionSegments } from '@/lib/reaction-events';
+import { reactionStoredBytes } from '@/lib/reaction-storage-budget';
 
 const UploadMetaSchema = z.object({
   examId: z.string().optional(),
@@ -23,7 +25,9 @@ const UploadMetaSchema = z.object({
   uploadId: z.string().min(1).max(160).regex(/^[a-zA-Z0-9_-]+$/).optional(),
   startedAt: z.iso.datetime({ offset: true }).optional(),
   endedAt: z.iso.datetime({ offset: true }).optional(),
-  evidenceOnly: z.enum(['true', 'false']).optional()
+  evidenceOnly: z.enum(['true', 'false']).optional(),
+  clockOffsetMs: z.coerce.number().finite().min(-86400000).max(86400000).optional(),
+  clockUncertaintyMs: z.coerce.number().finite().min(0).max(60000).optional()
 });
 
 const MB = 1024 * 1024;
@@ -97,7 +101,9 @@ export async function POST(request: Request) {
       startedAt: form.get('startedAt') || undefined,
       endedAt: form.get('endedAt') || undefined,
       uploadId: form.get('uploadId') || undefined,
-      evidenceOnly: form.get('evidenceOnly') || undefined
+      evidenceOnly: form.get('evidenceOnly') || undefined,
+      clockOffsetMs: form.get('clockOffsetMs') ?? undefined,
+      clockUncertaintyMs: form.get('clockUncertaintyMs') ?? undefined
     });
     const fileError = validateUploadFile(file, meta.channel);
     if (fileError) return fail(fileError, fileError === '上传文件过大' ? 413 : 400);
@@ -126,14 +132,19 @@ export async function POST(request: Request) {
 
     const examId = meta.examId || session?.examId || grant?.examId;
     if (!examId) return fail('缺少 examId，且无法从 session/candidate 推断考试', 400);
-    const exam = await prisma.exam.findUnique({ where: { id: examId }, select: { endAt: true, saveFullRecording: true, saveIncidentRecording: true, recordingsDeletedAt: true } });
+    const exam = await prisma.exam.findUnique({ where: { id: examId }, select: { endAt: true, saveFullRecording: true, saveIncidentRecording: true, reactionEnabled: true, reactionConfig: true, recordingsDeletedAt: true } });
     if (!exam) return fail('考试不存在', 404);
     const monitoring = ['DESKTOP_SCREEN', 'DESKTOP_CAMERA', 'MOBILE_CAMERA', 'EVIDENCE_CLIP'].includes(meta.channel);
     const recordingChannel = ['DESKTOP_SCREEN', 'DESKTOP_CAMERA', 'MOBILE_CAMERA'].includes(meta.channel) ? meta.channel
       : meta.channel === 'EVIDENCE_CLIP' && !file.type.startsWith('image/') ? 'DESKTOP_SCREEN' : null;
     if (monitoring && exam.recordingsDeletedAt) return ok({ discarded: true, reason: 'deleted' });
-    if (recordingChannel && !exam.saveFullRecording && !exam.saveIncidentRecording) return ok({ discarded: true, reason: 'disabled' });
-    if (session && !exam.saveFullRecording && recordingChannel) {
+    const reactionRecording = exam.reactionEnabled && ['DESKTOP_SCREEN','DESKTOP_CAMERA'].includes(recordingChannel || '');
+    if (reactionRecording) {
+      if (!meta.startedAt || !meta.endedAt) return fail('Reaction 录像必须提供采集起止时间',400);
+      if (new Date(meta.endedAt).getTime() > Date.now()+5000 || new Date(meta.startedAt).getTime() < Date.now()-86400000) return fail('录像时钟未同步',400);
+    }
+    if (recordingChannel && !exam.saveFullRecording && !exam.saveIncidentRecording && !reactionRecording) return ok({ discarded: true, reason: 'disabled' });
+    if (session && !exam.saveFullRecording && recordingChannel && !reactionRecording) {
       if (!meta.startedAt || !meta.endedAt) return fail('异常录像必须提供真实起止时间', 400);
       if (!await isIncidentRecording(session.id, recordingChannel, new Date(meta.startedAt), new Date(meta.endedAt))) {
         // New clients retry evidence until its incident has arrived. Older
@@ -174,6 +185,7 @@ export async function POST(request: Request) {
     }
     // A lost success response can be acknowledged even after the grace window;
     // only new data is subject to the finished-session deadline.
+    if (reactionRecording && await reactionStoredBytes(prisma,examId)+BigInt(buffer.length) > (exam.reactionConfig?.maxStorageBytes ?? 21474836480n)) return fail('Reaction 存储已达上限，保留现有录像并暂停新上传',507);
     if (session?.status === 'FINISHED' && (!session.endedAt || session.endedAt.getTime() < Date.now() - FINISHED_UPLOAD_GRACE_MS)) {
       return fail('考试会话已结束且录像补传窗口已关闭', 409);
     }
@@ -198,7 +210,7 @@ export async function POST(request: Request) {
       discardedReason = 'deleted';
       authorizationExpired = false;
       await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${examId} FOR UPDATE`;
-      const currentExam = await tx.exam.findUnique({ where: { id: examId }, select: { saveFullRecording: true, saveIncidentRecording: true, recordingsDeletedAt: true } });
+      const currentExam = await tx.exam.findUnique({ where: { id: examId }, select: { saveFullRecording: true, saveIncidentRecording: true, reactionEnabled: true, reactionConfig:true, recordingsDeletedAt: true } });
       const previous = await tx.mediaSegment.findUnique({ where: { id } });
       const currentSession = session ? await tx.clientSession.findUnique({ where: { id: session.id } }) : null;
       const authorized = session ? Boolean(currentSession && verifyClientTokenForSession(request, currentSession, sideForChannel(meta.channel)))
@@ -211,14 +223,20 @@ export async function POST(request: Request) {
         return null;
       }
       // Recheck under the exam lock: an administrator can disable saving while decoding/uploading.
-      const recordingDenied = recordingChannel && !currentExam?.saveFullRecording && (!currentExam?.saveIncidentRecording
+      const reactionAllowed = currentExam?.reactionEnabled && ['DESKTOP_SCREEN','DESKTOP_CAMERA'].includes(recordingChannel || '');
+      if (reactionAllowed && !previous && await reactionStoredBytes(tx,examId)+BigInt(buffer.length) > (currentExam.reactionConfig?.maxStorageBytes ?? 21474836480n)) {
+        discardedReason='storage_limit';
+        if(!await mediaHasReferences(tx,stored.objectPath)) await queueFileDeletion(tx,{kind:'MEDIA',examId,objectPath:stored.objectPath,storage,requestedById:'reaction-budget'},true);
+        return null;
+      }
+      const recordingDenied = !reactionAllowed && recordingChannel && !currentExam?.saveFullRecording && (!currentExam?.saveIncidentRecording
         || !session || !meta.startedAt || !meta.endedAt || !await isIncidentRecording(session.id, recordingChannel, new Date(meta.startedAt), new Date(meta.endedAt), tx));
       if (monitoring && (recordingDenied || currentExam?.recordingsDeletedAt || previous?.deletedAt || await tx.fileDeletionJob.findFirst({ where: { kind: 'MEDIA', objectHash: objectHash(stored.objectPath) } }))) {
         if (recordingDenied) discardedReason = 'disabled';
         if (!await mediaHasReferences(tx, stored.objectPath)) await queueFileDeletion(tx, { kind: 'MEDIA', examId, objectPath: stored.objectPath, storage, requestedById: 'client-upload' }, true);
         return null;
       }
-      return tx.mediaSegment.upsert({
+      const saved = await tx.mediaSegment.upsert({
         where: { id },
         update: {},
         create: {
@@ -231,6 +249,9 @@ export async function POST(request: Request) {
           byteSize: buffer.length,
           validatedAt: new Date(),
           durationSeconds: validated.duration,
+          reactionCache: Boolean(reactionAllowed && !currentExam?.saveFullRecording),
+          clockOffsetMs: meta.clockOffsetMs,
+          clockUncertaintyMs: meta.clockUncertaintyMs,
           // Persist the short provider-independent key; authorized read APIs
           // resolve/sign it, and long S3 hostnames cannot overflow VARCHAR(191).
           objectPath: stored.objectPath,
@@ -243,6 +264,11 @@ export async function POST(request: Request) {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') return tx.mediaSegment.findUniqueOrThrow({ where: { id } });
         throw error;
       });
+      if (saved && reactionAllowed) {
+        const pending = await tx.reaction.findMany({where:{examId,candidateId:session?.candidateId,status:{in:['PENDING','TAIL','CAPTURING']}}});
+        for(const r of pending) await pinReactionSegments(tx,r.id);
+      }
+      return saved;
     });
     if (!segment) return authorizationExpired ? fail('上传凭据已失效或会话已注销，请重新连接后重试', 401) : ok({ discarded: true, reason: discardedReason });
     if (segment.objectPath !== stored.objectPath) {

@@ -5,6 +5,7 @@ import { Check, ChevronDown, ChevronRight, Copy, KeyRound, RefreshCw, Save, X } 
 import { api } from './api';
 import { DesktopReleasePanel } from './DesktopReleasePanel';
 import { LiveApiKeysPanel } from './LiveApiKeysPanel';
+import { ReactionBrandingPanel } from './ReactionBrandingPanel';
 import { HYDRO_SETTINGS_VERSION, publicHydroSettings, type HydroConnectionSettings, type HydroSettingsResponse } from '@/lib/hydro-settings-contract';
 import type { HydroConnectionCheckResult } from '@/lib/hydro-connection-check';
 
@@ -53,7 +54,7 @@ export function SystemPageClient() {
   const [externalSettings, setExternalSettings] = useState<ExternalLoginSettings>(externalFallback);
   const [hydroSettings, setHydroSettings] = useState<HydroSettings>(hydroFallback);
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(fallback);
-  const [openPanel, setOpenPanel] = useState<'hydro' | 'external' | 'storage' | 'desktop' | 'live' | null>('hydro');
+  const [openPanel, setOpenPanel] = useState<'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding' | null>('hydro');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState('');
   const [isError, setIsError] = useState(false);
@@ -82,6 +83,12 @@ export function SystemPageClient() {
     for (const load of [loadExternalSettings, loadHydroSettings, loadStorageSettings]) {
       void load().catch(error => { setIsError(true); setMessage(error instanceof Error ? error.message : '系统设置加载失败'); });
     }
+  }, []);
+
+  useEffect(() => {
+    const openLinkedPanel = () => { if (window.location.hash === '#reaction-branding') setOpenPanel('branding'); };
+    openLinkedPanel(); window.addEventListener('hashchange', openLinkedPanel);
+    return () => window.removeEventListener('hashchange', openLinkedPanel);
   }, []);
 
   async function saveExternalSettings() {
@@ -205,7 +212,7 @@ export function SystemPageClient() {
     }
   }
 
-  function panelHeader(panel: 'hydro' | 'external' | 'storage' | 'desktop' | 'live', title: string) {
+  function panelHeader(panel: 'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding', title: string) {
     const open = openPanel === panel;
     return (
       <button className="collapse-header" onClick={() => setOpenPanel(open ? null : panel)}>
@@ -230,6 +237,11 @@ export function SystemPageClient() {
       <section className="card form">
         {panelHeader('live', '直播 API Key 管理')}
         {openPanel === 'live' && <LiveApiKeysPanel />}
+      </section>
+
+      <section className="card form" id="reaction-branding">
+        {panelHeader('branding', 'Reaction 组织徽章与默认徽章')}
+        {openPanel === 'branding' && <ReactionBrandingPanel />}
       </section>
 
       <section className="card form">

@@ -1,4 +1,5 @@
 import { proctorSessionEndAt, requireContestSession } from '@/lib/client-contest';
+import { admittedContestLoad } from '@/lib/request-admission';
 import { readClientSubmissionHistory } from '@/lib/client-submission-history';
 import { serializeContestState } from '@/lib/client-contest-state';
 import { requestHydroContest, requestHydroLanguages } from '@/lib/hydro-contest';
@@ -56,6 +57,10 @@ function splitMemberText(value: string | null | undefined) {
 }
 
 export async function GET(request: Request) {
+  return admittedContestLoad(request, () => handleGet(request));
+}
+
+async function handleGet(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const sessionId = searchParams.get('sessionId') || '';
@@ -128,6 +133,7 @@ export async function GET(request: Request) {
         ...local,
         submissions,
         revision: serializeContestState(session).revision,
+        serverNow: new Date().toISOString(),
         contest: { ...local.contest, languagesError, endAt: proctorSessionEndAt(session).toISOString(), latestStartAt: candidateStartDeadline(session.exam, session.candidate.lateStartAllowedAt).toISOString(), candidateCount, allowTeamSubmissionView: canViewTeamSubmissions(session.exam) },
         session: {
           id: session.id,
@@ -151,6 +157,7 @@ export async function GET(request: Request) {
     return ok({
       ...hydro,
       revision: serializeContestState(session).revision,
+      serverNow: new Date().toISOString(),
       user: candidateUser,
       // Hydro uses a shared judge account. The proctoring database is the
       // only source of truth for candidate submission history.

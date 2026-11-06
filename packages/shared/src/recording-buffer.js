@@ -6,24 +6,35 @@
     canvas.width = options.width; canvas.height = options.height;
     const context = canvas.getContext('2d', { alpha: false });
     if (!context || !canvas.captureStream) throw new Error('当前设备无法生成压缩录像');
-    const stream = canvas.captureStream(options.frameRate);
+    let stream = canvas.captureStream(0);
+    let frameTrack = stream.getVideoTracks()[0];
+    const manualFrames = typeof frameTrack?.requestFrame === 'function';
+    if (!manualFrames) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = canvas.captureStream(options.frameRate);
+      frameTrack = null;
+    }
     for (const track of source.getAudioTracks()) stream.addTrack(track.clone());
+    let stopped = false;
     const paint = () => {
-      if (video.readyState >= 2) context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (stopped || video.readyState < 2) return;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      // Explicit frame requests avoid depending on canvas presentation/rAF.
+      // The desktop host keeps this timer unthrottled while monitoring is hidden.
+      if (manualFrames) frameTrack.requestFrame();
     };
     const timer = setInterval(paint, 1000 / options.frameRate);
-    let stopped = false;
     function stop() {
       if (stopped) return;
       stopped = true; clearInterval(timer);
       video.pause(); video.srcObject = null;
       stream.getTracks().forEach(track => track.stop());
     }
-    void video.play().catch(error => { stop(); options.onError(error); });
+    void video.play().then(paint).catch(error => { stop(); options.onError(error); });
     return { stream, stop };
   };
   root.proctorRecordingEnabled = function (requirements) {
-    return requirements?.isPublicTest !== true && (requirements?.saveFullRecording === true || requirements?.saveIncidentRecording === true);
+    return requirements?.isPublicTest !== true && (requirements?.saveFullRecording === true || requirements?.saveIncidentRecording === true || requirements?.reactionEnabled === true);
   };
   // At most one minute stays in memory when recording is explicitly enabled.
   root.createProctorRecordingBuffer = function (options) {

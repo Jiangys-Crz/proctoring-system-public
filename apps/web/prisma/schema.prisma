@@ -205,6 +205,9 @@ model Exam {
   ipLoginRestrictionEnabled Boolean      @default(true)
   saveFullRecording Boolean             @default(false)
   saveIncidentRecording Boolean         @default(false)
+  reactionEnabled Boolean               @default(false)
+  reactionConfig ReactionConfig?
+  reactions Reaction[]
   externalBoardEnabled Boolean          @default(false)
   externalBoardBaseUrl String?           @default("https://www.example.org/api") @db.VarChar(512)
   externalBoardApiKey String?            @db.Text
@@ -228,6 +231,10 @@ model Exam {
   cheatingRecords    CheatingRecord[]
   problems           ExamProblem[]
   submissions        ContestSubmission[]
+  federation         ExamFederation?
+  federationEntries  ExamFederationEntry[]
+  federationContent  ExamFederationContent[]
+  federationAssets   ExamFederationAsset[]
   codeCheckJobs      CodeCheckJob[]
   questions          ExamQuestion[]
   announcements      ExamAnnouncement[]
@@ -330,6 +337,13 @@ model ContestSubmission {
   judgeAt              DateTime?
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt
+  syncImported         Boolean     @default(false)
+  syncOriginNodeId     String?     @db.VarChar(36)
+  federationDirty      Boolean     @default(true)
+  federationRevision   Int         @default(0)
+  federationWriteToken String      @default("") @db.VarChar(36)
+  judgeForced          Boolean     @default(false)
+  federationEntry      ExamFederationEntry?
   exam                 Exam        @relation(fields: [examId], references: [id], onDelete: Cascade)
   candidate            Candidate   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   problem              ExamProblem @relation(fields: [problemId], references: [id], onDelete: Cascade)
@@ -337,10 +351,69 @@ model ContestSubmission {
   @@index([examId, candidateId, createdAt])
   @@index([examId, actorKey, createdAt])
   @@index([examId, problemId, createdAt])
+  @@index([examId, createdAt, id])
   @@index([hydroRecordId])
   @@index([deferredJudge, judgeClaimedAt])
   @@index([judgeAt, createdAt])
   @@index([examId, updatedAt, id])
+  @@index([examId, federationDirty, updatedAt, id])
+}
+
+// One durable, independently configured stream per exam and installation.
+model ExamFederation {
+  examId              String   @id
+  exam                Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  role                String   @db.VarChar(8)
+  enabled             Boolean  @default(false)
+  generation          Int      @default(0)
+  nodeId              String   @unique @db.VarChar(36)
+  apiKeyHash          String?  @db.VarChar(64)
+  apiKeyCiphertext    String?  @db.Text
+  remoteBaseUrl       String?  @db.VarChar(512)
+  boundHubId          String?  @db.VarChar(36)
+  contractHash        String?  @db.VarChar(64)
+  localContractHash   String?  @db.VarChar(64)
+  problemMapping      Json?
+  sequence            BigInt   @default(0)
+  pushCursor          BigInt   @default(0)
+  pullCursor          BigInt   @default(0)
+  contentSequence     BigInt   @default(0)
+  contentPushCursor   BigInt   @default(0)
+  contentPullCursor   BigInt   @default(0)
+  communicationSuccessAt DateTime?
+  communicationError  String?  @db.Text
+  communicationNextAttemptAt DateTime @default(now())
+  communicationFailures Int @default(0)
+  leaseToken          String?  @db.VarChar(36)
+  leaseUntil          DateTime?
+  nextAttemptAt       DateTime @default(now())
+  submissionNextAttemptAt DateTime @default(now())
+  failures            Int      @default(0)
+  lastSuccessAt       DateTime?
+  lastError           String?  @db.Text
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([enabled, nextAttemptAt])
+}
+
+// Latest authoritative snapshot, ordered under the exam lock. Retrying an
+// exchange can only update this identity, never append another submission.
+model ExamFederationEntry {
+  examId       String
+  originNodeId String   @db.VarChar(36)
+  submissionId String   @unique
+  writerNodeId String   @db.VarChar(36)
+  revision     Int
+  sequence     BigInt
+  payloadHash  String   @db.VarChar(64)
+  snapshot     Json
+  exam         Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  submission   ContestSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@id([examId, originNodeId, submissionId])
+  @@index([examId, sequence])
+  @@index([examId, writerNodeId, sequence])
 }
 
 // Hydro 使用共享判题账号，题库页面的提交记录必须在本地保存提交用户和代码。
@@ -664,6 +737,11 @@ model MediaSegment {
   byteSize      Int            @default(0)
   validatedAt   DateTime?
   durationSeconds Float?
+  reactionCache Boolean @default(false)
+  clockOffsetMs Float?
+  clockUncertaintyMs Float?
+  receivedAt DateTime @default(now())
+  reactionSegments ReactionSegment[]
   deletedAt     DateTime?
   exam        Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
   candidate   Candidate?     @relation(fields: [candidateId], references: [id], onDelete: SetNull)
@@ -674,6 +752,110 @@ model MediaSegment {
   @@index([objectPath, deletedAt])
   @@index([sessionId, deletedAt, channel, startedAt])
   @@index([examId, deletedAt, startedAt])
+}
+
+// Existing deployments apply deployment/migrations/20261104-reactions.sql.
+model ReactionLogo {
+  id String @id @default(cuid())
+  label String @db.VarChar(200)
+  schoolName String? @db.VarChar(200)
+  objectPath String @unique @db.VarChar(512)
+  createdById String
+  archivedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([archivedAt, schoolName])
+  @@index([createdById])
+}
+
+model ReactionConfig {
+  examId String @id
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  bufferSeconds Int @default(60)
+  beforeSeconds Int @default(3)
+  afterSeconds Int @default(10)
+  maxPendingSeconds Int @default(1800)
+  maxStorageBytes BigInt @default(21474836480)
+  retentionDays Int @default(30)
+  uploadGraceSeconds Int @default(30)
+  autoGenerate Boolean @default(false)
+  presentation Json?
+  initializedAt DateTime?
+  feedStatus String @default("STOPPED")
+  lastEventAt DateTime?
+  lastError String? @db.Text
+  leaseToken String?
+  leaseUntil DateTime?
+  updatedAt DateTime @updatedAt
+}
+
+model Reaction {
+  id String @id @default(cuid())
+  examId String
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  contestId String
+  submissionId String
+  // Retain the retired physical column for non-destructive db push upgrades.
+  // Ignored by Prisma Client; all Reaction identities use submissionId.
+  legacyDisplayId Int? @map("displayId") @ignore
+  teamId String
+  candidateId String?
+  teamName String
+  schoolName String?
+  problemId String
+  problemLabel String
+  sourceSubmittedAt DateTime
+  submissionObservedAt DateTime
+  judgementObservedAt DateTime?
+  sourceJudgementEndAt DateTime?
+  eventOffsetMs Float @default(0)
+  windowStart DateTime
+  windowEnd DateTime?
+  status String @default("PENDING")
+  verdict String?
+  originalVerdict String?
+  judgementId String?
+  verdictHistory Json @default("[]")
+  rankContext Json?
+  renderMetadata Json?
+  error String? @db.Text
+  cameraPath String?
+  desktopPath String?
+  metadataPath String?
+  reactionPath String?
+  outputBytes BigInt @default(0)
+  reservedBytes BigInt @default(0)
+  durationSeconds Float?
+  generationStatus String @default("IDLE")
+  generationError String? @db.Text
+  finalizedAt DateTime?
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  segments ReactionSegment[]
+  @@unique([examId, submissionId])
+  @@unique([examId, legacyDisplayId], map: "Reaction_examId_displayId_key")
+  @@index([examId, status, windowStart])
+  @@index([generationStatus])
+}
+
+model ReactionSegment {
+  reactionId String
+  segmentId String
+  reaction Reaction @relation(fields: [reactionId], references: [id], onDelete: Cascade)
+  segment MediaSegment @relation(fields: [segmentId], references: [id], onDelete: Restrict)
+  @@id([reactionId, segmentId])
+  @@index([segmentId])
+}
+
+model ReactionEvent {
+  examId String
+  type String
+  remoteId String
+  payloadHash String @db.VarChar(64)
+  payload Json?
+  observedAt DateTime @default(now())
+  @@id([examId, type, remoteId])
 }
 
 // Opaque credentials never expose the candidate password or a session token.
@@ -753,6 +935,7 @@ model LiveApiKey {
   id        String   @id @default(cuid())
   name      String   @db.VarChar(100)
   keyHash   String   @unique @db.VarChar(64)
+  keyCiphertext String? @db.Text
   keyPrefix String   @db.VarChar(16)
   enabled   Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -867,6 +1050,15 @@ model ExamQuestion {
   answeredById String?
   answeredAt   DateTime?
   isPublished  Boolean   @default(false)
+  publicationId String?  @db.VarChar(36)
+  messageClock BigInt @default(0)
+  initialMessageId String? @db.VarChar(191)
+  federationDirty Boolean @default(true)
+  federationAttemptAt DateTime?
+  federationRevision Int @default(0)
+  syncOriginNodeId String? @db.VarChar(36)
+  answeredByLabel String? @db.VarChar(200)
+  announcements ExamAnnouncement[] @relation("PublicQuestionAnnouncement")
   exam         Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
   candidate    Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   answeredBy   User?     @relation("ExamQuestionAnsweredBy", fields: [answeredById], references: [id], onDelete: SetNull)
@@ -874,6 +1066,7 @@ model ExamQuestion {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  @@index([examId, federationDirty, federationAttemptAt])
   @@index([examId, answeredAt, createdAt])
   @@index([examId, updatedAt])
   @@index([candidateId, createdAt])
@@ -886,10 +1079,21 @@ model ExamQuestionMessage {
   content        String                @db.Text
   createdById    String?
   acknowledgedAt DateTime?
+  threadOrder BigInt @default(0)
+  creatorLabel   String? @db.VarChar(200)
+  federationDirty Boolean @default(true)
+  federationAttemptAt DateTime?
+  syncOriginNodeId String? @db.VarChar(36)
+  deliveredAt DateTime?
   question       ExamQuestion          @relation(fields: [questionId], references: [id], onDelete: Cascade)
   createdBy      User?                 @relation("ExamQuestionMessageCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt      DateTime              @default(now())
 
+  @@index([questionId, federationDirty, createdAt])
+  @@index([questionId, deliveredAt])
+  @@index([deliveredAt])
+  @@index([questionId, threadOrder, createdAt])
+  @@index([questionId, sender, acknowledgedAt])
   @@index([questionId, createdAt])
 }
 
@@ -902,10 +1106,21 @@ model ExamAnnouncement {
   exam        Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
   candidate   Candidate? @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   createdBy   User?      @relation("ExamAnnouncementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  sourceQuestionId String?
+  sourcePublicationId String? @db.VarChar(36)
+  sourceQuestion ExamQuestion? @relation("PublicQuestionAnnouncement", fields: [sourceQuestionId], references: [id], onDelete: Cascade)
+  withdrawn Boolean @default(false)
+  creatorLabel String? @db.VarChar(200)
+  federationDirty Boolean @default(true)
+  federationAttemptAt DateTime?
+  syncOriginNodeId String? @db.VarChar(36)
+  deliveredAt DateTime?
   receipts    ExamAnnouncementReceipt[]
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
+  @@index([examId, federationDirty, federationAttemptAt])
+  @@index([examId, withdrawn, deliveredAt])
   @@index([examId, createdAt])
   @@index([candidateId, createdAt])
 }
@@ -1077,4 +1292,85 @@ model CodeCheckEngineLease {
   ownerId   String?
   leaseAt   DateTime?
   updatedAt DateTime @updatedAt
+}
+
+// External relay credentials are independent of examination live-read keys.
+model LiveRelayKey {
+  id            String   @id @default(cuid())
+  name          String   @db.VarChar(100)
+  keyHash       String   @unique @db.VarChar(64)
+  readKeyHash   String   @unique @db.VarChar(64)
+  keyPrefix     String   @db.VarChar(20)
+  readKeyPrefix String   @db.VarChar(24)
+  enabled       Boolean  @default(true)
+  maxStreams    Int      @default(4)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  streams       LiveRelayStream[]
+}
+
+model LiveRelayStream {
+  id         String       @id @db.VarChar(64)
+  keyId      String?
+  name       String       @db.VarChar(100)
+  enabled    Boolean      @default(true)
+  archived   Boolean      @default(false)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  key        LiveRelayKey? @relation(fields: [keyId], references: [id], onDelete: Restrict)
+
+  @@index([keyId, archived])
+  @@index([archived, createdAt])
+}
+
+// Dedicated relay sessions; resourceSecret is NOT the MediaMTX control API id.
+// Pending reservations expire so abandoned offers cannot retain capacity.
+model LiveRelayWebRtcConnection {
+  id             String   @id @db.VarChar(36)
+  streamId       String   @db.VarChar(64)
+  keyId          String
+  mode           String   @db.VarChar(8)
+  ownerHash      String   @db.VarChar(64)
+  adminId        String?
+  mediaId        String?  @db.VarChar(36)
+  resourceSecret String?  @db.VarChar(36)
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([streamId, expiresAt])
+  @@index([keyId])
+  @@index([expiresAt])
+}
+
+
+model ExamFederationContent {
+  examId String
+  kind String @db.VarChar(16)
+  entityId String @db.VarChar(191)
+  originNodeId String @db.VarChar(36)
+  writerNodeId String @db.VarChar(36)
+  revision Int
+  sequence BigInt
+  payloadHash String @db.VarChar(64)
+  snapshot Json
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  @@id([examId, kind, entityId])
+  @@index([examId, sequence])
+  @@index([examId, writerNodeId, sequence])
+}
+
+model ExamFederationAsset {
+  id String @id @db.VarChar(36)
+  examId String
+  originNodeId String @db.VarChar(36)
+  sha256 String @db.VarChar(64)
+  accessKeyHash String @db.VarChar(64)
+  accessKeyCiphertext String @db.Text
+  bytes Bytes @db.MediumBlob
+  byteSize Int
+  expiresAt DateTime
+  sourceObjectKey String? @db.VarChar(512)
+  exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
+  @@unique([examId, sourceObjectKey])
+  @@index([examId, sha256])
 }

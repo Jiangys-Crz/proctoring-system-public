@@ -57,8 +57,31 @@ export function queueMediaUpload(item: Omit<QueuedMediaUpload, 'id' | 'createdAt
   );
 }
 
-export function listMediaUploads() {
-  return withStore<QueuedMediaUpload[]>('readonly', (store) => store.getAll());
+/** Read a bounded batch, skipping deferred keys before loading their blobs. */
+export async function listMediaUploads(skip: ReadonlySet<string> = new Set(), limit = 8, apiBase?: string) {
+  const database = await openDatabase();
+  try {
+    return await new Promise<QueuedMediaUpload[]>((resolve, reject) => {
+      const items: QueuedMediaUpload[] = [];
+      const transaction = database.transaction(STORE, 'readonly');
+      const store = transaction.objectStore(STORE);
+      const cursor = store.openKeyCursor();
+      transaction.oncomplete = () => resolve(items);
+      transaction.onabort = () => reject(transaction.error || new Error('录像补传队列读取失败'));
+      transaction.onerror = () => reject(transaction.error || new Error('录像补传队列读取失败'));
+      cursor.onsuccess = () => {
+        const entry = cursor.result;
+        if (!entry || items.length >= limit) return;
+        if (skip.has(String(entry.primaryKey))) { entry.continue(); return; }
+        const request = store.get(entry.primaryKey);
+        request.onsuccess = () => {
+          const item = request.result as QueuedMediaUpload | undefined;
+          if (item && (!apiBase || !item.apiBase || item.apiBase === apiBase)) items.push(item);
+          entry.continue();
+        };
+      };
+    });
+  } finally { database.close(); }
 }
 
 export function deleteMediaUpload(id: string) {

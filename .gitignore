@@ -47,3 +47,16 @@ project.private.config.json
 *.db
 *.sqlite
 *.sqlite3
+# Reaction local credentials, media validation output, and Python caches.
+/.local/
+/apps/web/.local/
+/apps/desktop/.local/
+__pycache__/
+*.pyc
+
+# Database schema migrations are source code, not database backups.
+!/deployment/migrations/*.sql
+# Do not publish operational deployment records.
+/docs/*发布记录.md
+/docs/*部署记录.md
+/docs/*发布与清理记录.md

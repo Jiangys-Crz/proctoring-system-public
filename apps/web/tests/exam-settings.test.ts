@@ -7,7 +7,6 @@ import { allowedProblemLanguages, languageFamily } from '../src/lib/exam-languag
 import { submissionVisibility } from '../src/lib/submission-visibility';
 import { serializeLocalContest } from '../src/lib/local-contest';
 import { problemLimits } from '../src/lib/problem-limits';
-import { allSessionsFullyOfflineForRelogin, sessionFullyOfflineForRelogin } from '../src/lib/client-session-policy';
 import { calculateLeaderboards } from '../src/lib/leaderboards';
 import { canCandidateSubmit, canViewTeamSubmissions } from '../src/lib/contest-format';
 import { candidateIdentityLookup } from '../src/lib/candidate-identity';
@@ -100,19 +99,7 @@ test('individual late-start permission permits admission until the exam end and 
     assert.equal(+effectiveEnd(exam, late), flexible ? Math.min(+exam.endAt, +late + exam.durationMinutes * 60_000) : +exam.endAt);
   }
 });
-test('relogin expires every active session only after all required sides are offline for two minutes', () => {
-  const now = new Date('2026-09-25T09:02:00Z');
-  const stale = { createdAt: new Date('2026-09-25T08:00:00Z'), lastDesktopSeenAt: new Date('2026-09-25T09:00:00Z'), lastMiniProgramSeenAt: new Date('2026-09-25T09:00:00Z') };
-  const desktopAlive = { ...stale, lastDesktopSeenAt: new Date('2026-09-25T09:01:30Z') };
-  const miniProgramAlive = { ...stale, lastMiniProgramSeenAt: new Date('2026-09-25T09:01:30Z') };
-  assert.equal(sessionFullyOfflineForRelogin(stale, now, true), true);
-  assert.equal(sessionFullyOfflineForRelogin(desktopAlive, now, true), false);
-  assert.equal(sessionFullyOfflineForRelogin(miniProgramAlive, now, true), false);
-  assert.equal(allSessionsFullyOfflineForRelogin([stale, stale], now, true), true);
-  assert.equal(allSessionsFullyOfflineForRelogin([stale, desktopAlive], now, true), false);
-  assert.equal(sessionFullyOfflineForRelogin(miniProgramAlive, now, false), true);
-  assert.equal(sessionFullyOfflineForRelogin(desktopAlive, now, false), false);
-});
+
 test('XCPC ignores flexible windows and locks remaining minutes before end', () => {
   const time = normalizeExamSettings({ ...base, contestRule: 'ACM', flexible: true, freezeMinutes: 30 });
   assert.equal(time.endAt.toISOString(), '2026-09-25T10:00:00.000Z');

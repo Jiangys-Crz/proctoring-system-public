@@ -1,3 +1,4 @@
+import { assertFederationDefinitionMutable } from '@/lib/exam-federation-contract';
 import { z } from 'zod';
 import { normalizeParticipationGroup, participationOptions, isXcpcLeaderboard, isFemale } from '@cwnupaa/proctor-shared/leaderboard';
 import { CandidateImportRowSchema } from '@cwnupaa/proctor-shared';
@@ -134,7 +135,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const errors = validateRows(exam.contestRule, exam.contestType, exam.teamAccountMode, rows);
     if (errors.length) return fail(errors.join('；'), 400, errors);
     const result = await prisma.$transaction(async tx => {
-      await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${id} FOR UPDATE`;
+      await assertFederationDefinitionMutable(tx, id);
       const roomNames = [...new Set(input.rows.map(row => clean(row.roomName)).filter((name): name is string => Boolean(name)))];
       const rooms = roomNames.length ? await tx.examRoom.findMany({ where: { examId: id, name: { in: roomNames } } }) : [];
       const roomIds = new Map(rooms.map(room => [room.name, room.id]));
@@ -192,6 +193,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const errors = validateRows(exam.contestRule, exam.contestType, exam.teamAccountMode, [row]);
     if (errors.length) return fail(errors.join('；'), 400, errors);
     const updated = await prisma.$transaction(async tx => {
+      await assertFederationDefinitionMutable(tx, id);
       const current = await tx.candidate.findFirst({ where: { id: input.id, examId: id } });
       if (!current) throw new RequestParseError('考生不存在');
       await assertUniqueness(tx, id, exam.contestType, exam.teamAccountMode, row, current.id, current.teamName);
@@ -213,7 +215,10 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const user = await requireUser(request); const { id } = await context.params;
     if (!(await canManageExam(user, id))) return fail('无权管理该考试的考生', 403);
     const input = await parseBody(request, CandidateDeleteSchema);
-    const result = await prisma.candidate.deleteMany({ where: { examId: id, id: { in: input.ids } } });
+    const result = await prisma.$transaction(async tx => {
+      await assertFederationDefinitionMutable(tx, id);
+      return tx.candidate.deleteMany({ where: { examId: id, id: { in: input.ids } } });
+    });
     return ok({ deleted: result.count });
   } catch (error) {
     if (error instanceof AuthError) return fail(error.message, error.status);

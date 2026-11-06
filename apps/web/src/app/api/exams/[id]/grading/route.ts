@@ -1,9 +1,10 @@
+import { gradeLatestSubmission } from '@/lib/contest-grading-write';
 import { z } from 'zod';
 import { AuthError, requireUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { calculateLeaderboards } from '@/lib/leaderboards';
 import { canManageExam } from '@/lib/permissions';
-import { IGNORED_SUBMISSION_STATUS, problemLabel, scaledSubmissionScore } from '@/lib/contest-rules';
+import { compareSubmissionOrder, IGNORED_SUBMISSION_STATUS, problemLabel, scaledSubmissionScore } from '@/lib/contest-rules';
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 
 const GradeSchema = z.object({
@@ -33,9 +34,9 @@ async function gradingExam(id: string) {
   });
 }
 
-async function gradingSubmissions(id: string) {
+async function gradingSubmissions(id: string, exam: { startAt: Date; endAt: Date }, now: Date) {
   return prisma.contestSubmission.findMany({
-    where: { examId: id, status: { not: IGNORED_SUBMISSION_STATUS } },
+    where: { examId: id, status: { not: IGNORED_SUBMISSION_STATUS }, createdAt: { gte: exam.startAt, lt: exam.endAt, lte: now } },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true, candidateId: true, problemId: true, status: true, statusText: true,
@@ -56,14 +57,16 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 
     // Poll the same durable results as candidate history; the background judge
     // refreshes them without making review pages wait on Hydro availability.
-    const submissions = await gradingSubmissions(id);
+    const now = new Date();
+    const submissions = await gradingSubmissions(id, exam, now);
 
     const latest = new Map<string, (typeof submissions)[number]>();
     for (const submission of submissions) {
       const key = `${submission.candidateId}:${submission.problemId}`;
-      if (!latest.has(key)) latest.set(key, submission);
+      const previous = latest.get(key);
+      if (!previous || compareSubmissionOrder(submission, previous) > 0) latest.set(key, submission);
     }
-    const ranking = calculateLeaderboards(exam, exam.problems, exam.candidates, submissions, new Date(), true);
+    const ranking = calculateLeaderboards(exam, exam.problems, exam.candidates, submissions, now, true);
     const rankByExamNumber = new Map(ranking.rows.map(row => [row.username, row]));
     const rows = exam.candidates.map(candidate => {
       const ranked = rankByExamNumber.get(candidate.examNumber);
@@ -97,7 +100,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         }),
       };
     }).sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER)
-      || a.candidate.examNumber.localeCompare(b.candidate.examNumber));
+      || (a.candidate.examNumber < b.candidate.examNumber ? -1 : a.candidate.examNumber > b.candidate.examNumber ? 1 : 0));
 
     return ok({
       exam: { id: exam.id, name: exam.name, examCode: exam.examCode, contestRule: exam.contestRule },
@@ -129,24 +132,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (input.score !== null && input.score > submission.problem.score) {
       return fail(`评分不能超过该题满分 ${submission.problem.score}`, 400);
     }
-    const latest = await prisma.contestSubmission.findFirst({
-      where: {
-        examId: id,
-        candidateId: submission.candidateId,
-        problemId: submission.problemId,
-        status: { not: IGNORED_SUBMISSION_STATUS },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true },
-    });
-    if (latest?.id !== submission.id) return fail('该记录已不是考生本题最后一次有效递交，请刷新后重试', 409);
-
     const manualScore = input.score === null ? null : Math.round(input.score * 100) / 100;
-    const updated = await prisma.contestSubmission.update({
-      where: { id: submission.id },
-      data: { manualScore, manualScoreUpdatedAt: manualScore === null ? null : new Date() },
-      select: { id: true, manualScore: true, manualScoreUpdatedAt: true },
-    });
+    const updated = await gradeLatestSubmission(submission, manualScore);
     return ok(updated);
   } catch (error) {
     if (error instanceof AuthError) return fail(error.message, error.status);

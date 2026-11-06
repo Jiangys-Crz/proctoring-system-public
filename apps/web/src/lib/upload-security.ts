@@ -125,38 +125,57 @@ export async function boundedUploadForm(request: Request, limit = 81 * 1024 * 10
   finally { clearTimeout(timer); await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
+type MaterialFileIdentity = { id: string; objectPath: string; byteSize: number; validatedAt: Date | null };
+export type VerifiedMaterialFiles = ReadonlyArray<Readonly<{ id: string; objectPath: string; byteSize: number; validatedAt: number }>>;
+
+/** Check storage before borrowing a write connection. Inside the transaction,
+ * bind the result to freshly-read immutable IDs, paths, sizes and validation
+ * timestamps, while still rechecking ownership and consuming the grant once. */
+async function verifyMaterialFiles(records: MaterialFileIdentity[], storage: StorageSettings, verified?: VerifiedMaterialFiles): Promise<VerifiedMaterialFiles> {
+  const identities = records.map(record => ({ id: record.id, objectPath: record.objectPath, byteSize: record.byteSize,
+    validatedAt: record.validatedAt?.getTime() || 0 }));
+  if (verified !== undefined) {
+    if (identities.length !== verified.length || identities.some(record => !verified.some(file =>
+      file.id === record.id && file.objectPath === record.objectPath && file.byteSize === record.byteSize && file.validatedAt === record.validatedAt))) {
+      throw new LoginFlowError('材料在提交期间发生变化，请重新提交', 409);
+    }
+  } else if ((await Promise.all(records.map(record => storedObjectExists(record.objectPath, record.byteSize, storage)))).some(exists => !exists)) {
+    throw new LoginFlowError('材料文件缺失或不完整，请重新上传', 400);
+  }
+  return identities;
+}
+
 export async function validatedLoginMaterials(tx: Prisma.TransactionClient, input: {
   uploadTicket?: string; miniProgramDeviceId?: string; identityPhotoPath?: string; roomVideoPath?: string;
-}, examId: string, candidateId: string, pairingId: string, now: Date, memberIdentity: { memberStudentId: string | null; memberName: string | null } | null = null, storage?: StorageSettings) {
+}, examId: string, candidateId: string, pairingId: string, now: Date, memberIdentity: { memberStudentId: string | null; memberName: string | null } | null = null, storage?: StorageSettings, verified?: VerifiedMaterialFiles) {
   if (!input.uploadTicket || !input.miniProgramDeviceId) throw new LoginFlowError('请重新上传身份照片和环境视频', 400);
   const grant = await tx.materialUploadGrant.findUnique({ where: { tokenHash: hashUploadTicket(input.uploadTicket) } });
   if (!grant || grant.consumedAt || grant.expiresAt <= now || grant.examId !== examId || grant.candidateId !== candidateId ||
     grant.pairingId !== pairingId || grant.deviceId !== input.miniProgramDeviceId ||
     grant.memberStudentId !== (memberIdentity?.memberStudentId || null) || grant.memberName !== (memberIdentity?.memberName || null)) throw new LoginFlowError('材料凭据已失效或与当前考生、队员、电脑配对不匹配', 403);
-  const records = await tx.mediaSegment.findMany({ where: { uploadGrantId: grant.id, examId, candidateId, sessionId: null,
+  const records = await tx.mediaSegment.findMany({ where: { uploadGrantId: grant.id, examId, candidateId, sessionId: null, deletedAt: null,
     objectPath: { in: [input.identityPhotoPath || '', input.roomVideoPath || ''] }, validatedAt: { not: null } } });
   const photo = records.find(item => item.channel === 'IDENTITY_PHOTO' && item.objectPath === input.identityPhotoPath && item.byteSize > 0n);
   const video = records.find(item => item.channel === 'ROOM_VIDEO' && item.objectPath === input.roomVideoPath && item.byteSize > 0n && isValidRoomVideoDuration(item.durationSeconds));
   if (!photo || !video) throw new LoginFlowError('必须提交本人上传的真实身份照片和 3–15 秒环境视频', 400);
   const destination = storage || await getStorageSettings(tx);
-  const files = await Promise.all([photo, video].map(record => storedObjectExists(record.objectPath, record.byteSize, destination)));
-  if (files.some(exists => !exists)) throw new LoginFlowError('材料文件缺失或不完整，请重新上传', 400);
-  return { grant, ids: [photo.id, video.id] };
+  const verifiedFiles = await verifyMaterialFiles([photo, video], destination, verified);
+  return { grant, ids: [photo.id, video.id], verifiedFiles };
 }
 
-export async function assertReviewMaterials(tx: Prisma.TransactionClient, requestId: string, candidateId: string, examId: string, storage?: StorageSettings) {
+export async function assertReviewMaterials(tx: Prisma.TransactionClient, requestId: string, candidateId: string, examId: string, storage?: StorageSettings, verified?: VerifiedMaterialFiles): Promise<VerifiedMaterialFiles> {
   const room = await tx.examRoom.findFirst({ where: { examId, candidates: { some: { candidateId } } } });
   if (!room) throw new LoginFlowError('考生尚未分配考室', 403);
-  if (!room.requireSecondCamera) return;
+  if (!room.requireSecondCamera) return [];
   const login = await tx.loginRequest.findUnique({ where: { id: requestId } });
   const grant = await tx.materialUploadGrant.findFirst({ where: { loginRequestId: requestId, candidateId, examId, consumedAt: { not: null } } });
   if (!login || !grant || login.miniProgramDeviceId !== grant.deviceId || login.memberStudentId !== grant.memberStudentId || login.memberName !== grant.memberName) throw new LoginFlowError('登录请求没有有效的本人材料，请重新提交', 400);
-  const records = await tx.mediaSegment.findMany({ where: { uploadGrantId: grant.id, candidateId, examId, validatedAt: { not: null } } });
+  const records = await tx.mediaSegment.findMany({ where: { uploadGrantId: grant.id, candidateId, examId, deletedAt: null, validatedAt: { not: null } } });
   const photo = records.find(item => item.channel === 'IDENTITY_PHOTO' && item.objectPath === login.identityPhotoPath && item.byteSize > 0n);
   const video = records.find(item => item.channel === 'ROOM_VIDEO' && item.objectPath === login.roomVideoPath && item.byteSize > 0n && isValidRoomVideoDuration(item.durationSeconds));
   if (!photo || !video) {
     throw new LoginFlowError('审核材料缺失、格式无效或不属于该考生', 400);
   }
   const destination = storage || await getStorageSettings(tx);
-  if ((await Promise.all([photo, video].map(record => storedObjectExists(record.objectPath, record.byteSize, destination)))).some(exists => !exists)) throw new LoginFlowError('审核材料文件缺失或不完整，请重新上传', 400);
+  return verifyMaterialFiles([photo, video], destination, verified);
 }

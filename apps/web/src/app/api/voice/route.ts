@@ -1,4 +1,4 @@
-import { accountAuxiliaryUpload, boundedUploadForm, UploadSecurityError } from '@/lib/upload-security';
+import { accountAuxiliaryUpload, acquireUploadSlot, boundedUploadForm, UploadSecurityError } from '@/lib/upload-security';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
@@ -49,8 +49,10 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  let release: (() => void) | undefined;
   try {
     const user = await requireUser(request);
+    release = acquireUploadSlot();
     const form = await boundedUploadForm(request, 9 * 1024 * 1024);
     const file = form.get('file');
     if (!(file instanceof File)) return fail('缺少语音文件', 400);
@@ -93,7 +95,7 @@ export async function POST(request: Request) {
     if (error instanceof AuthError) return fail(error.message, error.status);
     if (error instanceof UploadSecurityError) return fail(error.message, error.status);
     return fail(toErrorMessage(error), 500);
-  }
+  } finally { release?.(); }
 }
 
 export const OPTIONS = options;

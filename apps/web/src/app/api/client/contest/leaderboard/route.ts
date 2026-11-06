@@ -7,6 +7,7 @@ import { isLocalContest } from '@/lib/local-contest';
 import { isPublicTestExam } from '@/lib/public-test';
 import { isScoreboardFrozen, isXcpcScoring } from '@/lib/contest-rules';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
+import { isRequestAdmissionError } from '@/lib/request-admission';
 
 const LeaderboardQuerySchema = z.object({
   sessionId: z.string().min(1),
@@ -58,6 +59,11 @@ export async function POST(request: Request) {
     return ok(result);
   } catch (error) {
     if (error instanceof RequestParseError) return fail(error.message, 400, error.details);
+    if (isRequestAdmissionError(error)) {
+      const response = fail('排行榜加载繁忙，请稍后重试', 503);
+      response.headers.set('Retry-After', '2');
+      return response;
+    }
     return fail(toErrorMessage(error), 502);
   }
 }

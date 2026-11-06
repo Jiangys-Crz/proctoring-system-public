@@ -75,7 +75,6 @@ try {
       desktopOfflineAt: entry.desktopOffline ? now : null, miniProgramOfflineAt: entry.phoneOffline ? now : null,
     } });
     assert.deepEqual(await healthSessionIds(exam.id, now), entry.transition ? [{ id: session.id }] : [], entry.name);
-    assert.deepEqual(await healthSessionIds(exam.id, now, undefined, true), entry.revocation ? [{ id: session.id }] : [], `${entry.name} / revocation only`);
   }
   console.log(`PASS: ${cases.length} real-MySQL health scan cases; room overrides, exact cutoffs, approval/creation clocks, personal deadlines and finished rows.`);
 } finally {

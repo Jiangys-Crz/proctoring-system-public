@@ -1,3 +1,4 @@
+import { admittedLogin } from '@/lib/request-admission';
 import { z } from 'zod';
 import { verifyCandidateIdentity } from '@/lib/candidate-verify';
 import { LoginFlowError, requireRoomLoginMethod } from '@/lib/room-login-policy';
@@ -15,6 +16,10 @@ const Input = z.object({
 });
 
 export async function POST(request: Request) {
+  return admittedLogin(request, () => handlePost(request));
+}
+
+async function handlePost(request: Request) {
   try {
     const body = await parseBody(request, Input, 16 * 1024);
     const result = await verifyCandidateIdentity(body);

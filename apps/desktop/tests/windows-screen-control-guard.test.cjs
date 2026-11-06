@@ -88,7 +88,7 @@ test('native guard reports readiness, tracks 32/64-bit windows and fully release
   assert.equal(env.timers.size, 0);
 });
 
-test('helper failures cannot report protected success and retries stop after three attempts', () => {
+test('helper failures cannot report protected success and protection keeps retrying until stopped', () => {
   const env = fixture(); env.guard.start();
   env.send(env.children[0], 'DEGRADED\n');
   assert.match(env.statuses.at(-1), /保护异常/);
@@ -97,7 +97,7 @@ test('helper failures cannot report protected success and retries stop after thr
   env.advance(1000);
   env.children[2].emit('exit', 22);
   env.advance(10_000);
-  assert.equal(env.children.length, 3);
+  assert.ok(env.children.length >= 3);
   assert.equal(env.statuses.includes(null), false);
   env.guard.stop();
   env.advance(10_000);

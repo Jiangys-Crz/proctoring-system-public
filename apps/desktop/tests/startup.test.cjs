@@ -100,6 +100,10 @@ test('login window stays hidden until loaded, recovers one renderer crash and re
   vm.runInContext(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
   context.createWindow();
   assert.equal(window.options.show, false); assert.equal(window.shown, 0); assert.equal(window.maximized, 0);
+  assert.equal(window.options.webPreferences.backgroundThrottling, false, 'evidence capture must continue when the window is hidden or unfocused');
+  assert.equal(window.options.webPreferences.contextIsolation, true);
+  assert.equal(window.options.webPreferences.nodeIntegration, false);
+  assert.equal(window.options.webPreferences.webSecurity, true);
   window.emit('ready-to-show'); assert.equal(window.shown, 1); assert.equal(window.maximized, 1);
   window.webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
   assert.equal(window.reloaded, 1); assert.equal(failures, 0); assert.equal(cleanup, 1);

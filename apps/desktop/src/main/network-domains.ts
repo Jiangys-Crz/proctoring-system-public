@@ -57,10 +57,13 @@ async function startCapture(command: string, args: string[], tshark: boolean, cu
     captures.add(child);
     let pending = '';
     let ready = false;
+    let ended = false;
     let stderr = '';
     let readyTimer: NodeJS.Timeout | null = null;
     const timeout = setTimeout(() => fail(new Error('域名采集启动超时')), 5000);
     const fail = (error: Error) => {
+      if (ended) return;
+      ended = true;
       clearTimeout(timeout);
       if (readyTimer) clearTimeout(readyTimer);
       if (!child.killed) child.kill();
@@ -159,7 +162,8 @@ export async function startNetworkDomainMonitor(): Promise<NetworkDomainStatus> 
   const pending = (async () => {
     try {
       const tshark = tsharkPath();
-      if (tshark) {
+      let packetCaptureStarted = false;
+      if (tshark) try {
         const listing = await run(tshark, ['-D']);
         if (generation !== current) return getNetworkDomainStatus();
         const interfaces = listing.split(/\r?\n/).filter((line) => !/extcap|sshdump|ciscodump|randpkt|udpdump|wifidump/i.test(line))
@@ -176,7 +180,18 @@ export async function startNetworkDomainMonitor(): Promise<NetworkDomainStatus> 
           '-T', 'fields', '-e', 'dns.qry.name', '-e', 'tls.handshake.extensions_server_name', '-e', 'http.host'
         ], true, current);
         if (generation === current) status = { state: 'ready', message: '网络检测已授权' };
-      } else if (process.platform === 'win32') {
+        packetCaptureStarted = true;
+      } catch (error) {
+        if (generation !== current) return getNetworkDomainStatus();
+        // A broken optional Wireshark/Npcap installation must not suppress
+        // the same built-in fallback used when Wireshark is absent.
+        console.warn('[network-domains] Wireshark unavailable; trying built-in capture', error instanceof Error ? error.message : String(error));
+        for (const child of captures) if (!child.killed) child.kill();
+        captures.clear();
+      }
+      if (generation !== current) return getNetworkDomainStatus();
+      if (packetCaptureStarted) return getNetworkDomainStatus();
+      if (process.platform === 'win32') {
         await startWindowsCache(current);
       } else {
         const command = ['/usr/sbin/tcpdump', '/usr/bin/tcpdump'].find(existsSync);

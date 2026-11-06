@@ -1,3 +1,4 @@
+import { compareExamStart } from '@/lib/exam-list-order';
 import { publicTestExamId } from '@/lib/public-test';
 import { CreateExamSchema } from '@cwnupaa/proctor-shared';
 import { prisma } from '@/lib/db';
@@ -37,6 +38,8 @@ export async function GET() {
             orderBy: { startAt: 'desc' },
             include
           });
+    const now = Date.now();
+    exams.sort((a, b) => compareExamStart(a, b, now));
     return ok(publicDto(exams.map(exam => ({ ...exam, canManage: user.role === 'SUPER_ADMIN' || exam.createdById === user.id || exam.administrators.some(admin => admin.userId === user.id) }))));
   } catch (error) {
     if (error instanceof AuthError) return fail(error.message, error.status);

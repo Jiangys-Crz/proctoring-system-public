@@ -8,6 +8,8 @@
 首次部署请先阅读 [开源版本配置说明](OPEN_SOURCE.md)。文档和客户端中的 `example.org`、`example.test` 及局域网 IP 均为示例；请替换为自己的服务地址、密钥、AppID 和签名配置。仓库不提供现成的公网服务或安装包。
 
 
+从不含 Reaction 的旧版升级，或在新服务器启用 NovaJudge Reaction，请按下方 [Reaction 完整升级流程](#novajudge-reaction-自动录像与-ccs-授权) 完成数据库迁移、生成器安装、环境配置和独立 Recorder 部署。后台没有 CCS 账号密码输入框。
+
 ## 项目结构
 
 - `apps/web`：Next.js 全栈网页端与服务器 API，数据库使用 MySQL + Prisma。
@@ -65,6 +67,154 @@ NovaJudge 当前导出的 `submit_time` 没有时区，发布页的「NovaJudge 
 内网 NovaJudge 使用私有域名和 Caddy 内部证书时，监考网页容器也必须能解析该域名并信任该服务器的 CA。按 `deployment/docker-compose.host.example.yml` 在对应服务器创建 `deployment/docker-compose.host.yml`，填写本服务器的 DNS 映射与 CA 路径；该文件不提交到仓库，`scripts/deploy-caddy.sh` 会同时加载它。每台服务器单独保留自己的 `.env` 和覆盖配置；直接执行 Compose 命令时也需带上 `-f deployment/docker-compose.host.yml`。不关闭 HTTPS 证书校验。
 
 验证命令：`pnpm --filter @cwnupaa/proctor-web test:novajudge`；隔离 MySQL 数据库名必须为 `proctor_novajudge_qa` 才能运行 `test:novajudge:integration`；构建桌面后运行 `test:novajudge:desktop`，使用本机 HTTP 测试服务验证真实 Electron Cookie、浏览器限制、文件下载、锁定与结束清理，不采集真实监考视频。
+
+### NovaJudge Reaction 自动录像与 CCS 授权
+
+本节用于**已有监考服务器从不含 Reaction 的版本升级**，也可交给 AI 作为部署执行说明。Reaction 包含三个环节：CCS 接收 NovaJudge 提交和判题事件，更新后的桌面客户端上传录像片段，独立 Recorder 裁剪录像并调用官方 Python 生成器合成视频。**完整启用需要数据库、运行环境、配置和常驻进程都就绪。**
+
+#### 1. 检查现有部署与升级数据库
+
+部署者或 AI 先读取实际服务配置，识别宿主机运行还是 Docker、仓库目录、数据库、存储位置、服务运行账号和已有 Recorder。以下目录、域名、账号均为示例，按该服务器实际情况替换；保留现有 `.env`、数据库密码、会话密钥、管理员账号、上传文件和 Docker 卷。更新前备份数据库及上传文件，按原部署方式安排服务停止与重启，不在升级过程中重置数据库或重新初始化管理员。
+
+使用 `package.json` 指定的 pnpm 版本和其支持的 Node 版本；当前 Docker 使用 Node 24。更新代码、安装依赖后，先检查数据库中的 `Exam.reactionEnabled`、`MediaSegment` 的 Reaction 字段以及 `Reaction*` 表：
+
+- **旧库尚无 Reaction 结构**：检查 [增量 SQL](deployment/migrations/20261104-reactions.sql) 与实际 schema，确认没有重复字段/表后执行一次，再生成 Prisma Client。
+- **已经有 Reaction 表，或已运行 `db:push` 创建了这些结构**：对比实际 schema 与 `apps/web/prisma/schema.prisma`，只应用缺失变更；不要再次执行整份增量 SQL。早期实验版升级还需阅读 [已有安装升级说明](docs/reaction-export.md#已有安装升级)。
+- **全新空库**：使用项目原有初始化流程建立完整 schema；不再叠加执行这份旧库增量 SQL。
+
+宿主机部署、且确认是尚无 Reaction 的旧库时，从仓库根目录执行：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @cwnupaa/proctor-web exec prisma db execute --file ../../deployment/migrations/20261104-reactions.sql --schema prisma/schema.prisma
+pnpm --filter @cwnupaa/proctor-web db:generate
+```
+
+迁移使用该部署原有的 `DATABASE_URL`。这份 SQL 不是可重复执行的初始化脚本；如果升级还跨越其他功能的 schema 变更，也需审查那些差异。Docker 的 Web 启动命令已有 `db:push` / `db:seed`，应在启动新版 Web 前确定迁移顺序：已执行 SQL 的库仍可由正常启动流程检查 schema；已由 `db:push` 补齐结构的库不再执行增量 SQL。
+
+#### 2. 安装官方视频生成器
+
+Recorder 所在运行环境需要 **Python 3.12+、Git、FFmpeg、FFprobe 和中文字体**。Python 包安装在独立虚拟环境内；不要只在另一台机器或宿主机安装，而让实际 Recorder 容器缺少这些依赖。
+
+Linux 示例：先通过该发行版的包管理器准备上述工具及 Python venv 支持，中文字体可安装 Noto CJK。以下假设使用可写的 `/opt/reaction-runtime` 目录进行首次安装：
+
+```bash
+mkdir -p /opt/reaction-runtime
+git clone https://github.com/icpc/reactions-generator.git /opt/reaction-runtime/reactions-generator
+git -C /opt/reaction-runtime/reactions-generator checkout --detach 59fd21d50e8bf4c69bd6e4b5c19a60726f30a20b
+python3.12 -m venv /opt/reaction-runtime/venv
+/opt/reaction-runtime/venv/bin/python -m pip install /opt/reaction-runtime/reactions-generator typed-ffmpeg==3.11 typer==0.20.1
+```
+
+这是仓库指定的已验证上游版本。已有生成器目录或虚拟环境时先检查版本和本地改动，符合要求则复用；不覆盖其他用途的 Python 环境。运行服务的账号需要读取生成器、字体，并可执行虚拟环境的 Python。
+
+Windows 可从仓库根目录运行现有安装脚本；若系统有多个 Python，`-Python` 填实际的 Python 3.12+ 可执行文件路径：
+
+```powershell
+.\scripts\setup-reaction-generator.ps1 -Python python
+```
+
+脚本在仓库忽略的 `tmp/reaction-generator-runtime` 中安装，并输出 `REACTION_GENERATOR_ROOT`、`REACTION_GENERATOR_PYTHON` 两个路径，**不会自动修改 `.env`**。完整生成器说明见 [reaction-generator.md](docs/reaction-generator.md)。
+
+#### 3. 补充服务端环境变量
+
+**宿主机直接运行的配置入口是 `apps/web/.env`。** 新部署尚无此文件时才从 [模板](apps/web/.env.example) 创建；已有文件只补充或修改对应键，保留数据库、存储和其他配置。下例假设 Linux 仓库位于 `/srv/proctoring-system`，生成器采用上一步的安装目录：
+
+```dotenv
+# 必填：NovaJudge CCS 事件接口
+REACTION_CCS_ORIGIN="https://judge.example.org"
+REACTION_CCS_USERNAME="your_novajudge_super_admin"
+REACTION_CCS_PASSWORD="CHANGE_ME_TO_THAT_ACCOUNT_PASSWORD"
+
+# 生成视频必填：实际存在的生成器目录和虚拟环境 Python
+REACTION_GENERATOR_ROOT="/opt/reaction-runtime/reactions-generator"
+REACTION_GENERATOR_PYTHON="/opt/reaction-runtime/venv/bin/python"
+
+# 可选：合成超时，默认 1800 秒
+REACTION_GENERATOR_TIMEOUT_SECONDS=1800
+# 可选：默认从 apps/web 工作目录定位；显式配置时需使用实际仓库路径
+REACTION_GENERATOR_ADAPTER="/srv/proctoring-system/apps/web/scripts/reaction-generator-cli.py"
+
+# 可选：默认从 PATH 查找；以下为 Linux 常见路径
+FFMPEG_PATH="/usr/bin/ffmpeg"
+FFPROBE_PATH="/usr/bin/ffprobe"
+
+# 可选：自动查找已安装的 Noto CJK / 微软雅黑；显式设置时文件必须存在
+# 以下为 Debian/Ubuntu 安装 fonts-noto-cjk 后的常见路径
+REACTION_GENERATOR_FONT="/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+REACTION_GENERATOR_FONT_BOLD="/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+```
+
+Windows 的生成器目录和 Python 使用安装脚本输出的值，路径可写成 `D:/...`；适配脚本、FFmpeg 和 FFprobe 也改为实际 Windows 路径。中文字体可用 `C:/Windows/Fonts/msyh.ttc` 与 `C:/Windows/Fonts/msyhbd.ttc`。所有路径以 **Recorder 所在主机或容器**为准；未准备某项可选配置时可省略，让程序按默认规则查找，不能保留一个不存在的示例路径。
+
+Python 生成器自身也通过 `PATH` 调用 `ffmpeg` 和 `ffprobe`，因此除上述路径设置外，Recorder 的运行环境中必须能直接找到这两个命令。队名/学校名含中文时，常规字体和粗体都需要中文覆盖。
+
+CCS 使用 **NovaJudge 全局 `SUPER_ADMIN` 账号的用户名和密码**，由 Recorder 通过服务端 HTTP Basic 读取 Event Feed。监考后台管理员账号、比赛内账号、外榜或直播 API Key、浏览器登录状态都不能代替它。凭据保留在服务器，不能提交到 Git、放进 `NEXT_PUBLIC_*` 或发送给浏览器；后台**没有 CCS 账号密码输入框**。
+
+`REACTION_CCS_ORIGIN` 必须与该考试 NovaJudge 平台地址的 origin 完全一致（协议、主机、非默认端口；不带 `/api`、路径或末尾 `/`）。同一 origin 的多场比赛默认复用这三项，无需逐比赛授予 CCS 权限。可选 `REACTION_CCS_CREDENTIALS` 按**监考考试内部 `Exam.id`** 配置完整的 `origin/username/password`，命中时优先于三项默认值；它不是10位考试编号，也不是 NovaJudge 比赛ID。
+
+只有 `localhost`、`127.0.0.1`、`[::1]` 允许 HTTP，其他地址（包括内网 IP 和 Docker 服务名）要求有效 HTTPS。`localhost` 与 `127.0.0.1` 不互换；容器内的回环地址指容器自身。私有域名需让 Web 和 Recorder 都能解析并信任对应 CA，不关闭证书校验。逐考试覆盖的完整规则见 [CCS 授权配置说明](docs/reaction-ccs-auth.md)。
+
+#### 4. 重启 Web 并常驻运行 Recorder
+
+按原部署流程重新构建并重启 Web，更新考生网页及桌面客户端。宿主机可在仓库根目录运行 `pnpm build:web`、`pnpm build:client`，再由原服务管理器启动新版；桌面端需构建、发布并安装包含 Reaction 采集能力的版本。
+
+Recorder 是独立 Node 进程。先等待旧实例退出，再从仓库根目录启动一个实例：
+
+```bash
+cd apps/web
+node --env-file=.env --import tsx scripts/reaction-recorder.ts
+```
+
+正式运行应使用 systemd、现有进程管理器或独立容器守护，而不是依赖 SSH/PowerShell 窗口。配置工作目录为实际 `apps/web`，使用已安装项目依赖和生成 Prisma Client 的同一份代码，设置退出后重启。Web 和 Recorder 必须连接**同一数据库、同一套本地或 S3 存储**；本地存储要指向同一实际目录，运行账号要有读写权限，并为转码临时文件预留空间。
+
+上述 Node 命令显式加载 `.env`，不会自动读取 Next.js 的 `.env.local` / `.env.production`；已有进程环境变量还会覆盖文件同名值。检查两个进程的有效配置一致，修改后重启实际服务。不要同时运行命令行 Recorder 与另一份守护实例；异常退出后的旧数据库租约最多约 60 秒过期。
+
+#### 5. Docker 部署需要补齐的内容
+
+当前基础 `docker-compose.yml` **没有 Recorder 服务，也没有自动转发 `REACTION_*` 变量**。现有 Web 镜像提供 FFmpeg 和 Noto CJK，但未安装 Python 3.12+ 虚拟环境及官方生成器。Docker 部署不能只编辑 `.env` 后重启 Web 就视为完成。
+
+由 AI 或部署者按该服务器现有 Compose / Caddy 覆盖文件实施以下内容：
+
+1. 将 CCS 配置通过 `environment` 或 `env_file` 显式传入 Web 和 Recorder；生成器及字体路径配置传入 Recorder。Compose 根 `.env` 默认只参与变量替换，宿主机 `apps/web/.env` 也不会自动进入容器。`environment` 的同名键优先于 `env_file`。
+2. 为 Recorder 构建包含匹配版本的项目代码、Node/pnpm 依赖、Prisma Client、Python 3.12+、固定版本官方生成器、FFmpeg/FFprobe 与中文字体的镜像。Python 虚拟环境应在目标镜像中创建，不能直接搬用 Windows 或其他系统的虚拟环境。所有配置路径必须在运行容器内存在。
+3. 新增独立 Recorder 服务，工作目录为 `/app/apps/web`（按镜像实际目录调整），启动命令为 `node --import tsx scripts/reaction-recorder.ts`，配置重启策略。此命令读取容器已注入的环境；只有确实挂载了环境文件时才使用 `--env-file`。
+4. Recorder 接入原数据库网络，使用原来的 `DATABASE_URL` 和存储配置；本地存储挂载 **Web 正在使用的同一个上传卷**，并使用相同容器内路径和可读写的运行身份。沿用现有 Compose 项目名和覆盖文件，防止误建另一套数据库/上传卷。使用 S3 时两者须访问同一 bucket、配置及凭据。
+5. 数据库迁移在能访问实际数据库、且包含迁移文件的执行环境完成。当前 Web Dockerfile 没有复制 `deployment/migrations`，不能假定该 SQL 已在容器内；可受控挂载 SQL 或通过原数据库维护方式执行。核对 schema 后，按原参数重新构建镜像并重新创建 Web / Recorder 容器。
+
+`docker compose restart` 不会刷新容器环境，`docker compose exec web node ...` 只适合临时诊断，不是持久化 Recorder 部署。已有 Web 的 `db:push` / `db:seed` 启动行为仍需计入迁移顺序。保留所有现有卷，不执行 `down -v`、数据库 reset 或 `--accept-data-loss`。仅注入 Web CCS 配置的示例见 [Docker CCS 配置](docs/reaction-ccs-auth.md#6-docker配置必须进入实际运行进程)，该示例不代替完整生成器和 Recorder 服务。
+
+#### 6. 检查媒体服务并验收
+
+MediaMTX 负责直播，Reaction 使用客户端上传的录像片段；两条链路都要分别检查。媒体地址应按 Web 的运行位置配置：
+
+| Web 运行方式 | `MEDIA_WHIP_INTERNAL_BASE` | `MEDIA_HLS_INTERNAL_BASE` | `MEDIA_API_INTERNAL_BASE` |
+| --- | --- | --- | --- |
+| 宿主机 Web，媒体端口映射到本机 | `http://127.0.0.1:8889` | `http://127.0.0.1:8080` | `http://127.0.0.1:9997` |
+| 同一 Compose 网络，媒体服务名为 `media` | `http://media:8889` | `http://media:8080` | `http://media:9997` |
+
+MediaMTX 的 HTTP 鉴权回调也需能访问 Web。现有 Compose 使用 `http://web:4031/api/media/auth`；宿主机 Web 配媒体容器时按部署设置可达的 `MEDIA_AUTH_HTTP_ADDRESS`（本地 Docker Desktop 常用 `http://host.docker.internal:4031/api/media/auth`）。确认 `MEDIA_WEBRTC_ADDITIONAL_HOSTS` 和实际 ICE 端口可达；直接映射方式使用 TCP/UDP `8189`，Caddy 网关方式按 [网关文档](deployment/CADDY_GATEWAY.md) 配置，不能混用。媒体私有控制和信令端口不需要向公网开放。NovaJudge 与监考服务器均应启用可靠的 NTP 时间同步。
+
+完成部署后按顺序验证：
+
+1. 在真实测试考试中核对 NovaJudge 平台 origin、比赛 ID、外榜 API Key；监考 `Candidate.examNumber` 必须等于对应 NovaJudge 队伍账号/CCS `team_id`，仅队名相同不够。
+2. 在“考试详情 → Reaction 录像”开启本场功能，等待 Event Feed 显示 **已连接**，检查 Recorder 持续运行且没有连接错误。“凭据已配置”只表示字段齐全，不能代替实际连接验证。
+3. 使用更新后的桌面客户端登录，允许所需的屏幕/摄像头采集；等待至少一个实际配置的缓存窗口（默认 60 秒），确认直播可看、两路缓存持续上传。
+4. 完成一次真实 OJ 提交和判题，保持采集直到尾段及上传宽限结束，检查对应 Camera/Desktop 原始录像可播放。
+5. 点击生成，确认 `generationStatus=COMPLETE`，预览和下载实际的 1080×1920 MP4；需要批量导出时再验证 ZIP。默认自动生成关闭，需在本场 Reaction 设置中单独开启；**不存在 `REACTION_ENABLED=true` 环境变量**。
+
+开启前或关闭期间的历史提交不会补录。配置修好后，已有原始录像的失败生成任务可以在列表重试；不需要为验证生成器再次提交同一份代码。部分录像的生成规则、保留期与存储预算见 [Reaction 使用与部署](docs/reactions.md)。
+
+| 现象或错误 | 检查位置与处理 |
+| --- | --- |
+| `REACTION_GENERATOR_NOT_CONFIGURED` | 实际 Recorder 进程缺少 `REACTION_GENERATOR_ROOT` 或 `REACTION_GENERATOR_PYTHON`；安装生成器、补齐环境并重启 Recorder，再重试生成。 |
+| `REACTION_GENERATOR_EXECUTABLE_UNAVAILABLE` / `REACTION_GENERATOR_PROCESS_FAILED_*` | 检查 Recorder 内的 Python 路径、虚拟环境依赖、字体文件与 FFmpeg 的 `PATH`，以及该运行账号的权限；仅填写路径不会安装依赖。 |
+| CCS 未连接、`CCS_HTTP_401` / `CCS_HTTP_403` | 核对实际配置的 NovaJudge 全局超级管理员凭据、精确 origin、证书信任及网络访问；同时检查逐考试覆盖是否仍使用旧值。 |
+| 任务一直 `QUEUED`，或状态 `STOPPED` | 检查独立 Recorder 是否运行、数据库/存储是否一致、旧租约是否释放，以及是否加载了错误环境文件。 |
+| WHIP 502，`ECONNREFUSED 127.0.0.1:8889` | Web 无法连接 MediaMTX：检查服务是否启动、端口是否被占用、映射是否正确及 Web 是否在容器内；该错误发生在媒体连接建立之前。 |
+| 显示 `PARTIAL` / `MISSING`，缺少原始录像 | 检查新版客户端、缓存上传、采集权限、时间同步和窗口覆盖；CCS 已连接不代表录像片段已到达。 |
+
+交由 AI 升级时，最终交付应列出实际修改的配置键（隐藏密码和密钥）、数据库迁移结果、Web/Recorder/MediaMTX 的启动方式、生成器版本和上述验收结果。尚未验证的环节明确列出，不能仅凭容器在运行或页面显示“已配置”就宣称完整启用。
 
 ## 完成度审计
 
@@ -148,6 +298,8 @@ CWNUPAA_EXTERNAL_APP_KEY="replace-with-cwnupaa-app-key"
 HYDRO_PROCTOR_SHARED_SECRET="" # 仅旧登录票据使用；当前判题无需配置
 HYDRO_PROCTOR_API_KEY="replace-with-a-second-random-api-key"
 ```
+
+如需 NovaJudge Reaction，还须按上方 [完整升级流程](#novajudge-reaction-自动录像与-ccs-授权) 在同一文件填写 CCS 和生成器配置、安装运行依赖并单独启动 Recorder。已有旧库先按该流程检查迁移分支；下面的初始化命令面向新部署。
 
 4. 初始化数据库：
 
@@ -270,6 +422,8 @@ DNS 记录指向服务器 IP；后台和学生网页的 HTTPS 入口分别转发
 
 仅在仓库根目录配置 Docker Compose 的 `.env`，不需要创建各应用自己的环境文件。完整模板是根目录的 `.env.example`：
 
+本段描述基础监考容器。需要 Reaction 时，还要按照 [Reaction 完整升级流程](#novajudge-reaction-自动录像与-ccs-授权) 显式注入环境变量、安装生成器并部署独立 Recorder；Compose 的 `.env` 不会自动成为所有容器的环境变量。
+
 ```bash
 cp .env.example .env
 chmod 600 .env
@@ -317,6 +471,8 @@ curl -f http://127.0.0.1:4031/api/health
 浏览器直接访问 `/contest` 返回 403 是正常的客户端访问保护；通过已登录的桌面客户端验证答题页。手机打开 `https://proctorstu.example.org/` 验证第二机位入口，再通过真实考试或系统测试检查三路视频。
 
 更新前备份数据库及上传文件，再执行 `git pull --ff-only` 和 `docker compose up -d --build`。数据库和上传目录保存在 Docker 命名卷中，不要执行 `docker compose down -v`。
+
+从不含 Reaction 的版本升级时，先完成 [Reaction 数据库与运行环境检查](#novajudge-reaction-自动录像与-ccs-授权)，再执行对应部署分支的迁移与重建步骤；基础 Compose 更新命令不会自动安装或启动 Reaction 生成器和 Recorder。
 
 桌面客户端需要重新打包并在后台发布，才能使用新的公网学生域名；原生 Android/iOS App 和微信小程序如使用，也需要重新构建或发布。网页/API 改动不会自动替换已安装的客户端。
 
@@ -1039,3 +1195,13 @@ pnpm dist:desktop:win
 验证入口：`test:monitor`、`test:monitor:notifications`、`test:performance:monitor`、`test:performance:health-scan`、`test:alerts:acknowledgement`、`test:alerts:acknowledgement:http`、`test:security:attachments`、`test:security:pairing`。集成测试只允许显式指定本机 QA 数据库，并清理自建测试资料。
 
 部署需同步数据库新增的告警排序索引（`pnpm db:push`，Docker 后台启动时自动执行）并重建后台；桌面本地防抖与补传变化需要重新打包、分发 1.0.6。未在此开发环境操作生产数据库。生产依赖复查仍为 0 条公告，完整依赖审计的 41 条旧 Electron/构建工具公告仍存在，Windows 7 支持与风险边界同上节。
+
+## 公网与内网考试双向同步
+
+本机考试可按考试编号和考号双向同步源代码、提交结果和排行榜，支持双方手动重测、断网续传、版本冲突处理和考试专用 API-KEY。仅更新后台及数据库，无须改动客户端；NovaJudge 不使用此功能。配置和数据库升级见 [公网内网考试双向同步](docs/公网内网考试双向同步.md)。
+
+公告、答疑完整讨论、公开状态与系统上传的图片也双向同步，任意一端均可回复，并保留并发回复和固定消息编号。详情、后续增量 SQL 及本轮并发修复见 [公告答疑双向同步与并发复查](docs/公告答疑双向同步与并发复查.md)。
+
+## 外部直播接收与转发
+
+超级管理员先在“直播管理”创建流 ID，再使用“系统设置”中的通用直播 API-KEY 推流和播放。推流采用 `POST /api/live-relay/publish/流ID?apikey=系统密钥`（WHIP），观看使用 `GET /api/live/流ID?apikey=系统密钥`，也可通过同一播放地址的 POST 请求使用 WHEP。推流和播放均使用 WebRTC，同一流 ID 同时只允许一个推流设备。媒体独立运行，须开放实际配置的 ICE TCP/UDP 端口（默认 1940），无须修改监考客户端。部署、资源限额和接入方式见 [直播接收与转发使用文档](docs/直播接收与转发使用文档.md)。

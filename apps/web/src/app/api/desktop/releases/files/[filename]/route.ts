@@ -7,3 +7,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ file
   if (!asset) return new Response('Not found', { status: 404 });
   return desktopDownload(request, asset);
 }
+
+export const HEAD = GET;

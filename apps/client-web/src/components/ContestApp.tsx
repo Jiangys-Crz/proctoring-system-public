@@ -189,6 +189,7 @@ interface ExamQAData {
 }
 
 type CandidateNotification = { id: string; kind: 'announcement' | 'reply'; content: string; createdAt: string; candidateId?: string | null; questionId?: string };
+const notificationKey = (item: CandidateNotification) => `${item.kind}:${item.id}`;
 
 function createMockContestData(rule: ContestRule = 'ioi', running = false): ContestData {
   const beginAt = new Date(Date.now() + (running ? -30 * 60_000 : 5 * 60_000));
@@ -650,13 +651,34 @@ function SubmissionDetail({ submission, contest, user, maximumScore, resultVisib
 type PrintJob = { id: string; title: string; content: string; status: 'SAVED' | 'PENDING' | 'PRINTED' | 'REJECTED'; rejectedReason?: string | null; candidateName?: string | null; examNumber: string; createdAt: string };
 function PrintPage({ api, sessionId, mode }: { api: ClientApi; sessionId: string; mode: 'VIRTUAL' | 'PHYSICAL' }) {
   const [jobs, setJobs] = useState<PrintJob[]>([]); const [content, setContent] = useState(''); const [selected, setSelected] = useState<PrintJob | null>(null); const [creating, setCreating] = useState(false); const [busy, setBusy] = useState(false);
-  const load = useCallback(() => api.request<PrintJob[]>(`/api/client/print-jobs?sessionId=${encodeURIComponent(sessionId)}`).then(setJobs), [api, sessionId]);
-  useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 3000); return () => window.clearInterval(timer); }, [load]);
-  async function create() { if (!content.trim()) return; setBusy(true); try { await api.request('/api/client/print-jobs', { method: 'POST', body: JSON.stringify({ sessionId, content }) }); setContent(''); setCreating(false); await load(); } finally { setBusy(false); } }
+  const [error, setError] = useState('');
+  const readVersion = useRef(0);
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const version = ++readVersion.current;
+    try {
+      const next = await api.request<PrintJob[]>(`/api/client/print-jobs?sessionId=${encodeURIComponent(sessionId)}`, { signal });
+      if (!signal?.aborted && version === readVersion.current) { setJobs(next); setError(''); }
+    } catch (cause) {
+      if (!signal?.aborted && version === readVersion.current) setError(cause instanceof Error ? cause.message : '打印记录加载失败，将稍后重试');
+    }
+  }, [api, sessionId]);
+  useEffect(() => startSerialPolling(load, () => 3000), [load]);
+  async function create() {
+    if (!content.trim() || busy) return;
+    setBusy(true); setError('');
+    try {
+      const job = await api.request<PrintJob>('/api/client/print-jobs', { method: 'POST', body: JSON.stringify({ sessionId, content }) });
+      ++readVersion.current;
+      setJobs(current => [job, ...current.filter(item => item.id !== job.id)]);
+      setContent(''); setCreating(false); await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '打印提交失败，请重试'); }
+    finally { setBusy(false); }
+  }
   const status = (job: PrintJob) => job.status === 'PENDING' ? '打印中' : job.status === 'PRINTED' ? '已打印' : job.status === 'REJECTED' ? `已驳回：${job.rejectedReason || ''}` : '已保存';
   const statusClass = (job: PrintJob) => job.status === 'PENDING' ? 'pending' : job.status === 'PRINTED' ? 'printed' : job.status === 'REJECTED' ? 'rejected' : 'saved';
   return <div className="exam-page-card print-page">
     <header className="exam-page-heading print-page-heading"><div><span>PRINT</span><h1>{mode === 'VIRTUAL' ? '虚拟打印' : '打印'}</h1></div><button className="contest-button print-create-button" type="button" onClick={() => setCreating(true)}><Printer size={17} />新建打印</button></header>
+    {error ? <p role="status">{error}</p> : null}
     <div className="candidate-submission-table-wrap print-record-list"><table className="candidate-submission-table print-record-table"><thead><tr><th>打印名称</th><th>打印者</th><th>状态</th><th>提交时间</th><th aria-label="操作" /></tr></thead><tbody>{jobs.map(job => <tr className="submission-row-clickable" key={job.id} onClick={() => setSelected(job)}><td><span className="print-record-name"><i><FileText size={18} /></i><span><strong>{job.title}</strong><small>点击查看打印详情</small></span></span></td><td><span className="print-record-owner"><User size={15} />{job.candidateName || job.examNumber}</span></td><td><span className={`candidate-print-status ${statusClass(job)}`}>{status(job)}</span></td><td><time dateTime={job.createdAt}>{formatDate(job.createdAt)}</time></td><td><ChevronRight className="print-record-open" size={18} /></td></tr>)}</tbody></table>{!jobs.length ? <div className="print-record-empty"><Printer size={30} /><strong>暂无打印记录</strong><span>点击右上角“新建打印”提交打印内容</span></div> : null}</div>
     {creating ? <div className="contest-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setCreating(false); }}><section className="contest-confirm-modal print-create-modal" role="dialog" aria-modal="true" aria-label="新建打印"><header><div><span className="contest-eyebrow">NEW PRINT</span><h2>新建打印</h2></div></header><div className="candidate-print-compose"><textarea autoFocus value={content} onChange={event => setContent(event.target.value)} placeholder="请粘贴或输入打印内容" rows={14} /></div><footer><button className="contest-button secondary" type="button" onClick={() => { setContent(''); setCreating(false); }} disabled={busy}>取消</button><button className="contest-button submit-code-button" type="button" onClick={() => void create()} disabled={!content.trim() || busy}>{busy ? '正在提交…' : mode === 'VIRTUAL' ? '保存打印内容' : '提交打印'}</button></footer></section></div> : null}
     {selected ? <div className="contest-modal-backdrop print-detail-backdrop"><section className="contest-confirm-modal print-detail-modal" role="dialog" aria-modal="true"><header><div><span className="contest-eyebrow">PRINT DETAIL</span><h2>{selected.title}</h2></div><button className="icon-button" type="button" aria-label="关闭打印详情" onClick={() => setSelected(null)}><X size={20} /></button></header><pre className="print-content-protected" onCopy={event => event.preventDefault()} onCut={event => event.preventDefault()} onContextMenu={event => event.preventDefault()}>{selected.content}</pre><footer><button className="contest-button secondary" onClick={() => setSelected(null)}>关闭</button></footer></section></div> : null}
@@ -691,11 +713,15 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
   const [qaSection, setQaSection] = useState<'announcements' | 'mine' | 'public'>('announcements');
   const [qaBusy, setQaBusy] = useState(false);
   const [announcementQueue, setAnnouncementQueue] = useState<CandidateNotification[]>([]);
-  const seenAnnouncementIds = useRef(new Set<string>());
+  const acknowledgedNotifications = useRef(new Set<string>());
+  const notificationAckPending = useRef(false);
+  const [notificationAckBusy, setNotificationAckBusy] = useState(false);
+  const [notificationAckError, setNotificationAckError] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const [hydrated, setHydrated] = useState(false);
   const contestReadPending = useRef(false);
   const submissionsReadPending = useRef(false);
+  const submissionsReadVersion = useRef(0);
   const qaReadPending = useRef(false);
   const leaderboardReadPending = useRef(false);
   const contestRevision = useRef<string | undefined>(undefined);
@@ -714,6 +740,23 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
   }, []);
 
   const api = useMemo(() => new ClientApi(apiBase, sessionToken), [apiBase, sessionToken]);
+  const enqueueNotifications = useCallback((items: CandidateNotification[]) => {
+    setAnnouncementQueue(current => {
+      const queued = new Set(current.map(notificationKey));
+      return [...current, ...items.filter(item => {
+        const key = notificationKey(item);
+        if (queued.has(key) || acknowledgedNotifications.current.has(key)) return false;
+        queued.add(key); return true;
+      })];
+    });
+  }, []);
+  const dismissNotification = useCallback((notification: CandidateNotification) => {
+    const key = notificationKey(notification);
+    acknowledgedNotifications.current.add(key);
+    // Only recent local acknowledgments are needed to reject delayed reads.
+    if (acknowledgedNotifications.current.size > 4096) acknowledgedNotifications.current.delete(acknowledgedNotifications.current.values().next().value!);
+    setAnnouncementQueue(current => current.filter(item => notificationKey(item) !== key));
+  }, []);
   const activeProblem = useMemo(() => data?.problems.find((problem) => problem.pid === activePid) || data?.problems[0] || null, [activePid, data?.problems]);
   const activeObjective = useMemo(() => activeProblem?.problemType === 'objective' ? parseObjectiveProblem(activeProblem.content) : { blocks: [], questions: [] }, [activeProblem]);
   const activeCode = activeProblem ? codeByPid[String(activeProblem.pid)] || '' : '';
@@ -815,11 +858,12 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     if (mockMode) return;
     if (!sessionId || !sessionToken || contestReadPending.current) return;
     contestReadPending.current = true;
+    const submissionsVersion = ++submissionsReadVersion.current;
     try {
-      const next = await api.request<ContestData>(`/api/client/contest?sessionId=${encodeURIComponent(sessionId)}&summaryOnly=true`, { signal: AbortSignal.timeout(20_000) });
+      const next = await api.request<ContestData>(`/api/client/contest?sessionId=${encodeURIComponent(sessionId)}&summaryOnly=true`);
       contestRevision.current = next.revision;
       setData(next);
-      setSubmissions(next.submissions || []);
+      if (submissionsVersion === submissionsReadVersion.current) setSubmissions(next.submissions || []);
       setActivePid((current) => current && next.problems.some((problem) => problem.pid === current) ? current : next.problems[0]?.pid || null);
       setError('');
     } catch (cause) {
@@ -838,12 +882,12 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
         ...next.announcements.filter(item => !item.acknowledged).map(item => ({ ...item, kind: 'announcement' as const })),
         ...next.questions.filter(item => item.owned).flatMap(item => item.messages.filter(message => message.sender === 'ADMIN' && !message.acknowledgedAt && !message.id.startsWith('legacy-')).map(message => ({ id: message.id, kind: 'reply' as const, questionId: item.id, content: message.content, createdAt: message.createdAt })))
       ];
-      setAnnouncementQueue(current => [...current, ...pending.filter(item => !current.some(existing => existing.kind === item.kind && existing.id === item.id))]);
+      enqueueNotifications(pending);
     } catch (cause) {
       if (isExpiredClientSessionError(cause)) return expireSession();
       setNotice(cause instanceof Error ? cause.message : '赛时答疑加载失败');
     } finally { qaReadPending.current = false; }
-  }, [api, expireSession, mockMode, sessionId, sessionToken]);
+  }, [api, enqueueNotifications, expireSession, mockMode, sessionId, sessionToken]);
 
   const uploadQAImage = useCallback(async (file: File) => {
     if (!sessionId) throw new Error('缺少有效考试会话');
@@ -913,16 +957,12 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
             if (eventName === 'announcement') {
               const announcement = JSON.parse(dataLines.join('\n')) as CandidateNotification;
               since = new Date(new Date(announcement.createdAt).getTime() - 1).toISOString();
-              if (seenAnnouncementIds.current.has(announcement.id)) continue;
-              seenAnnouncementIds.current.add(announcement.id);
               setQaData(current => ({ ...current, announcements: [{ id: announcement.id, candidateId: announcement.candidateId || null, content: announcement.content, createdAt: announcement.createdAt, acknowledged: false }, ...current.announcements.filter(item => item.id !== announcement.id)] }));
-              setAnnouncementQueue(current => [...current, { ...announcement, kind: 'announcement' }]);
+              enqueueNotifications([{ ...announcement, kind: 'announcement' }]);
             } else if (eventName === 'reply') {
               const reply = JSON.parse(dataLines.join('\n')) as CandidateNotification;
               since = new Date(new Date(reply.createdAt).getTime() - 1).toISOString();
-              if (seenAnnouncementIds.current.has(`reply:${reply.id}`)) continue;
-              seenAnnouncementIds.current.add(`reply:${reply.id}`);
-              setAnnouncementQueue(current => [...current, { ...reply, kind: 'reply' }]);
+              enqueueNotifications([{ ...reply, kind: 'reply' }]);
               void loadQA();
             } else if (eventName === 'refresh') {
               void loadQA();
@@ -940,12 +980,12 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     };
     void connect();
     return () => { controller.abort(); qaLastEventAt.current = 0; window.clearTimeout(reconnectTimer); };
-  }, [apiBase, expireSession, hydrated, loadQA, mockMode, sessionId, sessionToken]);
+  }, [apiBase, enqueueNotifications, expireSession, hydrated, loadQA, mockMode, sessionId, sessionToken]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setNow(api.now()), 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     if (!activeProblem || !sessionId) return;
@@ -1135,13 +1175,14 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     if (!sessionId) return;
     if (mockMode || submissionsReadPending.current) return;
     submissionsReadPending.current = true;
+    const version = ++submissionsReadVersion.current;
     if (manual) setBusy('submissions');
     try {
       const result = await api.request<Submission[]>('/api/client/contest/submissions', {
         method: 'POST',
         body: JSON.stringify({ sessionId, summaryOnly: true }), signal: AbortSignal.timeout(15_000)
       });
-      setSubmissions(result);
+      if (version === submissionsReadVersion.current) setSubmissions(result);
     } catch (cause) {
       if (isExpiredClientSessionError(cause)) expireSession();
       // 主页面轮询失败时保留最近一次结果，下一次轮询再恢复。
@@ -1200,6 +1241,7 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
         body: JSON.stringify({ sessionId, pid: confirm.problem.pid, lang: confirm.lang, code: confirm.code })
       });
       const submission = { ...result, id: result.submissionId, code: confirm.code };
+      ++submissionsReadVersion.current;
       setSubmissions((current) => [submission, ...current.filter((item) => item.id !== submission.id)]);
       setConfirm(null);
       setSelectedSubmission(submission);
@@ -1240,12 +1282,20 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
   }
 
   async function acknowledgeNotification(notification: CandidateNotification) {
+    if (notificationAckPending.current) return;
+    notificationAckPending.current = true; setNotificationAckBusy(true); setNotificationAckError('');
     try {
       await api.request('/api/client/qa', { method: 'POST', body: JSON.stringify(notification.kind === 'reply' ? { action: 'ack-reply', sessionId, messageId: notification.id } : { action: 'ack-announcement', sessionId, announcementId: notification.id }) });
-    } finally {
-      setAnnouncementQueue(current => current.slice(1));
+      dismissNotification(notification);
       void loadQA();
-    }
+    } catch (cause) {
+      if (isExpiredClientSessionError(cause)) expireSession();
+      else if (cause instanceof ClientApiError && cause.status === 404 && ['公告不存在', '回复不存在'].includes(cause.message)) {
+        // A removed record has nothing left to acknowledge. Do not trap the
+        // page behind a notification that can never receive a receipt.
+        dismissNotification(notification); void loadQA();
+      } else setNotificationAckError(cause instanceof Error ? cause.message : '确认失败，请恢复网络后重试');
+    } finally { notificationAckPending.current = false; setNotificationAckBusy(false); }
   }
 
   async function downloadFile(file: ContestFile) {
@@ -1490,7 +1540,7 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
       {selectedSubmission ? <div className="nova-submission-workspace">{contestHeading}<SubmissionDetail submission={selectedSubmission} contest={data.contest} user={data.user} maximumScore={data.problems.find(problem => problem.index === selectedSubmission.problemIndex)?.score ?? null} resultVisible={selectedResultVisible} scoreVisible={selectedScoreVisible} onBack={goPreviousPage} /></div> : null}
 
       {leaderboardOpen ? <div className="contest-modal-backdrop"><section className="contest-leaderboard-modal" role="dialog" aria-modal="true"><button className="icon-button leaderboard-modal-close" type="button" onClick={() => setLeaderboardOpen(false)}><X size={18} /></button>{leaderboard?.available ? <LeaderboardTables leaderboard={leaderboard} contest={data.contest} problems={data.problems} /> : <div className="leaderboard-unavailable"><Trophy size={32} /><strong>排行榜暂未开放</strong></div>}<footer><button className="contest-button secondary" type="button" onClick={() => setLeaderboardOpen(false)}>关闭</button></footer></section></div> : null}
-      {announcementQueue[0] ? <div className="contest-modal-backdrop"><section className="qa-announcement-popup" role="alertdialog" aria-modal="true"><header><div><span className="contest-eyebrow">{announcementQueue[0].kind === 'reply' ? 'QUESTION REPLY' : 'ANNOUNCEMENT'}</span><h2>{announcementQueue[0].kind === 'reply' ? '监考老师回复了你的问题' : announcementQueue[0].candidateId ? '发给你的公告' : '考试公告'}</h2></div>{announcementQueue[0].kind === 'reply' ? <MessageCircleQuestion size={22} /> : <Bell size={22} />}</header><MarkdownContent content={announcementQueue[0].content} /><footer><time>{formatDate(announcementQueue[0].createdAt)}</time><button className="contest-button submit-code-button" type="button" onClick={() => void acknowledgeNotification(announcementQueue[0])}>确认已读</button></footer></section></div> : null}
+      {announcementQueue[0] ? <div className="contest-modal-backdrop"><section className="qa-announcement-popup" role="alertdialog" aria-modal="true"><header><div><span className="contest-eyebrow">{announcementQueue[0].kind === 'reply' ? 'QUESTION REPLY' : 'ANNOUNCEMENT'}</span><h2>{announcementQueue[0].kind === 'reply' ? '监考老师回复了你的问题' : announcementQueue[0].candidateId ? '发给你的公告' : '考试公告'}</h2></div>{announcementQueue[0].kind === 'reply' ? <MessageCircleQuestion size={22} /> : <Bell size={22} />}</header><MarkdownContent content={announcementQueue[0].content} />{notificationAckError ? <p role="alert">{notificationAckError}</p> : null}<footer><time>{formatDate(announcementQueue[0].createdAt)}</time><button className="contest-button submit-code-button" type="button" disabled={notificationAckBusy} onClick={() => void acknowledgeNotification(announcementQueue[0])}>{notificationAckBusy ? '正在确认…' : '确认已读'}</button></footer></section></div> : null}
     </main>
   );
 }

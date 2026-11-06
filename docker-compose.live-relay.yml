@@ -1,0 +1,38 @@
+# Dedicated WebRTC relay. Examination media remains on its own service/ports.
+services:
+  web:
+    networks: [default, relay-control]
+    environment:
+      LIVE_RELAY_ENABLED: "1"
+      LIVE_RELAY_AUTH_SECRET: ${LIVE_RELAY_AUTH_SECRET:?set a random base64url secret of at least 32 characters}
+      LIVE_RELAY_API_INTERNAL_BASE: http://relay-media:9997
+      LIVE_RELAY_WHIP_INTERNAL_BASE: http://relay-media:8889
+      LIVE_RELAY_PUBLIC_BASE: ${LIVE_RELAY_PUBLIC_BASE:-}
+      LIVE_RELAY_MAX_STREAMS: ${LIVE_RELAY_MAX_STREAMS:-8}
+      LIVE_RELAY_MAX_CONNECTIONS: ${LIVE_RELAY_MAX_CONNECTIONS:-16}
+  relay-media:
+    image: bluenviron/mediamtx:1.21.3
+    restart: unless-stopped
+    cpus: "${LIVE_RELAY_MEDIA_CPUS:-1.0}"
+    cpu_shares: 128
+    oom_score_adj: 500
+    mem_limit: ${LIVE_RELAY_MEDIA_MEMORY:-512m}
+    pids_limit: 128
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      GOMEMLIMIT: ${LIVE_RELAY_GO_MEMORY:-384MiB}
+      MTX_AUTHHTTPADDRESS: http://web:4031/api/live-relay/media-auth?callback=${LIVE_RELAY_AUTH_SECRET:?set LIVE_RELAY_AUTH_SECRET}
+      MTX_WEBRTCADDITIONALHOSTS: ${LIVE_RELAY_ADDITIONAL_HOSTS:?set this servers reachable IP or DNS name}
+      MTX_WEBRTCLOCALUDPADDRESS: :${LIVE_RELAY_ICE_PORT:-1940}
+      MTX_WEBRTCLOCALTCPADDRESS: :${LIVE_RELAY_ICE_PORT:-1940}
+    ports:
+      - "${LIVE_RELAY_ICE_BIND:-0.0.0.0}:${LIVE_RELAY_ICE_PORT:-1940}:${LIVE_RELAY_ICE_PORT:-1940}/udp"
+      - "${LIVE_RELAY_ICE_BIND:-0.0.0.0}:${LIVE_RELAY_ICE_PORT:-1940}:${LIVE_RELAY_ICE_PORT:-1940}/tcp"
+    volumes:
+      - ./apps/media/mediamtx.relay.yml:/mediamtx.yml:ro
+    networks: [relay-control]
+networks:
+  default: {}
+  relay-control:

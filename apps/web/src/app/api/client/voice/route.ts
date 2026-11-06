@@ -1,4 +1,4 @@
-import { authorizeAuxiliaryUpload, accountAuxiliaryUpload, boundedUploadForm, UploadSecurityError } from '@/lib/upload-security';
+import { authorizeAuxiliaryUpload, admitAuxiliaryUpload, acquireUploadSlot, boundedUploadForm, UploadSecurityError } from '@/lib/upload-security';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { verifyClientTokenForSession } from '@/lib/client-auth';
@@ -45,8 +45,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  let release: (() => void) | undefined;
   try {
     const authorized = await authorizeAuxiliaryUpload(request);
+    const account = await admitAuxiliaryUpload(`session:${authorized.id}`, 20);
+    release = acquireUploadSlot();
     const form = await boundedUploadForm(request, 9 * 1024 * 1024);
     const file = form.get('file');
     if (!(file instanceof File)) return fail('缺少语音文件', 400);
@@ -61,7 +64,7 @@ export async function POST(request: Request) {
     const now = new Date();
     if (now < session.exam.startAt || now > session.exam.endAt) return fail('当前不在考试时间内，不能发送语音消息', 400);
     const buffer = Buffer.from(await file.arrayBuffer());
-    await accountAuxiliaryUpload(`session:${session.id}`, buffer.length, 20);
+    await account(buffer.length);
     const stored = await storeBuffer(buffer, {
       filename: `voice-miniprogram-${Date.now()}-${file.name || 'reply.m4a'}`,
       contentType: file.type || undefined,
@@ -81,7 +84,7 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof UploadSecurityError) return fail(error.message, error.status);
     return fail(toErrorMessage(error), 500);
-  }
+  } finally { release?.(); }
 }
 
 export const OPTIONS = options;

@@ -1,3 +1,5 @@
+import { resumedSessionStatus } from '@/lib/session-resume';
+import { isRetiredDesktopCredential } from '@/lib/retired-desktop-credential';
 import { createHash } from 'node:crypto';
 import { ClientHeartbeatSchema, type ClientHeartbeatInput } from '@cwnupaa/proctor-shared';
 import type { AlertType, CandidateStatus } from '@prisma/client';
@@ -9,7 +11,6 @@ import { effectiveEnd } from '@/lib/contest-rules';
 import { createAlertOnce } from '@/lib/alert-dedup';
 import { MonitorAlertState, USB_SCAN_FAILURE_MESSAGE } from '@/lib/monitor-alert-state';
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
-import { revokeFullyOfflineSession } from '@/lib/session-revocation';
 import { revokedClientSessionResponse } from '@/lib/client-session-response';
 import { recordingEventsForSession } from '@/lib/recording-policy';
 import { claimCandidateStatusRecheck, refreshCandidateAlertStatus } from '@/lib/alert-acknowledgement';
@@ -34,7 +35,7 @@ class HeartbeatError extends Error {
 
 export async function POST(request: Request) {
   try {
-    const input = await parseBody(request, ClientHeartbeatSchema);
+    const input = await parseBody(request, ClientHeartbeatSchema, 64 * 1024);
     const selected = input.sessionId
       ? { id: input.sessionId }
       : await prisma.clientSession.findFirst({
@@ -50,13 +51,14 @@ export async function POST(request: Request) {
         exam: { select: {
           platform: true,
           startAt: true, latestStartAt: true, endAt: true, durationMinutes: true, contestRule: true, flexible: true,
-          requireFrontCamera: true, requireMiniProgram: true, saveFullRecording: true, saveIncidentRecording: true
+          requireFrontCamera: true, requireMiniProgram: true, saveFullRecording: true, saveIncidentRecording: true, reactionEnabled: true
         } }
       } });
       if (!session) throw new HeartbeatError('未找到有效客户端会话', 404);
       if (session.revokedAt) return { revoked: true as const };
       const deviceId = input.side === 'DESKTOP' ? session.desktopDeviceId : session.miniProgramDeviceId;
       if (deviceId !== input.deviceId || !verifyClientTokenForSession(request, session, input.side)) {
+        if (input.side === 'DESKTOP' && await isRetiredDesktopCredential(tx, request, session.id)) return { desktopReplaced: true as const };
         throw new HeartbeatError('客户端会话令牌无效或已过期，请通过配对或重连恢复', 401);
       }
       const { candidate: _candidate, exam: _exam, ...sessionRow } = session;
@@ -69,9 +71,9 @@ export async function POST(request: Request) {
       const requireFrontCamera = room?.requireFrontCamera ?? session.exam.requireFrontCamera;
       const requireSecondCamera = room?.requireSecondCamera ?? session.exam.requireMiniProgram;
       const requirements = { requireFrontCamera, requireSecondCamera, isPublicTest: publicTest,
+        reactionEnabled: !publicTest && session.exam.reactionEnabled,
         saveFullRecording: !publicTest && session.exam.saveFullRecording,
         saveIncidentRecording: !publicTest && session.exam.saveIncidentRecording };
-      if (await revokeFullyOfflineSession(tx, session, requireSecondCamera, now)) return { revoked: true as const };
       const effectiveEndAt = effectiveEnd(session.exam, session.candidate.startedAt || session.startedAt);
       const heartbeatData = input.side === 'DESKTOP'
         ? { lastDesktopSeenAt: now, desktopOfflineAt: null }
@@ -119,9 +121,12 @@ export async function POST(request: Request) {
       if (newPeripheralChange && !usbMessages.length && !(session.lockdown && session.lockdownReason?.startsWith('检测到 USB 外设'))) messages.push({ type: 'PERIPHERAL_CHANGED', message: peripheralMessage });
       const firstStartedAt = session.candidate.startedAt || session.startedAt;
       const recoveredStatus = session.status === 'OFFLINE' && input.side === 'DESKTOP'
-        ? firstStartedAt ? 'IN_EXAM' : session.approvedAt ? 'APPROVED' : 'WAITING_REVIEW'
+        ? resumedSessionStatus(session, firstStartedAt)
         : session.status;
-      const shouldLockdown = usbMessages.length > 0 || newPeripheralChange || peripheralScanFailed || session.lockdown;
+      // Scanner availability is a diagnostic, not evidence of a physical USB
+      // change. A slow/failed OS inventory must never trap a student's desktop.
+      // Real device transitions and explicit proctor locks still require unlock.
+      const shouldLockdown = usbMessages.length > 0 || newPeripheralChange || session.lockdown;
       const monitorState = new MonitorAlertState(session.monitoringAlertState);
       if (!publicTest) {
         if (input.side === 'DESKTOP') {
@@ -171,8 +176,7 @@ export async function POST(request: Request) {
           lastPeripheralsFingerprint: fingerprint
         } : {}),
         ...(usbMessages.length ? { lockdown: true, lockdownReason: usbMessages[0].message }
-          : newPeripheralChange ? { lockdown: true, lockdownReason: peripheralMessage }
-          : peripheralScanFailed && !session.lockdown ? { lockdown: true, lockdownReason: USB_SCAN_FAILURE_MESSAGE } : {})
+          : newPeripheralChange ? { lockdown: true, lockdownReason: peripheralMessage } : {})
       };
       // We already hold this row's write lock and have its complete scalar
       // snapshot. MySQL cannot RETURNING, so update() would select it again.
@@ -222,15 +226,18 @@ export async function POST(request: Request) {
         }
       }
       return { publicTest, novaJudge: session.exam.platform === 'NOVAJUDGE', session: { ...publicClientSession(refreshed), effectiveEndAt: effectiveEndAt.toISOString() }, requirements, alertsCreated, acceptedPeripheralEventIds };
-    });
+    }, { signal: request.signal });
     if ('revoked' in result) return revokedClientSessionResponse();
+    if ('desktopReplaced' in result) return Response.json({ ok: false, code: 'CLIENT_DESKTOP_REPLACED', message: '当前电脑连接已被新电脑替换，请在新电脑继续考试' }, {
+      status: 401, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }
+    });
     const { publicTest, novaJudge, ...response } = result;
     const recordingEvents = publicTest || response.requirements?.saveIncidentRecording !== true ? [] : await recordingEventsForSession(selected.id);
     const retry = novaJudge && input.side === 'DESKTOP' ? await prisma.oJLoginTicket.findFirst({
       where: { sessionId: selected.id, status: 'ISSUED', exam: { platform: 'NOVAJUDGE' } },
       orderBy: { createdAt: 'desc' }, select: { id: true },
     }) : null;
-    return ok({ ...response, recordingEvents, ojLoginRetryId: retry?.id || null, desktopSessionToken: null, miniProgramSessionToken: null });
+    return ok({ ...response, serverNow: new Date().toISOString(), recordingEvents, ojLoginRetryId: retry?.id || null, desktopSessionToken: null, miniProgramSessionToken: null });
   } catch (error) {
     if (error instanceof SessionWriteQueueError) return fail(error.message, error.status);
     if (error instanceof HeartbeatError) return fail(error.message, error.status);

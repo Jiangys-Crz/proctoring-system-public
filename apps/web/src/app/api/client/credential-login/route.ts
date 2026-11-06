@@ -1,3 +1,4 @@
+import { admittedLogin } from '@/lib/request-admission';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
@@ -39,6 +40,10 @@ async function ticketContext(value: string) {
 }
 
 export async function POST(request: Request) {
+  return admittedLogin(request, () => handlePost(request));
+}
+
+async function handlePost(request: Request) {
   try {
     const input = await parseBody(request, z.union([Inspect, Materials, Credentials]), 16 * 1024);
     if ('credentialTicket' in input) {
@@ -46,11 +51,11 @@ export async function POST(request: Request) {
       if ('action' in input) return ok({
         pairCode: ticket.pairCode, name: ticket.memberName, studentId: ticket.memberStudentId, examNumber: candidate.examNumber,
         exam: { id: exam.id, examCode: exam.examCode, name: exam.name, startAt: exam.startAt, latestStartAt: candidateStartDeadline(exam, candidate.lateStartAllowedAt), endAt: exam.endAt, durationMinutes: exam.durationMinutes, contestType: exam.contestType, teamAccountMode: exam.teamAccountMode, requireMiniProgram: exam.requireMiniProgram, requireFrontCamera: exam.requireFrontCamera },
-        requirements: { requireSecondCamera: room.requireSecondCamera, requireFrontCamera: room.requireFrontCamera, loginMode: room.loginMode, saveFullRecording: exam.saveFullRecording, saveIncidentRecording: exam.saveIncidentRecording }
+        requirements: { requireSecondCamera: room.requireSecondCamera, requireFrontCamera: room.requireFrontCamera, loginMode: room.loginMode, saveFullRecording: exam.saveFullRecording, saveIncidentRecording: exam.saveIncidentRecording, reactionEnabled: exam.reactionEnabled }
       });
       return ok(await createCandidateLoginRequest({
         exam, pairing, candidateId: candidate.id, method: 'CREDENTIALS', materials: input,
-        memberIdentity: { memberName: ticket.memberName, memberStudentId: ticket.memberStudentId }
+        memberIdentity: { memberName: ticket.memberName, memberStudentId: ticket.memberStudentId }, signal: request.signal
       }), { status: 201 });
     }
     const exam = await prisma.exam.findUnique({ where: { examCode: input.examCode } });
@@ -79,12 +84,13 @@ export async function POST(request: Request) {
         include: { clientSessions: { orderBy: { createdAt: 'desc' }, take: 1 } }
       });
       const existingSession = completed?.candidateId === candidate.id ? completed.clientSessions[0] : null;
-      if (completed && existingSession) {
+      if (completed && completed.status !== 'REJECTED' && existingSession && !existingSession.revokedAt && existingSession.status !== 'FINISHED') {
         return ok({ requiresSecondCamera: false, id: completed.id, sessionId: existingSession.id });
       }
     }
     if (pairing.expiresAt <= now || pairing.claimedAt) throw new LoginFlowError('登录配对已使用或过期，请重新提交登录');
     if (!pairing.screenOk) throw new LoginFlowError('请先完成电脑屏幕检测');
+    if (room!.requireFrontCamera && !pairing.desktopCameraOk) throw new LoginFlowError('所在考室要求电脑前置摄像头，请返回客户端完成摄像头实测后重新生成登录配对', 400);
     if (room!.requireSecondCamera && !await isPublicTestExam(exam.id)) {
       const credentialTicket = signCredentialTicket({
         purpose: 'desktop-login-materials', pairCode: pairing.pairCode, examId: exam.id, candidateId: candidate.id,
@@ -93,7 +99,7 @@ export async function POST(request: Request) {
       });
       return ok({ requiresSecondCamera: true, credentialTicket, expiresAt: pairing.expiresAt });
     }
-    const result = await createCandidateLoginRequest({ exam, pairing, candidateId: candidate.id, memberIdentity: member!, materials: {}, method: 'CREDENTIALS' });
+    const result = await createCandidateLoginRequest({ exam, pairing, candidateId: candidate.id, memberIdentity: member!, materials: {}, method: 'CREDENTIALS', signal: request.signal });
     return ok({ requiresSecondCamera: false, id: result.id, sessionId: result.sessionId }, { status: 201 });
   } catch (error) {
     if (error instanceof RequestParseError) return fail('请填写完整的考试编号、姓名、考号和密码，或重新扫码提交第二机位材料', 400);

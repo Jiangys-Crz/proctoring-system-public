@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { admittedLogin } from '@/lib/request-admission';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
@@ -15,6 +16,10 @@ const Input = z.object({ pairCode: z.string().regex(/^\d{6}$/), miniProgramDevic
   school: z.string().optional(), college: z.string().optional(), teamName: z.string().optional() });
 
 export async function POST(request: Request) {
+  return admittedLogin(request, () => handlePost(request));
+}
+
+async function handlePost(request: Request) {
   try {
     // A global ceiling also covers attempts to manufacture new identities or spoof proxy headers.
     await consumeRateLimit('material-ticket:global', 300);

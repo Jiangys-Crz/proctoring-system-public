@@ -11,6 +11,8 @@ export function attachmentResponse(upstream: Response, filename: string, forceDo
     'cache-control': 'private, no-store',
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
+    'access-control-allow-origin': '*',
+    'access-control-expose-headers': 'Content-Disposition, Content-Length, Content-Range',
     // SVG illustrations remain displayable, but opening any attachment as a
     // document cannot execute scripts, submit forms, or inherit admin origin.
     'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'",

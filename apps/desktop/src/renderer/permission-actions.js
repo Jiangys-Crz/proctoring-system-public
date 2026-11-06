@@ -54,6 +54,12 @@
         await probeScreen();
         return '屏幕采集授权与检测成功。';
       }
+      if (target === 'activeWindow' && isMac && permissions.accessibility) {
+        const capabilities = await api.getSecurityCapabilities(hosts());
+        if (capabilities.activeWindow) return '活动窗口检测可用。';
+        await api.openMacPrivacyPane('automation');
+        return '请在“自动化”中允许当前客户端控制 System Events，然后返回重新检测。';
+      }
       if (target === 'accessibility' || (target === 'activeWindow' && isMac)) {
         if (!isMac) return '此系统不需要单独申请辅助功能权限。';
         if (permissions.accessibility) return '辅助功能权限已授权。';

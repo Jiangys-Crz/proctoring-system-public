@@ -2,7 +2,8 @@ import { ScreenControlError } from '@/lib/screen-control-policy';
 import { normalizeScreenControlImage } from '@/lib/screen-control-images';
 import { authorizeAuxiliaryUpload, admitAuxiliaryUpload, acquireUploadSlot, boundedUploadForm, UploadSecurityError } from '@/lib/upload-security';
 import { prisma } from '@/lib/db';
-import { verifyClientTokenForAnySide } from '@/lib/client-auth';
+import { requireFreshQaSession } from '@/lib/qa-thread';
+import { AuthError } from '@/lib/auth';
 import { fail, ok, options, toErrorMessage } from '@/lib/http';
 import { publicObjectUrl, storeBuffer } from '@/lib/storage';
 
@@ -23,19 +24,20 @@ export async function POST(request: Request) {
     if (!sessionId || !(file instanceof File)) return fail('缺少会话或图片', 400);
     if (!ALLOWED_IMAGE_TYPES.has(file.type)) return fail('仅支持 PNG、JPEG、GIF 或 WebP 图片', 400);
     if (file.size > MAX_IMAGE_BYTES) return fail('图片不能超过 10MB', 413);
-    const session = await prisma.clientSession.findUnique({ where: { id: sessionId }, include: { exam: true } });
-    if (!session) return fail('客户端会话不存在', 404);
-    if (!verifyClientTokenForAnySide(request, session)) return fail('客户端会话令牌无效或已过期', 401);
-    if (session.status === 'FINISHED' || session.exam.endAt <= new Date()) return fail('考试已结束，不能上传答疑图片', 409);
+    await requireFreshQaSession(prisma, request, sessionId);
     const normalized = await normalizeScreenControlImage(Buffer.from(await file.arrayBuffer()));
     await account(normalized.byteSize);
+    const session = await requireFreshQaSession(prisma, request, sessionId);
     const stored = await storeBuffer(normalized.buffer, {
       filename: 'question-image.webp',
       contentType: normalized.contentType,
       prefix: `qa/${session.examId}/${session.candidateId}`,
     });
-    return ok({ url: await publicObjectUrl(stored.objectPath, QA_IMAGE_TTL_SECONDS) }, { status: 201 });
+    const url = await publicObjectUrl(stored.objectPath, QA_IMAGE_TTL_SECONDS);
+    await requireFreshQaSession(prisma, request, sessionId);
+    return ok({ url }, { status: 201 });
   } catch (error) {
+    if (error instanceof AuthError) return fail(error.message, error.status);
     if (error instanceof ScreenControlError) return fail(error.message, error.status);
     if (error instanceof UploadSecurityError) return fail(error.message, error.status);
     return fail(toErrorMessage(error), 500);

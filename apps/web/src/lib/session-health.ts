@@ -2,9 +2,8 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { MonitorAlertState } from './monitor-alert-state';
 import { withSessionWrite } from './session-write';
-import { revokeFullyOfflineSession, ACTIVE_CLIENT_SESSION_STATUSES } from './session-revocation';
+import { ACTIVE_CLIENT_SESSION_STATUSES } from './session-revocation';
 import { effectiveEnd } from './contest-rules';
-import { sessionFullyOfflineForRelogin } from './client-session-policy';
 import { healthSessionIds, HEALTH_SCAN_PAGE_SIZE } from './session-health-scan';
 
 const OFFLINE_GRACE_MS = 20_000;
@@ -31,10 +30,10 @@ const healthWorker = globalThis as typeof globalThis & {
 };
 const healthChecks = healthWorker.sessionHealthChecks ??= new Map<string, Promise<number>>();
 
-async function* healthSnapshots(examId: string | undefined, now: Date, onlyRevocations = false) {
+async function* healthSnapshots(examId: string | undefined, now: Date) {
   let afterId: string | undefined;
   for (;;) {
-    const ids = await healthSessionIds(examId, now, afterId, onlyRevocations);
+    const ids = await healthSessionIds(examId, now, afterId);
     if (!ids.length) return;
     const sessions = await prisma.clientSession.findMany({
       where: { id: { in: ids.map(row => row.id) }, status: { in: [...ACTIVE_CLIENT_SESSION_STATUSES] } },
@@ -51,34 +50,17 @@ export function staleHeartbeatSides(
     lastDesktopSeenAt: Date | null;
     lastMiniProgramSeenAt: Date | null;
     approvedAt: Date | null;
+    createdAt?: Date;
   },
   requireSecondCamera: boolean,
   cutoff: Date
 ) {
-  const desktopReference = session.lastDesktopSeenAt || session.approvedAt;
-  const mobileReference = session.lastMiniProgramSeenAt || session.approvedAt;
+  const desktopReference = session.lastDesktopSeenAt || session.approvedAt || session.createdAt;
+  const mobileReference = session.lastMiniProgramSeenAt || session.approvedAt || session.createdAt;
   return {
     desktop: Boolean(desktopReference && desktopReference < cutoff),
     secondCamera: requireSecondCamera && Boolean(mobileReference && mobileReference < cutoff)
   };
-}
-
-export async function expireFullyOfflineCandidateSessions(examId: string | undefined, now: Date) {
-  let revoked = 0;
-  for await (const observed of healthSnapshots(examId, now, true)) {
-    const room = observed.candidate.rooms.find(({ room }) => room.examId === observed.examId)?.room;
-    if (!sessionFullyOfflineForRelogin(observed, now, room?.requireSecondCamera ?? observed.exam.requireMiniProgram)) continue;
-    revoked += await withSessionWrite(observed.id, async (tx) => {
-      const session = await tx.clientSession.findUnique({
-        where: { id: observed.id },
-        include: healthSessionInclude,
-      });
-      if (!session || session.status === 'FINISHED') return 0;
-      const room = session.candidate.rooms.find(({ room }) => room.examId === session.examId)?.room;
-      return await revokeFullyOfflineSession(tx, session, room?.requireSecondCamera ?? session.exam.requireMiniProgram, now) ? 1 : 0;
-    });
-  }
-  return revoked;
 }
 
 async function checkStaleSessionsOffline(examId?: string) {
@@ -92,7 +74,6 @@ async function checkStaleSessionsOffline(examId?: string) {
     const needsUpdate = (stale.desktop && !observed.desktopOfflineAt)
       || (stale.secondCamera && !observed.miniProgramOfflineAt)
       || (!requireSecondCamera && observed.miniProgramOfflineAt)
-      || sessionFullyOfflineForRelogin(observed, now, requireSecondCamera)
       || effectiveEnd(observed.exam, observed.candidate.startedAt || observed.startedAt) <= now;
     if (!needsUpdate) continue;
     alertsCreated += await withSessionWrite(observed.id, async (tx) => {
@@ -112,7 +93,6 @@ async function checkStaleSessionsOffline(examId?: string) {
       const requireSecondCamera = room?.requireSecondCamera ?? session.exam.requireMiniProgram;
       const stale = staleHeartbeatSides(session, requireSecondCamera, cutoff);
 
-      if (await revokeFullyOfflineSession(tx, session, requireSecondCamera, now)) return 0;
 
       if (stale.desktop && !session.desktopOfflineAt) {
         await tx.clientSession.update({ where: { id: session.id }, data: { desktopOfflineAt: now, status: 'OFFLINE' } });

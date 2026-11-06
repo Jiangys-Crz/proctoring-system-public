@@ -4,6 +4,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const source = readFileSync(require.resolve('../src/renderer/renderer.js'), 'utf8');
 const heartbeat = source.slice(source.indexOf('function normalizedSecurityList('), source.indexOf('function recordStream('));
+const acceptSession = source.slice(source.indexOf('function acceptSessionSnapshot('), source.indexOf('function clientAuthHeaders('));
 function deferred() { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 function harness(snapshot) {
   const state = { serverUrl: 'https://api.test', session: { id: 's1', status: 'APPROVED' }, desktopInfo: { deviceId: 'desktop' },
@@ -15,7 +16,7 @@ function harness(snapshot) {
   const responseSession = { current: null };
   const saveRendererRecovery = async () => {};
   const element = { classList: { toggle() {} } };
-  const environment = { state, console: { warn() {} }, window: { proctorApi: { getSecuritySnapshot: () => scan.promise, getPeripheralSnapshot: () => peripherals.promise, setWindowMode: async () => {} },
+  const environment = { state, URL, console: { warn() {} }, window: { proctorApi: { getSecuritySnapshot: () => scan.promise, getPeripheralSnapshot: () => peripherals.promise, setWindowMode: async () => {} },
     proctorWindowPolicy: () => ({ mode: 'floating', cheating: false }) },
     saveRendererRecovery, currentServerHosts: () => ['api.test'], errorMessage: error => error.message,
     reportAlert: (...args) => { reported.push(args); return alerts.promise; }, lastNetworkCaptureStatus: '',
@@ -24,9 +25,51 @@ function harness(snapshot) {
     startSegmentRecorders() {}, startRtmpStreams: async () => {}, $: () => element, updateLocalPreviews() {},
   };
   const context = vm.createContext(environment);
+  vm.runInContext(acceptSession, context);
   vm.runInContext(source.slice(source.indexOf('function isNovaJudgeExam()'), source.indexOf('function contestWebsiteUrl()')), context);
   vm.runInContext(heartbeat, context);
   return { context, state, scan, peripherals, calls, reported, responseSession };
+}
+
+for (const invalidation of ['session', 'generation', 'finished']) {
+  for (const clockFails of [false, true]) {
+    test(`a ${clockFails ? 'failed' : 'successful'} delayed Reaction clock response cannot cross ${invalidation} changes`, async () => {
+      const h = harness(null), clock = deferred();
+      const originalSession = h.state.session;
+      const requirements = { reactionEnabled: false, requireFrontCamera: false };
+      h.state.requirements = requirements;
+      h.state.sessionToken = 'current-token';
+      let clockRequested = false, previews = 0, recorders = 0, evidenceEvents = 0;
+      h.context.api = async path => {
+        if (path === '/api/client/time') { clockRequested = true; return clock.promise; }
+        assert.equal(path, '/api/client/heartbeat');
+        return { session: originalSession, requirements: { reactionEnabled: true, requireFrontCamera: true },
+          desktopSessionToken: 'obsolete-token', recordingEvents: [{ id: 'obsolete-event' }] };
+      };
+      h.context.updateLocalPreviews = () => previews++;
+      h.context.startSegmentRecorders = () => recorders++;
+      h.context.markRecordingEvent = () => evidenceEvents++;
+      const sending = h.context.sendHeartbeat();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(clockRequested, true);
+      if (invalidation === 'session') h.state.session = { id: 's2', status: 'APPROVED' };
+      if (invalidation === 'generation') h.state.monitoringGeneration++;
+      if (invalidation === 'finished') h.state.finishedScreenVisible = true;
+      const expectedSession = h.state.session;
+      const nextClock = { clockOffsetMs: 25, clockUncertaintyMs: 10 };
+      h.state.reactionClock = nextClock;
+      if (clockFails) clock.reject(new Error('clock unavailable'));
+      else clock.resolve({ serverTime: Date.now() });
+      await sending;
+      assert.equal(h.state.session, expectedSession);
+      assert.equal(h.state.requirements, requirements, 'stale requirements cannot change recording policy');
+      assert.equal(h.state.reactionClock, nextClock, 'stale clock samples cannot replace the current session clock');
+      assert.equal(h.state.sessionToken, 'current-token');
+      assert.equal(previews, 0);
+      assert.equal(recorders, 0);
+      assert.equal(evidenceEvents, 0);
+    });
+  }
 }
 
 test('USB changes remain reportable while the unrelated full security scan is stalled', async () => {
@@ -153,7 +196,8 @@ test('heartbeat begins while screen capture is still opening', async () => {
     ensureScreenCapture: () => { calls.push('screen'); return capture.promise; }
   });
   const start = source.indexOf('async function startSubmittedMonitoring(');
-  vm.runInContext(source.slice(start, source.indexOf('async function resetWaitingLogin(', start)), context);
+  vm.runInContext(acceptSession, context);
+  vm.runInContext(source.slice(start, source.indexOf('function resetWaitingLogin(', start)), context);
   void context.startSubmittedMonitoring(state.session, state.requirements);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['heartbeat', 'screen']);

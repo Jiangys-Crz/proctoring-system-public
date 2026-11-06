@@ -10,8 +10,10 @@ test('bidirectional QR recovery retains the exam session and expires only when b
   const proof = createPairSecret('RECOVERY'), poll = createPairSecret('POLL');
   let session: any, pairing: any;
   let sessionLocks = 0;
+  const settings = new Map<string, unknown>();
   const room = { requireSecondCamera: true, requireFrontCamera: true, loginMode: 'SECOND_CAMERA_QR' };
   const reset = () => {
+    settings.clear();
     const now = Date.now();
     const exam = { id: 'exam', name: '考试', endAt: new Date(now + 3_600_000), contestRule: 'IOI', flexible: false, requireMiniProgram: true, requireFrontCamera: true, ipLoginRestrictionEnabled: true };
     session = { id: 'session', examId: exam.id, candidateId: 'candidate', loginRequestId: 'login', exam, status: 'OFFLINE', revokedAt: null, lockdown: false,
@@ -27,7 +29,11 @@ test('bidirectional QR recovery retains the exam session and expires only when b
   };
   replace(prisma, '$queryRaw', async (query: TemplateStringsArray) => { if (query.join('').includes('ClientSession')) sessionLocks++; return []; });
   replace(prisma, '$transaction', async (callback: any) => callback(prisma));
-  replace(prisma.systemSetting, 'findUnique', async () => null);
+  replace(prisma.systemSetting, 'findUnique', async ({ where }: any) => settings.get(where.key) || null);
+  replace(prisma.systemSetting, 'upsert', async ({ where, create, update }: any) => {
+    const row = settings.has(where.key) ? { ...settings.get(where.key) as object, ...update } : create;
+    settings.set(where.key, row); return row;
+  });
   replace(prisma.exam, 'findUnique', async () => session.exam);
   replace(prisma.candidate, 'findUnique', async () => ({ id: 'candidate', examId: 'exam', loginIp: '127.0.0.1' }));
   replace(prisma.examRoom, 'findFirst', async () => room);
@@ -60,8 +66,10 @@ test('bidirectional QR recovery retains the exam session and expires only when b
     assert.equal(result.body.data.session.desktopTokenHash, undefined);
     assert.equal(session.startedAt, startedAt); assert.equal(session.status, 'IN_EXAM');
     assert.equal(session.desktopDeviceId, 'new-desktop'); assert.equal(session.desktopTokenHash, null);
+    assert.equal(settings.size, 1, 'recovery retires the previous desktop credential without using a live database');
     assert.equal(session.miniProgramTokenHash, phoneHash); assert.equal(pairing.purpose, 'DESKTOP_RECOVERY');
-    assert.equal(pairing.loginRequestId, 'login'); assert.equal(pairing.recoveryTokenHash, null);
+    assert.equal(pairing.loginRequestId, 'login');
+    assert.equal(pairing.recoveryTokenHash, proof.hash, 'the current recovery proof remains available for an idempotent response retry');
     const request = (token = poll.secret, desktopToken?: string) => new Request('https://api.test/api/client/pair?deviceId=new-desktop&pairCode=123456', {
       headers: { 'x-proctor-pair-poll-token': token, 'x-forwarded-for': '127.0.0.1', ...(desktopToken ? { authorization: `Bearer ${desktopToken}` } : {}) },
     });
@@ -77,7 +85,10 @@ test('bidirectional QR recovery retains the exam session and expires only when b
     session.lastDesktopSeenAt = new Date(Date.now() - 6_000);
     assert.equal((await pollPair(request())).status, 200);
     assert.equal(sessionLocks, afterIssuanceLocks + 1, 'stale pairing polls still refresh liveness under the session lock');
-    assert.equal((await post()).response.status, 403, 'the same login QR cannot be reused');
+    const retry = await post();
+    assert.equal(retry.response.status, 200, 'the same authenticated recovery may retry without rotating the binding');
+    assert.equal(session.desktopTokenHash, hashClientSessionToken(data.desktopSessionToken));
+    assert.equal(settings.size, 1, 'an idempotent retry must not retire the newly issued desktop credential');
   });
   await t.test('unauthenticated phones, wrong devices, online desktops and failed hardware checks cannot authorize replacement', async () => {
     reset(); assert.equal((await post({}, '')).response.status, 401);
@@ -101,15 +112,15 @@ test('bidirectional QR recovery retains the exam session and expires only when b
     assert.equal(session.miniProgramDeviceId, 'replacement-phone');
     assert.equal(session.miniProgramTokenHash, hashClientSessionToken(result.body.data.miniProgramSessionToken));
   });
-  await t.test('both sides offline beyond two minutes revoke the old credentials and pairing instead of resuming the exam', async () => {
+  await t.test('both sides offline beyond two minutes can resume the original session without resetting the clock', async () => {
     for (const side of ['DESKTOP', 'MINIPROGRAM']) {
       reset(); const startedAt = session.startedAt;
       session.lastDesktopSeenAt = session.lastMiniProgramSeenAt = new Date(Date.now() - 121_000);
       if (side === 'MINIPROGRAM') { pairing.purpose = 'RECOVERY'; pairing.recoverySessionId = session.id; pairing.desktopDeviceId = session.desktopDeviceId; }
-      const result = await post({ side }); assert.equal(result.response.status, 410);
-      assert.equal(result.body.code, 'CLIENT_SESSION_REVOKED'); assert.ok(session.revokedAt);
-      assert.equal(session.desktopTokenHash, null); assert.equal(session.miniProgramTokenHash, null);
-      assert.equal(session.startedAt, startedAt); assert.equal(pairing.pollTokenHash, null);
+      const result = await post({ side }); assert.equal(result.response.status, 200, result.body.message);
+      assert.ok(!session.revokedAt);
+      assert.equal(session.startedAt, startedAt);
+      assert.ok(side === 'DESKTOP' ? session.miniProgramTokenHash : session.desktopTokenHash);
     }
   });
 });

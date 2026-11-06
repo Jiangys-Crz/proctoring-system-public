@@ -23,10 +23,10 @@ export function statementContainsLink(content: string, href: string): boolean {
   return found;
 }
 
-export async function fetchStatementDownload(content: string, url: string, baseUrl: string) {
+export async function fetchStatementDownload(content: string, url: string, baseUrl: string, signal?: AbortSignal) {
   if (!statementContainsLink(content, url)) throw new Error('下载链接不属于当前题目');
-  const response = await fetchHydroFile(url, baseUrl);
-  if (!response.ok) throw new Error(`题目文件下载失败（${response.status}）`);
+  const response = await fetchHydroFile(url, baseUrl, signal);
+  if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`题目文件下载失败（${response.status}）`); }
   return response;
 }
 

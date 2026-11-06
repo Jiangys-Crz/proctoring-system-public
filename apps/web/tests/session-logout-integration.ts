@@ -4,7 +4,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { prisma } from '../src/lib/db';
 import { createClientSessionToken } from '../src/lib/client-auth';
 import { createCandidateLoginRequest } from '../src/lib/candidate-login';
-import { expireFullyOfflineCandidateSessions, markStaleSessionsOffline, startSessionHealthWorker } from '../src/lib/session-health';
+import { markStaleSessionsOffline, startSessionHealthWorker } from '../src/lib/session-health';
 import { POST as pair } from '../src/app/api/client/pair/route';
 import { POST as heartbeat } from '../src/app/api/client/heartbeat/route';
 import { POST as reconnect } from '../src/app/api/client/reconnect/route';
@@ -35,26 +35,13 @@ try {
   const recovery = (await post(pair, { deviceId: marker, sessionId: session.id, screenOk: true }, 200, desktop.token)).data;
   const old = new Date(Date.now() - 120_001);
   await prisma.clientSession.update({ where: { id: session.id }, data: { lastDesktopSeenAt: old, lastMiniProgramSeenAt: old } });
-  assert.equal(await expireFullyOfflineCandidateSessions(examId, new Date()), 1);
-  const ended = await prisma.clientSession.findUniqueOrThrow({ where: { id: session.id } });
-  assert.equal(ended.status, 'FINISHED'); assert.ok(ended.revokedAt);
-  assert.equal(ended.desktopTokenHash, null); assert.equal(ended.miniProgramTokenHash, null);
+  await markStaleSessionsOffline(examId);
+  const offline = await prisma.clientSession.findUniqueOrThrow({ where: { id: session.id } });
+  assert.equal(offline.status, 'OFFLINE'); assert.equal(offline.revokedAt, null);
+  assert.equal(offline.desktopTokenHash, desktop.tokenHash); assert.equal(offline.miniProgramTokenHash, mobile.tokenHash);
+  await post(heartbeat, { sessionId: session.id, deviceId: marker, side: 'DESKTOP' }, 200, desktop.token);
+  await post(heartbeat, { sessionId: session.id, deviceId: `${marker}-phone`, side: 'MINIPROGRAM' }, 200, mobile.token);
   assert.equal((await prisma.candidate.findUniqueOrThrow({ where: { id: candidate.id } })).startedAt?.getTime(), firstStart.getTime());
-  const racing = await prisma.clientSession.create({ data: { examId, candidateId: candidate.id,
-    desktopDeviceId: `${marker}-race`, desktopTokenHash: desktop.tokenHash, miniProgramTokenHash: mobile.tokenHash,
-    status: 'IN_EXAM', startedAt: firstStart, lastDesktopSeenAt: old, lastMiniProgramSeenAt: old,
-  } });
-  const [, late] = await Promise.all([
-    expireFullyOfflineCandidateSessions(examId, new Date()),
-    post(heartbeat, { sessionId: racing.id, deviceId: `${marker}-race`, side: 'DESKTOP' }, 410, desktop.token),
-  ]);
-  assert.equal(late.code, 'CLIENT_SESSION_REVOKED');
-  const raceEnded = await prisma.clientSession.findUniqueOrThrow({ where: { id: racing.id } });
-  assert.ok(raceEnded.revokedAt); assert.equal(raceEnded.status, 'FINISHED'); assert.equal(raceEnded.desktopTokenHash, null); assert.equal(raceEnded.miniProgramTokenHash, null);
-  const denial = await post(heartbeat, { sessionId: session.id, deviceId: marker, side: 'DESKTOP' }, 410, desktop.token);
-  assert.equal(denial.code, 'CLIENT_SESSION_REVOKED');
-  await post(pair, { deviceId: marker, sessionId: session.id, screenOk: true }, 410, desktop.token);
-  await post(reconnect, { pairCode: recovery.pairCode, recoverySecret: recovery.recoverySecret, deviceId: `${marker}-new-phone` }, 403);
 
   await prisma.examRoom.update({ where: { id: room.id }, data: { requireSecondCamera: false } });
   const initial = (await post(pair, { deviceId: `${marker}-new-desktop`, screenOk: true }, 200)).data;
@@ -68,7 +55,8 @@ try {
   const stale = new Date(Date.now() - 120_001);
   await prisma.clientSession.update({ where: { id: freshSession.id }, data: { lastDesktopSeenAt: stale, lastMiniProgramSeenAt: new Date() } });
   await prisma.examRoom.update({ where: { id: room.id }, data: { requireSecondCamera: true } });
-  assert.equal(await expireFullyOfflineCandidateSessions(examId, new Date()), 0, 'fresh mobile prevents two-sided expiry');
+  await markStaleSessionsOffline(examId);
+  assert.equal((await prisma.clientSession.findUniqueOrThrow({ where: { id: freshSession.id } })).revokedAt, null);
   await prisma.clientSession.update({ where: { id: freshSession.id }, data: { lastDesktopSeenAt: new Date() } });
   await prisma.examRoom.update({ where: { id: room.id }, data: { requireSecondCamera: false } });
   // Wait for its first pass, then make the session stale and exercise the timer's next pass.
@@ -91,10 +79,10 @@ try {
     await Promise.race([workerPass, timeout]);
   } finally { if (deadline) clearTimeout(deadline); }
   const workerEnded = await prisma.clientSession.findUniqueOrThrow({ where: { id: freshSession.id } });
-  assert.ok(workerEnded.revokedAt, 'background timer revokes without any administrator request');
-  assert.equal(workerEnded.desktopTokenHash, null); assert.equal(workerEnded.miniProgramTokenHash, null);
+  assert.equal(workerEnded.revokedAt, null, 'background worker retains disconnected sessions');
+  assert.equal(workerEnded.status, 'OFFLINE');
   assert.equal((await prisma.candidate.findUniqueOrThrow({ where: { id: candidate.id } })).startedAt?.getTime(), firstStart.getTime());
-  console.log('PASS: two-minute logout; both tokens and recovery invalidated; late heartbeats cannot revive; lawful relogin preserves clock; one required side and unattended background worker.');
+  console.log('PASS: long outages retain sessions and tokens; fresh login revokes the old session; personal clock is preserved; background scans only mark offline.');
 } finally {
   const worker = globalThis as typeof globalThis & { sessionHealthTimer?: ReturnType<typeof setInterval> };
   if (worker.sessionHealthTimer) { clearInterval(worker.sessionHealthTimer); delete worker.sessionHealthTimer; }

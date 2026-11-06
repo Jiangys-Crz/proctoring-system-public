@@ -1,16 +1,27 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from './db';
+import { localQaContent, qaAnnouncementVisibility } from './qa-thread';
 import { verifyClientTokenValueForSession } from './client-auth';
+import { createRequestAdmission } from './request-admission';
 
 export const QA_EVENT_LOOKBACK_MS = 5 * 60_000;
 export const QA_EVENT_OVERLAP_MS = 2_000;
+const QA_EVENT_BATCH_LIMIT = 200;
+const QA_EVENT_RECEIPT_LIMIT = 4000;
+const MAX_SUBSCRIPTIONS = 4096;
+const MAX_SESSION_SUBSCRIPTIONS = 4;
+const MAX_EXAMS = 128;
+export class QaEventCapacityError extends Error {
+  readonly code = 'PROCTOR_QA_EVENT_CAPACITY';
+  constructor() { super('答疑推送连接繁忙，请稍后重试'); }
+}
 export const qaEventSessionSelect = {
   id: true, examId: true, candidateId: true, revokedAt: true,
   desktopTokenHash: true, miniProgramTokenHash: true,
 } as const satisfies Prisma.ClientSessionSelect;
 export type QaEventSession = Prisma.ClientSessionGetPayload<{ select: typeof qaEventSessionSelect }>;
-export type QaAnnouncement = { id: string; candidateId: string | null; content: string; createdAt: Date };
-export type QaReply = { id: string; questionId: string; content: string; createdAt: Date; question: { candidateId: string } };
+export type QaAnnouncement = { id: string; candidateId: string | null; content: string; createdAt: Date; deliveredAt?: Date | null };
+export type QaReply = { id: string; questionId: string; content: string; createdAt: Date; deliveredAt?: Date | null; question: { candidateId: string } };
 export type QaQuestionChange = { id: string; updatedAt: Date };
 type Subscription = {
   sessionId: string; candidateId: string; token: string; since: number; cursor: number;
@@ -24,6 +35,7 @@ type Dependencies = {
   announcements: (examId: string, lower: Date, upper: Date) => Promise<QaAnnouncement[]>;
   replies: (examId: string, lower: Date, upper: Date) => Promise<QaReply[]>;
   questions: (examId: string, lower: Date, upper: Date) => Promise<QaQuestionChange[]>;
+  receipts?: (examId: string, announcementIds: string[], candidateIds: string[]) => Promise<Array<{ announcementId: string; candidateId: string }>>;
 };
 
 export function qaSseEvent(event: string, data: unknown, id?: string) {
@@ -33,6 +45,11 @@ export function qaSseEvent(event: string, data: unknown, id?: string) {
 /** One polling loop per exam/process; session authorization is never cached. */
 export function createQaEventHub(dependencies: Dependencies) {
   const groups = new Map<string, ExamScan>();
+  const sessionSubscriptions = new Map<string, number>();
+  let subscriptions = 0;
+  // FIFO waiting keeps many exam timers from borrowing DB connections at
+  // once, without permanently favoring the first two timers on every tick.
+  const acquireScan = createRequestAdmission(2, MAX_EXAMS, 1000);
   // A canceled group can still have database reads in flight. Reconnecting
   // must not bypass that work's single-flight guard by creating a new group.
   const examsReading = new Set<string>();
@@ -46,6 +63,10 @@ export function createQaEventHub(dependencies: Dependencies) {
   function close(group: ExamScan, subscription: Subscription) {
     if (subscription.closed) return;
     subscription.closed = true;
+    subscriptions--;
+    const remaining = (sessionSubscriptions.get(subscription.sessionId) || 1) - 1;
+    if (remaining) sessionSubscriptions.set(subscription.sessionId, remaining);
+    else sessionSubscriptions.delete(subscription.sessionId);
     subscription.seen.clear();
     group.subscribers.delete(subscription);
     try { subscription.close(); } catch { /* The HTTP stream may already be canceled. */ }
@@ -66,6 +87,17 @@ export function createQaEventHub(dependencies: Dependencies) {
     if (group.closed || group.scanning || examsReading.has(group.examId) || !group.subscribers.size) return;
     group.scanning = true;
     examsReading.add(group.examId);
+    let release: (() => void) | undefined;
+    try {
+      try { release = await acquireScan(); } catch { return; }
+      if (group.closed) return;
+      await scanAdmitted(group);
+    } finally {
+      release?.(); group.scanning = false; examsReading.delete(group.examId);
+    }
+  }
+
+  async function scanAdmitted(group: ExamScan) {
     // New subscriptions arriving during this read join the following tick.
     // Their cursor extends the shared window without per-client queries.
     const subscribers = [...group.subscribers];
@@ -96,38 +128,76 @@ export function createQaEventHub(dependencies: Dependencies) {
         }
       }
       const announcements = value(results[1]), replies = value(results[2]), questions = value(results[3]);
+      const overflow = [announcements, replies, questions].some(items => items.length > QA_EVENT_BATCH_LIMIT);
+      const wouldBeNew = (subscription: Subscription, key: string, timestamp: Date) => {
+        const time = +timestamp, cutoff = Math.max(subscription.since, subscription.cursor - QA_EVENT_OVERLAP_MS, earliest);
+        return time > subscription.since && time >= cutoff && time <= +upper && !subscription.seen.has(key);
+      };
+      const receiptCandidates = new Set<string>(), receiptAnnouncements = new Set<string>();
+      if (!overflow && dependencies.receipts) for (const subscription of subscribers) {
+        if (subscription.closed) continue;
+        for (const announcement of announcements) {
+          if ((announcement.candidateId === null || announcement.candidateId === subscription.candidateId)
+            && wouldBeNew(subscription, `announcement:${announcement.id}`, announcement.deliveredAt || announcement.createdAt)) {
+            receiptCandidates.add(subscription.candidateId); receiptAnnouncements.add(announcement.id);
+          }
+        }
+      }
+      const receipts = receiptCandidates.size && dependencies.receipts
+        ? await dependencies.receipts(group.examId, [...receiptAnnouncements], [...receiptCandidates]) : [];
+      const receiptOverflow = receipts.length > QA_EVENT_RECEIPT_LIMIT;
+      const confirmed = new Set(receipts.map(row => `${row.announcementId}:${row.candidateId}`));
+      // One global notice can have thousands of eligible readers. Serialize
+      // once per batch, after each reader's fresh scope/receipt checks below.
+      const eventChunks = new Map<string, string>();
+      const eventChunk = (key: string, build: () => string) => {
+        let chunk = eventChunks.get(key);
+        if (chunk === undefined) { chunk = build(); eventChunks.set(key, chunk); }
+        return chunk;
+      };
       for (const subscription of subscribers) {
         if (subscription.closed) continue;
-        const cutoff = Math.max(subscription.since, subscription.cursor - QA_EVENT_OVERLAP_MS, earliest);
         const isNew = (key: string, timestamp: Date) => {
           const time = +timestamp;
-          if (time <= subscription.since || time < cutoff || time > +upper || subscription.seen.has(key)) return false;
+          if (!wouldBeNew(subscription, key, timestamp)) return false;
           // Old catch-up rows fall outside the next overlap automatically.
           if (time >= +upper - QA_EVENT_OVERLAP_MS) subscription.seen.set(key, time);
           return true;
         };
-        for (const announcement of announcements) {
-          if ((announcement.candidateId === null || announcement.candidateId === subscription.candidateId)
-            && isNew(`announcement:${announcement.id}`, announcement.createdAt)) {
-            if (!send(group, subscription, qaSseEvent('announcement', announcement, announcement.id))) break;
+        if (overflow) {
+          // The normal QA endpoint drains durable unread batches. A large
+          // reconnect window needs one opaque invalidation, not an unbounded
+          // payload/query fan-out; no receipt or persisted sync cursor changes.
+          if (!send(group, subscription, qaSseEvent('refresh', { reason: 'question' }))) continue;
+        } else {
+          let changed = false;
+          for (const announcement of announcements) {
+            if ((announcement.candidateId === null || announcement.candidateId === subscription.candidateId)
+              && !confirmed.has(`${announcement.id}:${subscription.candidateId}`) && isNew(`announcement:${announcement.id}`, announcement.deliveredAt || announcement.createdAt)) {
+              // An incomplete receipt set is not proof of an unread notice.
+              // Refresh only eligible readers, rather than the whole exam.
+              if (receiptOverflow) { changed = true; continue; }
+              if (!send(group, subscription, eventChunk(`announcement:${announcement.id}`,
+                () => qaSseEvent('announcement', { ...announcement, content: localQaContent(announcement.content) }, announcement.id)))) break;
+            }
           }
-        }
-        if (subscription.closed) continue;
-        for (const reply of replies) {
-          if (reply.question.candidateId === subscription.candidateId && isNew(`reply:${reply.id}`, reply.createdAt)) {
-            const { question: _owner, ...payload } = reply;
-            if (!send(group, subscription, qaSseEvent('reply', payload, reply.id))) break;
+          if (subscription.closed) continue;
+          for (const reply of replies) {
+            if (reply.question.candidateId === subscription.candidateId && isNew(`reply:${reply.id}`, reply.deliveredAt || reply.createdAt)) {
+              const { question: _owner, ...payload } = reply;
+              if (!send(group, subscription, eventChunk(`reply:${reply.id}`,
+                () => qaSseEvent('reply', { ...payload, content: localQaContent(payload.content) }, reply.id)))) break;
+            }
           }
+          if (subscription.closed) continue;
+          // A withdrawal no longer has isPublished=true. Broadcast an opaque
+          // invalidation so readers drop previously public text on refresh;
+          // private IDs, authors and content are never pushed to peers.
+          for (const question of questions) {
+            if (isNew(`question:${question.id}:${+question.updatedAt}`, question.updatedAt)) changed = true;
+          }
+          if (changed && !send(group, subscription, qaSseEvent('refresh', { reason: 'question' }))) continue;
         }
-        if (subscription.closed) continue;
-        // A withdrawal no longer has isPublished=true. Broadcast an opaque
-        // invalidation so readers drop previously public text on refresh;
-        // private IDs, authors and content are never pushed to peers.
-        let changed = false;
-        for (const question of questions) {
-          if (isNew(`question:${question.id}:${+question.updatedAt}`, question.updatedAt)) changed = true;
-        }
-        if (changed && !send(group, subscription, qaSseEvent('refresh', { reason: 'question' }))) continue;
         if (!send(group, subscription, `: keepalive ${upper.toISOString()}\n\n`)) continue;
         subscription.cursor = +upper;
         for (const [key, timestamp] of subscription.seen) {
@@ -139,11 +209,14 @@ export function createQaEventHub(dependencies: Dependencies) {
     } catch {
       // No partial batch is delivered and no cursor advances on database error.
       for (const subscription of subscribers) send(group, subscription, qaSseEvent('error', { message: '答疑推送暂时不可用，正在重试' }));
-    } finally { group.scanning = false; examsReading.delete(group.examId); }
+    }
   }
 
   return {
     subscribe(input: { session: Pick<QaEventSession, 'id' | 'examId' | 'candidateId'>; token: string; since?: Date; send: Subscription['send']; close: Subscription['close'] }) {
+      const sessionCount = sessionSubscriptions.get(input.session.id) || 0;
+      if (subscriptions >= MAX_SUBSCRIPTIONS || sessionCount >= MAX_SESSION_SUBSCRIPTIONS
+        || (!groups.has(input.session.examId) && groups.size >= MAX_EXAMS)) throw new QaEventCapacityError();
       const currentTime = now();
       const requested = input.since && Number.isFinite(+input.since) ? +input.since : currentTime;
       const since = Math.min(currentTime, Math.max(currentTime - QA_EVENT_LOOKBACK_MS, requested));
@@ -156,9 +229,12 @@ export function createQaEventHub(dependencies: Dependencies) {
         group = { examId: input.session.examId, subscribers: new Set(), scanning: false, closed: false, stop: () => {} };
         groups.set(group.examId, group);
         const selected = group;
-        group.stop = schedule(() => scan(selected));
+        try { group.stop = schedule(() => scan(selected)); }
+        catch (error) { groups.delete(group.examId); throw error; }
       }
       group.subscribers.add(subscription);
+      subscriptions++;
+      sessionSubscriptions.set(input.session.id, sessionCount + 1);
       const selected = group;
       return () => close(selected, subscription);
     }
@@ -168,20 +244,24 @@ export function createQaEventHub(dependencies: Dependencies) {
 export const qaEventHub = createQaEventHub({
   sessions: ids => prisma.clientSession.findMany({ where: { id: { in: ids } }, select: qaEventSessionSelect }),
   announcements: (examId, lower, upper) => prisma.examAnnouncement.findMany({
-    where: { examId, createdAt: { gte: lower, lte: upper } },
-    select: { id: true, candidateId: true, content: true, createdAt: true }, orderBy: { createdAt: 'asc' },
+    where: { AND: [qaAnnouncementVisibility(), { OR: [{ deliveredAt: { gte: lower, lte: upper } }, { deliveredAt: null, createdAt: { gte: lower, lte: upper } }] }], examId },
+    select: { id: true, candidateId: true, content: true, createdAt: true, deliveredAt: true }, orderBy: [{ deliveredAt: 'asc' }, { id: 'asc' }],
+    take: QA_EVENT_BATCH_LIMIT + 1,
   }),
   replies: async (examId, lower, upper) => {
     // Prisma's nested relation projection otherwise adds a second SQL query.
-    const rows = await prisma.$queryRaw<Array<{ id: string; questionId: string; content: string; createdAt: Date; candidateId: string }>>`
-      SELECT m.id, m.questionId, m.content, m.createdAt, q.candidateId
+    const rows = await prisma.$queryRaw<Array<{ id: string; questionId: string; content: string; createdAt: Date; deliveredAt: Date | null; candidateId: string }>>`
+      SELECT m.id, m.questionId, m.content, m.createdAt, m.deliveredAt, q.candidateId
       FROM ExamQuestionMessage AS m INNER JOIN ExamQuestion AS q ON q.id = m.questionId
-      WHERE q.examId = ${examId} AND m.sender = 'ADMIN' AND m.createdAt >= ${lower} AND m.createdAt <= ${upper}
-      ORDER BY m.createdAt ASC
+      WHERE q.examId = ${examId} AND m.sender = 'ADMIN' AND m.acknowledgedAt IS NULL AND ((m.deliveredAt >= ${lower} AND m.deliveredAt <= ${upper}) OR (m.deliveredAt IS NULL AND m.createdAt >= ${lower} AND m.createdAt <= ${upper}))
+      ORDER BY m.deliveredAt ASC, m.id ASC
+      LIMIT ${QA_EVENT_BATCH_LIMIT + 1}
     `;
     return rows.map(({ candidateId, ...row }) => ({ ...row, question: { candidateId } }));
   },
+  receipts: (examId, announcementIds, candidateIds) => prisma.examAnnouncementReceipt.findMany({ where: { announcementId: { in: announcementIds }, candidateId: { in: candidateIds }, announcement: { examId } }, select: { announcementId: true, candidateId: true }, take: QA_EVENT_RECEIPT_LIMIT + 1 }),
   questions: (examId, lower, upper) => prisma.examQuestion.findMany({
     where: { examId, updatedAt: { gte: lower, lte: upper } }, select: { id: true, updatedAt: true }, orderBy: { updatedAt: 'asc' },
+    take: QA_EVENT_BATCH_LIMIT + 1,
   }),
 });

@@ -53,6 +53,9 @@ export function judgeObjectiveImmediately(rule: Rule, showObjectiveScore: boolea
 }
 
 export type ScoreRecord = { id: string; candidateId: string; problemId: string; status: number; score: number; manualScore?: number | null; createdAt: Date };
+export function compareSubmissionOrder(a: Pick<ScoreRecord, 'id' | 'createdAt'>, b: Pick<ScoreRecord, 'id' | 'createdAt'>) {
+  return +a.createdAt - +b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
 export type RankingCandidate = {
   id: string; examNumber: string; name: string | null; teamName: string | null;
   groupName?: string | null; school?: string | null; college?: string | null; ranked?: boolean; gender?: string | null; teamMembers?: string | null;
@@ -76,12 +79,17 @@ export function scaledSubmissionScore(rule: Rule, raw: number, score: number, hy
   return Math.round(value * 100) / 100;
 }
 
-function assignRanks(rows: ScoreRow[], xcpc: boolean, grouped: boolean) {
+function assignRanks(rows: ScoreRow[], xcpc: boolean, grouped: boolean, teamNames = false) {
   const compare = (a: ScoreRow, b: ScoreRow) => (xcpc ? b.solved - a.solved : b.score - a.score)
-    || a.penaltyMillis - b.penaltyMillis || a.username.localeCompare(b.username);
-  const groups = grouped
-    ? [...new Set(rows.map(row => row.groupName))].map(group => rows.filter(row => row.groupName === group))
-    : [rows];
+    || a.penaltyMillis - b.penaltyMillis
+    || (teamNames ? (a.displayName < b.displayName ? -1 : a.displayName > b.displayName ? 1 : 0) : 0)
+    || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0);
+  const byGroup = new Map<string, ScoreRow[]>();
+  if (grouped) for (const row of rows) {
+    const group = byGroup.get(row.groupName);
+    if (group) group.push(row); else byGroup.set(row.groupName, [row]);
+  }
+  const groups = grouped ? [...byGroup.values()] : [rows];
   for (const groupRows of groups) {
     groupRows.sort(compare);
     let officialCount = 0;
@@ -117,7 +125,8 @@ export function scoreRows(exam: Timing & { scoreboardFrozenAt?: Date | null },
   const candidateIds = new Set(candidates.map(candidate => candidate.id));
   const ordered = [...records].filter(record => record.status !== IGNORED_SUBMISSION_STATUS && candidateIds.has(record.candidateId)
     && record.createdAt >= exam.startAt && record.createdAt < exam.endAt && record.createdAt <= now)
-    .sort((a, b) => +a.createdAt - +b.createdAt || a.id.localeCompare(b.id));
+    // A server's locale must not select a different latest run at equal time.
+    .sort(compareSubmissionOrder);
   const byCandidate = new Map<string, Map<string, ScoreRecord[]>>();
   for (const record of ordered) {
     if (record.status === 1 && (!frozen || record.createdAt <= exam.scoreboardFrozenAt!) && !first.has(record.problemId)) first.set(record.problemId, +record.createdAt);
@@ -189,7 +198,9 @@ export function gpltTeamRows(personalRows: ScoreRow[]) {
   const teams = new Map<string, ScoreRow>();
   for (const row of personalRows) {
     const teamName = row.teamName || row.username;
-    const key = `${row.groupName}\0${teamName}`;
+    // An actual team named after an exam number is distinct from that
+    // unteamed candidate. JSON also keeps embedded separators unambiguous.
+    const key = JSON.stringify([row.groupName, row.teamName ? 'team' : 'candidate', teamName]);
     const existing = teams.get(key);
     if (!existing) {
       teams.set(key, { ...row, rank: 0, username: teamName, displayName: teamName,
@@ -209,6 +220,21 @@ export function gpltTeamRows(personalRows: ScoreRow[]) {
     });
   }
   const rows = [...teams.values()];
-  assignRanks(rows, false, true);
+  const identity = (row: ScoreRow, name = row.username) => JSON.stringify([row.groupName, name]);
+  const named = new Set(rows.filter(row => row.teamName).map(row => identity(row)));
+  const used = new Set(rows.map(row => identity(row)));
+  // Keep the established team-name identifiers for existing consumers. Only
+  // unteamed rows colliding with real team names need a different hidden key.
+  // Process in exam-number order so score changes cannot change those keys.
+  const collisions = rows.filter(row => !row.teamName && named.has(identity(row)))
+    .sort((a, b) => a.username < b.username ? -1 : a.username > b.username ? 1 : 0);
+  for (const row of collisions) {
+    let name = `candidate:${row.username}`;
+    while (used.has(identity(row, name))) name = `candidate:${name}`;
+    row.username = name;
+    used.add(identity(row));
+  }
+  // Display names preserve the established order even for disambiguated rows.
+  assignRanks(rows, false, true, true);
   return rows;
 }

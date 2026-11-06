@@ -26,6 +26,7 @@ export async function deleteRecordings(user: User, input: z.infer<typeof DeleteR
       if (!exam) throw new AuthError('考试不存在', 404);
       if (user.role !== 'SUPER_ADMIN' && exam.createdById !== user.id && !await tx.examAdministrator.count({ where: { examId: id, userId: user.id } })) throw new AuthError('比赛管理权限已变化，请刷新页面', 403);
       if (exam.endAt > new Date()) throw new AuthError('考试尚未结束，不能删除监考录像', 409);
+      if (await tx.reaction.count({where:{examId:id,status:{not:'EXPIRED'}}})) throw new AuthError('录像受 Reaction 引用保护，请先等待配置的保留期结束',409);
     }
     const selectedWhere = wholeExam ? { examId: { in: examIds } } : { id: { in: input.alertIds } };
     const selected = await tx.alert.findMany({ where: selectedWhere });

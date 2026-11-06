@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "reaction:recorder": "tsx --env-file-if-exists=.env scripts/reaction-recorder.ts",
+    "test:reaction": "tsx --test tests/reaction-*.test.ts",
+    "test:reaction:state": "tsx --env-file-if-exists=.env tests/reaction-state-integration.ts",
+    "test:reaction:media": "tsx --env-file-if-exists=.env tests/reaction-frame-capture-integration.ts",
+    "test:reaction:desktop-only": "tsx --env-file-if-exists=.env tests/reaction-desktop-only-integration.ts",
     "dev": "next dev -p 4031",
     "build": "prisma generate && next build",
     "start": "next start -p 4031",
@@ -68,11 +73,13 @@
     "@cwnupaa/proctor-shared": "workspace:*",
     "@prisma/client": "6.19.3",
     "bcryptjs": "^3.0.3",
+    "ffprobe-static": "^3.1.0",
     "hls.js": "^1.7.0",
     "jszip": "^3.10.1",
     "katex": "^0.18.7",
     "lucide-react": "^1.31.0",
     "next": "16.4.1",
+    "playwright-core": "^1.58.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",
@@ -83,14 +90,14 @@
     "sharp": "0.35.5",
     "unified": "^11.0.5",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
-    "zod": "^4.1.13",
-    "playwright-core": "^1.58.2",
-    "ffprobe-static": "^3.1.0"
+    "yazl": "^3.3.1",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
+    "@types/yazl": "^3.3.1",
     "prisma": "6.19.3",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"

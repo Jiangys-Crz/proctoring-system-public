@@ -556,6 +556,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--hydro-blue) !imp
 /* Exam publishing: a quiet title-led list and a dedicated full-screen editor. */
 .exam-list-actions, .exam-publish-meta, .exam-publish-meta > span, .exam-publish-links { display: flex; align-items: center; }
 .exam-list-actions { gap: 10px; }
+.exam-list-search { display: grid; gap: 8px; width: min(480px, 100%); color: #687881; font-size: 14px; }
+.exam-list-search input { width: 100%; min-width: 0; min-height: 42px; padding: 10px 12px; border: 1px solid var(--hydro-border); }
+.exam-list-search input:focus-visible { outline: 2px solid #589fd4; outline-offset: 2px; }
 .exam-publish-list { background: #fff; border: 1px solid var(--hydro-border); }
 .exam-publish-item { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 30px 34px; border-bottom: 1px solid #e3e6e8; }
 .exam-publish-item:last-child { border-bottom: 0; }

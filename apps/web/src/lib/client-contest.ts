@@ -14,7 +14,7 @@ export async function requireContestSession<T extends boolean = false>(request: 
   if (!authorized.ok) return authorized;
   const session = authorized.session as T extends true ? ContestSummarySession : ContestSession;
   if (session.exam.platform === 'NOVAJUDGE' && !allowExternal) return { ok: false as const, status: 403, message: '本场考试请在 NovaJudge 中答题，监考客户端需要支持 NovaJudge 的版本' };
-  if (!['APPROVED', 'IN_EXAM', 'LOCKED', 'FINISHED'].includes(session.status)) return { ok: false as const, status: 403, message: '当前会话不可访问考试' };
+  if (!session.approvedAt || !['APPROVED', 'IN_EXAM', 'LOCKED', 'FINISHED'].includes(session.status)) return { ok: false as const, status: 403, message: '当前会话不可访问考试' };
   if (session.exam.platformContestId === 'local' && !session.exam.published) return { ok: false as const, status: 403, message: '考试尚未发布' };
   session.startedAt = session.candidate.startedAt || session.startedAt;
   return { ok: true as const, session };

@@ -1,6 +1,6 @@
 {
   "name": "@cwnupaa/proctor-desktop",
-  "version": "1.0.11",
+  "version": "1.0.13",
   "private": true,
   "main": "dist/main/bootstrap.js",
   "scripts": {

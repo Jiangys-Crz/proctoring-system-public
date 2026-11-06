@@ -16,7 +16,10 @@
 
 安装脚本和原生命令随 Mac / Windows 安装包放在 `resources/novajudge-submit`，macOS 通过安装器的 `--source` 参数安装，
 不需要从互联网或 NovaJudge 下载脚本。仅签发和撤销授权需要连接当前比赛的 NovaJudge 服务。
-代码提交仍需用户在终端确认，客户端没有跳过确认的选项。
+内置命令版本为 `2026.11.05.2`。代码提交和打印均支持 `-y` / `--yes` 自动确认，
+参数可放在文件名前后；仍会展示比赛、文件、队伍等信息。不加该参数时需在终端输入 `y`。
+运行 `submit --help` 或 `printfile --help` 查看各自的选项、语言识别、授权条件和限制；
+运行 `submit version` 可核对已安装的脚本版本。
 
 Windows 主进程通过隐藏窗口的 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass`
 调用内置 `install-windows.ps1 -Url <网站> -SourceDir <资源目录>`，参数分别传递，不经过命令字符串拼接。
@@ -30,10 +33,22 @@ Windows 主进程通过隐藏窗口的 `powershell.exe -NoProfile -NonInteractiv
 Win7 SP1 的 .NET 和 WMF 5.1；如提示重启，重启后须重新运行安装包。详见
 [Windows 7 环境准备](WINDOWS7_PREREQUISITES.md)。
 
-`printfile <文件名> [y/N]` 显示文件名、大小、语言、比赛及队伍，不输出源码正文；确认后将文件发送到
+`printfile [-y|--yes] <文件名> [y/N]` 显示文件名、大小、语言、比赛及队伍，不输出源码正文；确认后将文件发送到
 NovaJudge 打印队列。只接受 `.cpp`、`.c`、`.cc`、`.cxx`、`.java`、`.py`，
 且服务端独立核验监考设备授权，普通网页绑定不能使用。回车或 `n` 取消，末尾可显式指定 `y` 或 `n`。
 该命令与 submit 共用监考授权，退出/切换账号后的清理同时生效。
+大小按实际发送源码的 UTF-8 字节数计算，不包含开头的 BOM。
+Windows 的文件检查和读取均使用 PowerShell 解析后的绝对路径，避免切换目录后读错文件或在预览前退出。
+
+```text
+submit -y A.cpp
+submit --problem A "source file.cpp" --yes
+printfile -y "source file.cpp"
+printfile --help
+```
+
+提交预览依次显示 `contest`、`filename`、`team`、`problem`、`language`、`url`；
+打印预览依次显示 `contest`、`filename`、`team`、`language`、`size`。
 
 授权文件为 `~/.novajudge-submit.json`（Windows 为 `%USERPROFILE%\.novajudge-submit.json`），原子写入。
 macOS 权限为 `0600`；Windows 临时文件先关闭 ACL 继承，仅授予当前用户 SID 权限，再写入令牌并原子替换。

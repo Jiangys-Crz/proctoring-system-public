@@ -18,8 +18,9 @@ export function authorizedHydroFileUrl(value: string, baseUrl: string, additiona
   return target;
 }
 
-export async function fetchHydroFile(value: string, baseUrl: string) {
+export async function fetchHydroFile(value: string, baseUrl: string, signal?: AbortSignal) {
   const target = authorizedHydroFileUrl(value, baseUrl);
   // Signed downloads are bearer URLs themselves. Do not forward API keys, cookies or authorization headers.
-  return fetch(target, { cache: 'no-store', redirect: 'error', credentials: 'omit', signal: AbortSignal.timeout(30_000) });
+  const timeout = AbortSignal.timeout(30_000);
+  return fetch(target, { cache: 'no-store', redirect: 'error', credentials: 'omit', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
 }

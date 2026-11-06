@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, Ban, BarChart3, CalendarClock, Clock3, CopyCheck, Download, FileCheck, FileText, Flag, List, LoaderCircle,
-  Pencil, RotateCcw, Settings, Trophy, Users
+  ArrowLeft, Ban, BarChart3, CalendarClock, Clock3, CopyCheck, Download, FileCheck, FileText, Film, Flag, List, LoaderCircle,
+  Eye, Pencil, RotateCcw, Settings, Trophy, Users
 } from 'lucide-react';
 import { MarkdownContent } from './MarkdownComposer';
 import { api } from './api';
@@ -237,8 +237,8 @@ export function ExamOverviewClient({ examId, initialCanManage, initialView = 'de
     setBulkRejudgeMessage('');
     setError('');
     try {
-      const result = await api<{ total: number; completed: number; failed: number }>(`/api/exams/${examId}/submissions`, { method: 'POST' });
-      setBulkRejudgeMessage(result.failed ? `已重测 ${result.completed}/${result.total} 条，${result.failed} 条失败` : `已完成 ${result.completed} 条递交的重测，人工评分未改变`);
+      const result = await api<{ total: number; completed: number; failed: number; queued?: number }>(`/api/exams/${examId}/submissions`, { method: 'POST' });
+      setBulkRejudgeMessage(result.queued !== undefined ? `已将 ${result.queued} 条递交加入后台重测队列，人工评分未改变` : result.failed ? `已重测 ${result.completed}/${result.total} 条，${result.failed} 条失败` : `已完成 ${result.completed} 条递交的重测，人工评分未改变`);
       setSubmissions(await api<Submission[]>(`/api/exams/${examId}/submissions`));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '重测所有提交失败');
@@ -313,12 +313,16 @@ export function ExamOverviewClient({ examId, initialCanManage, initialView = 'de
         <nav className="exam-overview-actions" aria-label="考试详情操作">
           {exam.platform === 'NOVAJUDGE' ? <>
             <a href={`${exam.platformBaseUrl}/contest/${exam.platformContestId}`} target="_blank" rel="noreferrer"><Trophy size={19} />NovaJudge 比赛</a>
+            {canManage ? <Link href={`/dashboard/exams/${examId}/reactions`}><Film size={19} />Reaction 录像</Link> : null}
             {canManage ? <><Link href={`/dashboard/exams/${examId}/settings`}><Pencil size={19} />编辑考试</Link><Link href={`/dashboard/exams/${examId}/settings/rooms`}><Settings size={19} />考试管理</Link></> : null}
+            <Link href={`/dashboard/exams/${examId}/status`}><Eye size={19} />考试监考</Link>
           </> : <>
           <Link href={`/dashboard/exams/${examId}/problems`}><List size={19} />题目列表</Link>
           <Link href={`/dashboard/exams/${examId}/leaderboard`}><BarChart3 size={19} />排行榜</Link>
           {canManage ? <Link href={`/dashboard/exams/${examId}/code-check`}><CopyCheck size={19} />代码查重</Link> : null}
-          {canManage ? <>{exam.contestRule === 'KS' ? <Link href={`/dashboard/exams/${examId}/grading`}><FileCheck size={19} />评卷</Link> : null}<Link href={`/dashboard/exams/${examId}/settings`}><Pencil size={19} />编辑考试</Link><Link href={`/dashboard/exams/${examId}/settings/problems`}><Settings size={19} />考试管理</Link><button disabled={exportingPapers} onClick={() => void exportPapers()}>{exportingPapers ? <LoaderCircle className="spin" size={19} /> : <FileText size={19} />}{exportingPapers ? '正在生成试卷…' : '导出试卷（PDF）'}</button><button disabled={exporting} onClick={() => void exportCodes()}>{exporting ? <LoaderCircle className="spin" size={19} /> : <Download size={19} />}导出所有代码</button><Link href={`/dashboard/exams/${examId}/submissions`}><Flag size={19} />所有递交</Link></> : null}
+          {canManage ? <>{exam.contestRule === 'KS' ? <Link href={`/dashboard/exams/${examId}/grading`}><FileCheck size={19} />评卷</Link> : null}<Link href={`/dashboard/exams/${examId}/settings`}><Pencil size={19} />编辑考试</Link><Link href={`/dashboard/exams/${examId}/settings/problems`}><Settings size={19} />考试管理</Link></> : null}
+          <Link href={`/dashboard/exams/${examId}/status`}><Eye size={19} />考试监考</Link>
+          {canManage ? <><button disabled={exportingPapers} onClick={() => void exportPapers()}>{exportingPapers ? <LoaderCircle className="spin" size={19} /> : <FileText size={19} />}{exportingPapers ? '正在生成试卷…' : '导出试卷（PDF）'}</button><button disabled={exporting} onClick={() => void exportCodes()}>{exporting ? <LoaderCircle className="spin" size={19} /> : <Download size={19} />}导出所有代码</button><Link href={`/dashboard/exams/${examId}/submissions`}><Flag size={19} />所有递交</Link></> : null}
           </>}
         </nav>
         <dl className="exam-overview-facts">

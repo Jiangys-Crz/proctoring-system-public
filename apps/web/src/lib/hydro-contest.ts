@@ -46,7 +46,8 @@ function hydroUrl(baseUrl: string, path: string) {
 export async function requestHydroContest<T>(
   exam: ContestExam,
   path: string,
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  signal?: AbortSignal,
 ) {
   const settings = await connectionSettings(exam.platformBaseUrl);
   const body = JSON.stringify({
@@ -60,7 +61,7 @@ export async function requestHydroContest<T>(
     body,
     cache: 'no-store',
     redirect: 'error',
-    signal: AbortSignal.timeout(15_000)
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000)
   });
   const result = (await response.json().catch(() => null)) as HydroEnvelope<T> | null;
   if (!response.ok || !result?.ok) {
@@ -71,12 +72,13 @@ export async function requestHydroContest<T>(
 
 export async function requestHydroContestFile(
   exam: ContestExam,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ) {
   const settings = await connectionSettings(exam.platformBaseUrl);
-  const signed = await requestHydroContest<{ url: string }>(exam, `/api/proctor/contest/${exam.platformContestId}/file`, payload);
-  const response = await fetchHydroFile(signed.url, requestBaseUrl(settings));
-  if (!response.ok) throw new Error(`题目文件下载失败（${response.status}）`);
+  const signed = await requestHydroContest<{ url: string }>(exam, `/api/proctor/contest/${exam.platformContestId}/file`, payload, signal);
+  const response = await fetchHydroFile(signed.url, requestBaseUrl(settings), signal);
+  if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`题目文件下载失败（${response.status}）`); }
   return response;
 }
 
@@ -98,7 +100,7 @@ export type HydroRecordPayload = {
   pid: number;
   uid?: number;
   lang: string;
-  code: string;
+  code?: string;
   status: number;
   statusText: string;
   score: number;
@@ -129,6 +131,7 @@ export async function requestHydroBridge<T>(
   exam: Pick<Exam, 'platformBaseUrl'> & { candidate?: Pick<Candidate, 'examNumber'> },
   path: string,
   payload: Record<string, unknown> = {},
+  signal?: AbortSignal,
 ) {
   const settings = await connectionSettings(exam.platformBaseUrl);
   const body = JSON.stringify(payload);
@@ -138,7 +141,7 @@ export async function requestHydroBridge<T>(
     body,
     cache: 'no-store',
     redirect: 'error',
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
   });
   const result = (await response.json().catch(() => null)) as HydroEnvelope<T> | null;
   if (!response.ok || !result?.ok) throw new Error(result?.message || `评测服务请求失败（${response.status}）`);
@@ -187,15 +190,16 @@ export async function requestHydroProblemFile(
   exam: Pick<Exam, 'platformBaseUrl'>,
   problemId: string,
   name: string,
+  signal?: AbortSignal,
 ) {
   const settings = await connectionSettings(exam.platformBaseUrl);
   const signed = await requestHydroBridge<{ url: string }>(
     exam,
     `/api/proctor/problem/${encodeURIComponent(problemId)}/file`,
-    { name },
+    { name }, signal,
   );
-  const response = await fetchHydroFile(signed.url, requestBaseUrl(settings));
-  if (!response.ok) throw new Error(`题目文件下载失败（${response.status}）`);
+  const response = await fetchHydroFile(signed.url, requestBaseUrl(settings), signal);
+  if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`题目文件下载失败（${response.status}）`); }
   return response;
 }
 

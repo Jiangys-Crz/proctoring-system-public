@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
-import { staleHeartbeatSides, markStaleSessionsOffline, expireFullyOfflineCandidateSessions } from '../src/lib/session-health';
+import { staleHeartbeatSides, markStaleSessionsOffline } from '../src/lib/session-health';
 import { prisma } from '../src/lib/db';
 
 const cutoff = new Date('2026-09-26T06:00:20.000Z');
@@ -70,7 +70,6 @@ test('an already reported single-side outage takes no write lock while the requi
   prisma.$transaction = (async () => { throw new Error('reported outage must not take a write lock'); }) as typeof transaction;
   try {
     assert.equal(await markStaleSessionsOffline('exam'), 0);
-    assert.equal(await expireFullyOfflineCandidateSessions('exam', new Date()), 0);
   } finally { prisma.clientSession.findMany = findMany; prisma.$transaction = transaction; prisma.$queryRaw = queryRaw; }
 });
 

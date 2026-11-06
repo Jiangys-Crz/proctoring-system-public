@@ -25,5 +25,5 @@ declare global {
     now?: () => number;
   }) => RecordingBuffer<T>;
   var proctorEvidenceChannel: (type: string, alert?: { id?: string; message?: string }) => string;
-  var proctorRecordingEnabled: (requirements?: { isPublicTest?: boolean; saveFullRecording?: boolean; saveIncidentRecording?: boolean } | null) => boolean;
+  var proctorRecordingEnabled: (requirements?: { isPublicTest?: boolean; reactionEnabled?: boolean; saveFullRecording?: boolean; saveIncidentRecording?: boolean } | null) => boolean;
 }

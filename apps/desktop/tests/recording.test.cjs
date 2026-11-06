@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { randomUUID } = require('node:crypto');
 
-const renderer = fs.readFileSync(require.resolve('../src/renderer/renderer.js'), 'utf8');
+const renderer = fs.readFileSync(require.resolve('../src/renderer/renderer.js'), 'utf8').replace(/\r\n/g, '\n');
 const controllerSource = fs.readFileSync(require.resolve('../src/renderer/recording-controller.js'), 'utf8');
 function deferred() {
   let resolve, reject;
@@ -13,24 +13,27 @@ function deferred() {
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-function recordingHarness(onSave) {
+function recordingHarness(onSave, { now = Date.now, dispatchStop = queueMicrotask } = {}) {
   const timers = new Map();
   const instances = [];
   let timerId = 0;
   class Recorder {
     constructor() { this.state = 'inactive'; this.mimeType = 'video/webm'; instances.push(this); }
-    start() { this.state = 'recording'; }
+    start() {
+      assert.ok(instances.every(instance => instance.state !== 'recording'), 'recorders never capture concurrently');
+      this.state = 'recording';
+    }
     stop() {
       assert.equal(this.state, 'recording');
       this.state = 'inactive';
-      queueMicrotask(() => {
+      dispatchStop(() => {
         this.ondataavailable({ data: new Blob([`segment-${instances.indexOf(this)}`]) });
         this.onstop();
       });
     }
   }
   const context = vm.createContext({
-    MediaRecorder: Recorder, Blob, crypto: { randomUUID },
+    MediaRecorder: Recorder, Blob, crypto: { randomUUID }, Date: class extends Date { static now() { return now(); } },
     setTimeout: (fn) => { const id = ++timerId; timers.set(id, fn); return id; },
     clearTimeout: (id) => timers.delete(id)
   });
@@ -109,8 +112,81 @@ test('an encoder error saves the final segment once and stops automatic recordin
   assert.equal(harness.instances.length, 1);
 });
 
+for (const entry of ['flush', 'stop', 'timer', 'error']) {
+  test(`${entry} timestamps capture end before a delayed encoder stop event`, async () => {
+    let now = 100_000;
+    const saved = [], callbacks = [];
+    const h = recordingHarness(async (...args) => saved.push(args), { now: () => now, dispatchStop: fn => callbacks.push(fn) });
+    h.options.getContext = () => ({ clockOffsetMs: 10, clockUncertaintyMs: 12 });
+    const controller = h.create();
+    now += 10_000;
+    if (entry === 'flush') controller.flush();
+    if (entry === 'stop') void controller.stop();
+    if (entry === 'error') h.instances[0].onerror({ error: new Error('encoder stopped') });
+    if (entry === 'timer') {
+      const [id, callback] = [...h.timers][0];
+      h.timers.delete(id); callback();
+    }
+    assert.equal(callbacks.length, 1);
+    assert.equal(h.instances.length, 1);
+    assert.equal(saved.length, 0);
+    now += 1_000;
+    controller.flush();
+    const stopping = controller.stop();
+    callbacks[0]();
+    await stopping;
+    assert.equal(saved.length, 1);
+    assert.equal(Date.parse(saved[0][2].startedAt), 100_010);
+    assert.equal(Date.parse(saved[0][2].endedAt), 110_010, 'onstop must not add its one-second delivery delay');
+    assert.equal(saved[0][2].clockOffsetMs, '10');
+    assert.equal(callbacks.length, 1, 'repeated stop/flush cannot replace the first stop time');
+    assert.equal(h.timers.size, 0);
+  });
+}
+
+test('the next segment keeps its actual start and does not hide a delayed stop gap', async () => {
+  let now = 100_000;
+  const saved = [], callbacks = [];
+  const h = recordingHarness(async (...args) => saved.push(args), { now: () => now, dispatchStop: fn => callbacks.push(fn) });
+  const controller = h.create();
+  now = 110_000; controller.flush();
+  now = 111_000; callbacks.shift()();
+  await tick();
+  const [id, next] = [...h.timers][0]; h.timers.delete(id);
+  now = 111_050; next();
+  now = 121_050;
+  const stopping = controller.stop();
+  now = 122_050; callbacks.shift()();
+  await stopping;
+  assert.equal(saved.length, 2);
+  assert.equal(Date.parse(saved[0][2].endedAt), 110_000);
+  assert.equal(Date.parse(saved[1][2].startedAt), 111_050);
+  assert.equal(Date.parse(saved[1][2].endedAt), 121_050);
+  assert.equal(h.instances.length, 2);
+});
+
+for (const errorBeforeStop of [false, true]) {
+  test(`an unsolicited ${errorBeforeStop ? 'error/' : ''}stop keeps an observed fallback time`, async () => {
+    let now = 100_000;
+    const saved = [];
+    const h = recordingHarness(async (...args) => saved.push(args), { now: () => now });
+    const controller = h.create();
+    const recorder = h.instances[0];
+    recorder.state = 'inactive';
+    if (errorBeforeStop) recorder.onerror({ error: new Error('source ended') });
+    now = 102_000;
+    recorder.ondataavailable({ data: new Blob(['last frame']) });
+    recorder.onstop();
+    await controller.stop();
+    assert.equal(saved.length, 1);
+    assert.equal(Date.parse(saved[0][2].endedAt), now);
+    assert.equal(h.instances.length, 1);
+    assert.equal(h.timers.size, 0);
+  });
+}
+
 function rendererFunctions(names, globals) {
-  const context = vm.createContext({ console, ...globals });
+  const context = vm.createContext({ console, performance, ...globals });
   for (const name of names) {
     const start = renderer.search(new RegExp(`^(?:async )?function ${name}\\(`, 'm'));
     assert.ok(start >= 0, name);
@@ -143,12 +219,12 @@ test('reconciling channels does not restart an existing screen recorder when add
 
 test('fullscreen recovery verifies new frames before handing off recording and live streams', async () => {
   const gate = deferred();
-  const oldScreen = { id: 'old' }, newScreen = { id: 'new', getVideoTracks: () => [{ kind: 'video' }] };
+  const oldScreen = { id: 'old' }, newScreen = { id: 'new', getVideoTracks: () => [{ kind: 'video' }], getAudioTracks: () => [] };
   const events = [];
   const publisher = { stream: oldScreen, peer: { connectionState: 'connected', getSenders: () => [{ track: { kind: 'video' }, replaceTrack: async () => { events.push('replace-track'); } }] } };
   const state = { session: { id: 'session', status: 'LOCKED' }, monitoringGeneration: 7, screenStream: oldScreen, finishedScreenVisible: false, captureRecoveryBusy: false, captureRecoveryRetries: 1, whipPublishers: new Map([['DESKTOP_SCREEN', publisher]]) };
   const context = rendererFunctions(['recoverWindowModeCapture'], {
-    state,
+    state, window: {},
     captureScreen: async () => newScreen,
     waitForVideoFrame: () => gate.promise,
     attachScreenTrackWatchers: () => events.push('watch'),
@@ -173,12 +249,12 @@ test('fullscreen recovery verifies new frames before handing off recording and l
 });
 
 test('fullscreen recovery reconnects only the screen channel when track replacement fails', async () => {
-  const oldScreen = { id: 'old' }, newScreen = { id: 'new', getVideoTracks: () => [{ kind: 'video' }] };
+  const oldScreen = { id: 'old' }, newScreen = { id: 'new', getVideoTracks: () => [{ kind: 'video' }], getAudioTracks: () => [] };
   const events = [];
   const publisher = { stream: oldScreen, peer: { connectionState: 'connected', getSenders: () => [{ track: { kind: 'video' }, replaceTrack: async () => { throw new Error('replace failed'); } }] } };
   const state = { session: { id: 'session', status: 'IN_EXAM' }, monitoringGeneration: 2, screenStream: oldScreen, finishedScreenVisible: false, captureRecoveryBusy: false, captureRecoveryRetries: 0, whipPublishers: new Map([['DESKTOP_SCREEN', publisher]]) };
   const context = rendererFunctions(['recoverWindowModeCapture'], {
-    state, captureScreen: async () => newScreen, waitForVideoFrame: async () => {},
+    state, window: {}, captureScreen: async () => newScreen, waitForVideoFrame: async () => {},
     attachScreenTrackWatchers: () => {}, updateLocalPreviews: () => {}, startSegmentRecorders: () => {},
     stopWhipChannel: async (channel) => events.push(channel), stopStream: () => {}, startRtmpStreams: async () => {},
     errorMessage: (error) => error.message
@@ -205,7 +281,7 @@ test('IndexedDB request success does not acknowledge a rolled-back recording tra
 
 test('failed uploads are retained and old-server credentials are never sent to the current server', async () => {
   const sent = [], deleted = [];
-  const state = { serverUrl: 'https://new.test', session: { id: 'new' }, sessionToken: 'new-token', uploadFlushBusy: false, uploadFallback: new Map(), uploadRetryAt: new Map() };
+  const state = { serverUrl: 'https://new.test', session: { id: 'new' }, sessionToken: 'new-token', uploadFlushBusy: false, uploadFlushRetryAt: 0, uploadFlushFailures: 0, uploadRecent: new Map(), uploadFallback: new Map(), uploadRetryAt: new Map() };
   const context = rendererFunctions(['flushUploadQueue'], {
     state,
     listQueuedUploads: async () => [
@@ -224,7 +300,7 @@ test('failed uploads are retained and old-server credentials are never sent to t
 
 test('successfully uploaded memory-only clips clear even when IndexedDB is unavailable', async () => {
   const item = { id: 'memory', serverUrl: 'https://exam.test', sessionToken: 'token', fields: { sessionId: 'a' } };
-  const state = { serverUrl: item.serverUrl, session: { id: 'a' }, sessionToken: 'token', uploadFlushBusy: false, uploadFallback: new Map([[item.id, item]]), uploadRetryAt: new Map() };
+  const state = { serverUrl: item.serverUrl, session: { id: 'a' }, sessionToken: 'token', uploadFlushBusy: false, uploadFlushRetryAt: 0, uploadFlushFailures: 0, uploadRecent: new Map(), uploadFallback: new Map([[item.id, item]]), uploadRetryAt: new Map() };
   let sent = 0;
   const context = rendererFunctions(['flushUploadQueue'], {
     state, listQueuedUploads: async () => { throw new Error('disk full'); },
@@ -262,16 +338,17 @@ test('pending incidents retry with the original time and event ID after the sess
 
 test('a late heartbeat failure after exam finish cannot restart the reconnect loop', async () => {
   const response = deferred();
-  let reconnects = 0;
-  const state = { session: { id: 'a', status: 'IN_EXAM' }, heartbeatBusy: false, monitoringGeneration: 1, finishedScreenVisible: false };
+  let reconnects = 0, captureRecoveries = 0;
+  const state = { session: { id: 'a', status: 'IN_EXAM' }, heartbeatBusy: false, heartbeatRetryAt: 0, monitoringGeneration: 1, finishedScreenVisible: false };
   const context = rendererFunctions(['heartbeatTick'], {
-    state, sendHeartbeat: () => response.promise, setOfflineStatus() {}, startReconnectLoop: () => reconnects++
+    state, recoverStoppedCaptures: () => captureRecoveries++, sendHeartbeat: () => response.promise, setOfflineStatus() {}, startReconnectLoop: () => reconnects++
   });
   const heartbeat = context.heartbeatTick();
   state.monitoringGeneration++;
   state.finishedScreenVisible = true;
   response.reject(new Error('offline'));
   await heartbeat;
+  assert.equal(captureRecoveries, 1, 'local capture recovery still runs before waiting on the heartbeat');
   assert.equal(reconnects, 0);
   assert.equal(state.heartbeatBusy, false);
 });

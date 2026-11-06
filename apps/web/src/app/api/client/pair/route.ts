@@ -1,3 +1,5 @@
+import { effectiveEnd } from '@/lib/contest-rules';
+import { admittedLogin } from '@/lib/request-admission';
 import { DesktopPairRequestSchema } from '@cwnupaa/proctor-shared';
 import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
@@ -8,7 +10,6 @@ import { createPairingSession } from '@/lib/pairing-create';
 import { consumeInitialPairingAttempt } from '@/lib/pairing-limits';
 import { UploadSecurityError } from '@/lib/upload-security';
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
-import { revokeFullyOfflineSession } from '@/lib/session-revocation';
 import { revokedClientSessionResponse } from '@/lib/client-session-response';
 import { isPublishedDesktopVersion } from '@/lib/desktop-releases';
 import { publicDto } from '@/lib/public-dto';
@@ -16,7 +17,17 @@ import { assertLoginIp, desktopRequestIp } from '@/lib/login-ip';
 import { LoginFlowError } from '@/lib/room-login-policy';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 
+function pairingFailure(message: string, status: number, code: 'PAIRING_EXPIRED' | 'PAIRING_INVALID') {
+  return Response.json({ ok: false, code, message }, { status, headers: {
+    'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*'
+  } });
+}
+
 export async function POST(request: Request) {
+  return admittedLogin(request, () => handlePost(request));
+}
+
+async function handlePost(request: Request) {
   try {
     const input = await parseBody(request, DesktopPairRequestSchema, 16 * 1024);
     if (input.publicTest && input.sessionId) return fail('测试登录二维码不能用于恢复已有会话', 400);
@@ -42,16 +53,15 @@ export async function POST(request: Request) {
     let pairing;
     if (input.sessionId) {
       const result = await withSessionWrite(input.sessionId, async (tx) => {
-        const session = await tx.clientSession.findUnique({ where: { id: input.sessionId }, include: { exam: true } });
+        const session = await tx.clientSession.findUnique({ where: { id: input.sessionId }, include: { exam: true, candidate: { select: { startedAt: true, status: true } } } });
         if (session?.revokedAt) return { error: 'REVOKED' as const };
         if (!session || session.desktopDeviceId !== input.deviceId || !verifyClientTokenForSession(request, session, 'DESKTOP')) return { error: 'UNAUTHORIZED' as const };
-        if (session.status === 'FINISHED' || session.exam.endAt <= now) return { error: 'FINISHED' as const };
-        const room = await tx.examRoom.findFirst({ where: { examId: session.examId, candidates: { some: { candidateId: session.candidateId } } }, select: { requireSecondCamera: true } });
-        if (await revokeFullyOfflineSession(tx, session, room?.requireSecondCamera ?? session.exam.requireMiniProgram, now)) return { error: 'REVOKED' as const };
+        if (session.status === 'FINISHED' || session.candidate.status === 'FINISHED' || effectiveEnd(session.exam, session.candidate.startedAt || session.startedAt) <= new Date()) return { error: 'FINISHED' as const };
         return { pairing: await createPairingSession(tx, { ...data,
-          loginRequestId: session.loginRequestId, desktopTokenIssuedAt: now,
+          loginRequestId: session.loginRequestId, desktopTokenIssuedAt: new Date(),
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
         }) };
-      });
+      }, { signal: request.signal });
       if ('error' in result) {
         if (result.error === 'REVOKED') return revokedClientSessionResponse();
         return fail(result.error === 'FINISHED' ? '考试会话已经结束' : '桌面客户端会话令牌无效或已过期', result.error === 'FINISHED' ? 409 : 401);
@@ -62,7 +72,7 @@ export async function POST(request: Request) {
       pairing = await createPairingSession(prisma, data);
     }
     return ok({ pairCode: pairing.pairCode, purpose: pairing.purpose,
-      expiresAt: pairing.expiresAt, serverNow: now, pollToken: poll.secret,
+      expiresAt: pairing.expiresAt, serverNow: new Date(), pollToken: poll.secret,
       ...(qrLogin ? { qrLoginSecret: qrLogin.secret } : {}),
       ...(recovery ? input.publicTest ? { testSecret: recovery.secret } : { recoverySecret: recovery.secret } : {}),
     }, { headers: { 'Cache-Control': 'no-store' } });
@@ -85,14 +95,15 @@ export async function GET(request: Request) {
         candidate: true, exam: true, clientSessions: { orderBy: { createdAt: 'desc' }, take: 1 },
       } } },
     });
-    if (!current || current.desktopDeviceId !== deviceId) return fail('配对不存在', 404);
-    if (!verifyPairSecret('POLL', request.headers.get('x-proctor-pair-poll-token'), current.pollTokenHash)) return fail('桌面配对查询凭证无效，请重新生成二维码', 401);
-    if (!current.loginRequest && !current.claimedAt && current.expiresAt <= new Date()) return fail('配对二维码已过期', 410);
+    if (!current || current.desktopDeviceId !== deviceId) return pairingFailure('配对不存在，请重新生成二维码', 404, 'PAIRING_INVALID');
+    if (!verifyPairSecret('POLL', request.headers.get('x-proctor-pair-poll-token'), current.pollTokenHash)) return pairingFailure('桌面配对查询凭证无效，请重新生成二维码', 401, 'PAIRING_INVALID');
+    if (!current.loginRequest && !current.claimedAt && current.expiresAt <= new Date()) return pairingFailure('配对二维码已过期，请重新生成', 410, 'PAIRING_EXPIRED');
     const directSession = current.recoverySessionId && ['RECOVERY', 'DESKTOP_RECOVERY', 'TEST_DESKTOP_RECOVERY', 'TEST_INITIAL', 'INITIAL'].includes(current.purpose)
       ? await prisma.clientSession.findUnique({ where: { id: current.recoverySessionId }, include: { exam: true, candidate: true } })
       : null;
     const session = directSession || current.loginRequest?.clientSessions[0] || null;
-    if (session?.revokedAt) return fail('原配对会话已注销，请重新登录', 410);
+    const rejected = current.loginRequest?.status === 'REJECTED';
+    if (session?.revokedAt && !rejected) return revokedClientSessionResponse();
     const testContext = directSession && await isPublicTestExam(directSession.examId) ? directSession : null;
     const context = current.loginRequest || testContext;
     const room = context ? await prisma.examRoom.findFirst({
@@ -100,11 +111,13 @@ export async function GET(request: Request) {
       select: { name: true, requireFrontCamera: true, requireSecondCamera: true, loginMode: true },
     }) : null;
     let desktopSessionToken: string | null = null;
-    let safeSession = publicDto(publicClientSession(session));
-    if (session && (current.purpose === 'INITIAL' || (['DESKTOP_RECOVERY', 'TEST_DESKTOP_RECOVERY', 'TEST_INITIAL'].includes(current.purpose) && current.claimedAt))) {
+    let safeSession = publicDto(publicClientSession(session?.revokedAt ? null : session));
+    if (session && !rejected && (current.purpose === 'INITIAL' || (['DESKTOP_RECOVERY', 'TEST_DESKTOP_RECOVERY', 'TEST_INITIAL'].includes(current.purpose) && current.claimedAt))) {
       const publicTest = await isPublicTestExam(session.examId);
       const incomingIp = desktopRequestIp(request);
-      if (!publicTest) {
+      // An already authenticated desktop keeps its existing session when its
+      // network egress changes. IP binding still gates first token delivery.
+      if (!publicTest && !verifyClientTokenForSession(request, session, 'DESKTOP')) {
         const [ipExam, ipCandidate] = await Promise.all([
           prisma.exam.findUnique({ where: { id: session.examId }, select: { ipLoginRestrictionEnabled: true } }),
           prisma.candidate.findUnique({ where: { id: session.candidateId }, select: { loginIp: true } })
@@ -123,7 +136,6 @@ export async function GET(request: Request) {
       const issued = alreadyLive ? session : await withSessionWrite(session.id, async (tx) => {
         const latest = await tx.clientSession.findUnique({ where: { id: session.id } });
         if (!latest || latest.status === 'FINISHED' || latest.revokedAt || latest.desktopDeviceId !== deviceId) return null;
-        if (await revokeFullyOfflineSession(tx, latest, room?.requireSecondCamera ?? context?.exam.requireMiniProgram ?? false)) return null;
         const latestPair = await tx.pairingSession.findUnique({ where: { id: current.id } });
         if (!latestPair || latestPair.pollTokenHash !== current.pollTokenHash || latestPair.purpose !== current.purpose) return null;
         if (latestPair.desktopTokenIssuedAt) {
@@ -137,7 +149,8 @@ export async function GET(request: Request) {
         });
         if (!claimed.count) return null;
         return tx.clientSession.update({ where: { id: session.id }, data: { desktopTokenHash: token.tokenHash, lastDesktopSeenAt: new Date(), desktopOfflineAt: null } });
-      });
+      }, { signal: request.signal });
+      if (!issued) return pairingFailure('原配对已失效或会话已结束，请重新登录', 410, 'PAIRING_INVALID');
       if (issued) {
         if (!verifyClientTokenForSession(request, issued, 'DESKTOP')) desktopSessionToken = token.token;
         safeSession = publicDto(publicClientSession(issued));
@@ -150,9 +163,9 @@ export async function GET(request: Request) {
         id: current.loginRequest.id, status: current.loginRequest.status, rejectReason: current.loginRequest.rejectReason,
         candidate: publicDto(current.loginRequest.candidate), exam: publicDto(current.loginRequest.exam),
         requirements: room ? { roomName: room.name, requireFrontCamera: room.requireFrontCamera,
-          requireSecondCamera: room.requireSecondCamera, loginMode: room.loginMode, isPublicTest: await isPublicTestExam(current.loginRequest.examId), saveFullRecording: current.loginRequest.exam.saveFullRecording, saveIncidentRecording: current.loginRequest.exam.saveIncidentRecording } : {
+          requireSecondCamera: room.requireSecondCamera, loginMode: room.loginMode, isPublicTest: await isPublicTestExam(current.loginRequest.examId), saveFullRecording: current.loginRequest.exam.saveFullRecording, saveIncidentRecording: current.loginRequest.exam.saveIncidentRecording, reactionEnabled: current.loginRequest.exam.reactionEnabled } : {
           roomName: null, requireFrontCamera: current.loginRequest.exam.requireFrontCamera,
-          saveFullRecording: current.loginRequest.exam.saveFullRecording, saveIncidentRecording: current.loginRequest.exam.saveIncidentRecording,
+          saveFullRecording: current.loginRequest.exam.saveFullRecording, saveIncidentRecording: current.loginRequest.exam.saveIncidentRecording, reactionEnabled: current.loginRequest.exam.reactionEnabled,
           requireSecondCamera: current.loginRequest.exam.requireMiniProgram, loginMode: 'CREDENTIALS' as const,
         }, session: safeSession || null,
       } : null,

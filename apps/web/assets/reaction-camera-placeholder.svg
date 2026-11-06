@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#eaf1f5"/>
+  <rect x="28" y="28" width="1224" height="664" rx="32" fill="none" stroke="#cedce5" stroke-width="2"/>
+  <g fill="none" stroke="#718799" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="554" y="220" width="128" height="96" rx="20"/>
+    <path d="M682 248 730 224v88l-48-24M542 198l200 140"/>
+  </g>
+  <text x="640" y="415" text-anchor="middle" fill="#344b5e" font-size="48" font-weight="500" font-family="Noto Sans CJK SC,Noto Sans SC,Microsoft YaHei,sans-serif">未提供摄像头画面</text>
+  <text x="640" y="477" text-anchor="middle" fill="#718799" font-size="25" font-family="Arial,sans-serif">Camera footage unavailable</text>
+</svg>

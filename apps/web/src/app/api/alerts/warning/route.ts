@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
 import { AuthError, requireUser } from '@/lib/auth';
 import { canAccessCandidate } from '@/lib/permissions';
+import { qaAuthorLabel } from '@/lib/qa-thread';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 
 const WarningSchema = z.object({
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
     const now = new Date();
     if (now < candidate.exam.startAt || now > candidate.exam.endAt) return fail('当前不在考试时间内，不能发送警告消息', 400);
     const announcement = await prisma.examAnnouncement.create({
-      data: { examId: candidate.examId, candidateId: candidate.id, createdById: user.id,
+      data: { examId: candidate.examId, candidateId: candidate.id, createdById: user.id, creatorLabel: qaAuthorLabel(user), deliveredAt: now,
         content: input.content || '监考老师提醒你：请遵守考试纪律并注意考试要求。请确认已读。' }
     });
     return ok(announcement, { status: 201 });

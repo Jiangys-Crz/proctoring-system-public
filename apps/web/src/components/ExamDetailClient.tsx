@@ -1,4 +1,5 @@
 'use client';
+import { ExamFederationSettings } from './ExamFederationSettings';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
@@ -28,7 +29,7 @@ import { resolveRoomCandidateInput, type RoomCandidateInputType } from '@/lib/ro
 
 type Role = 'ADMIN' | 'SUPER_ADMIN';
 type DetailRoute = 'status' | 'login' | 'login-restrictions' | 'qa' | 'print' | 'monitor' | 'screen' | 'settings';
-type SettingsRoute = 'base' | 'problems' | 'candidates' | 'rooms' | 'external-board';
+type SettingsRoute = 'base' | 'problems' | 'candidates' | 'rooms' | 'external-board' | 'federation';
 type CandidateStatus =
   | 'NOT_REQUESTED'
   | 'REQUESTING'
@@ -117,6 +118,7 @@ interface Session {
   status: string;
   lockdown: boolean;
   lockdownReason: string | null;
+  unlockNonce?: string | null;
   startedAt: string | null;
   createdAt: string;
   lastDesktopSeenAt: string | null;
@@ -610,6 +612,8 @@ export function ExamDetailClient({
   const [activeLoginRequestId, setActiveLoginRequestId] = useState('');
   const [usbHandling, setUsbHandling] = useState<{ candidate: Candidate; session: Session } | null>(null);
   const [usbReason, setUsbReason] = useState('');
+  const [dismissedLocks, setDismissedLocks] = useState<string[]>([]);
+  const [lockResolutionReason, setLockResolutionReason] = useState('');
   const [assignRoomId, setAssignRoomId] = useState('');
   const [busyAction, setBusyAction] = useState('');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -705,6 +709,21 @@ export function ExamDetailClient({
     });
     return map;
   }, [state]);
+
+  // Read every authorized candidate, including locks outside the current
+  // room filter/page. updatedAt changes on each heartbeat and is not an episode.
+  const pendingLocks = useMemo(() => {
+    const candidates = new Map((state?.candidates || []).map(candidate => [candidate.id, candidate]));
+    return [...sessionByCandidate.values()].flatMap(session => {
+      const candidate = candidates.get(session.candidateId);
+      const key = `${session.id}:${session.unlockNonce || ''}:${session.lockdownReason || ''}`;
+      return candidate && session.lockdown && session.status !== 'FINISHED' && !dismissedLocks.includes(key)
+        ? [{ session, candidate, key }] : [];
+    });
+  }, [state, sessionByCandidate, dismissedLocks]);
+  const pendingLock = pendingLocks[0];
+  useEffect(() => { setDismissedLocks([]); setLockResolutionReason(''); }, [examId]);
+  useEffect(() => { setLockResolutionReason(''); }, [pendingLock?.key]);
 
   const mediaByCandidate = useMemo(() => {
     const map = new Map<string, Partial<Record<MediaSegment['channel'], MediaSegment>>>();
@@ -1519,6 +1538,22 @@ export function ExamDetailClient({
 
   return (
     <div className={tab === 'monitor' ? 'grid monitor-page' : 'grid'}>
+      {pendingLock && !usbHandling ? (
+        <div className="modal-backdrop usb-handling-backdrop" role="presentation">
+          <section className="modal-panel usb-handling-modal" role="alertdialog" aria-modal="true" aria-labelledby="client-lock-title">
+            <div className="modal-title"><h2 id="client-lock-title">考生电脑已锁定，请监考处理</h2></div>
+            <p><strong>{displayName(pendingLock.candidate)}</strong> · 考号 {pendingLock.candidate.examNumber} · 座位 {pendingLock.candidate.seatNo || '未分配'}</p>
+            <p role="status">{pendingLock.session.lockdownReason || '客户端已锁定，等待监考解锁'}</p>
+            <p className="muted">当前有 {pendingLocks.length} 位考生等待处理。请核查原因后解锁，客户端联网后会自动恢复。</p>
+            {error ? <div className="exam-editor-error" role="alert">{error}</div> : null}
+            <label>解锁原因（必填）<textarea value={lockResolutionReason} onChange={event => setLockResolutionReason(event.target.value)} maxLength={480} rows={3} placeholder="请填写核查经过及解锁原因" /></label>
+            <div className="modal-actions">
+              <button className="button secondary" disabled={Boolean(busyAction)} onClick={() => setDismissedLocks(current => [...current, pendingLock.key])}>稍后处理</button>
+              <button className="button" disabled={!lockResolutionReason.trim() || Boolean(busyAction)} onClick={() => void unlock(pendingLock.session.id, pendingLock.candidate, lockResolutionReason)}><LockOpen size={18} />{busyAction ? '处理中…' : '确认解锁'}</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {tab !== 'monitor' && tab !== 'print' ? <div className="return-only-row"><button type="button" className="exam-management-back" onClick={() => router.push(parentRoutePath(pathname || '/'))}><ArrowLeft size={16} /> 返回上级</button></div> : null}
       <div className="topbar exam-detail-topbar">
         <div>
@@ -2078,9 +2113,12 @@ export function ExamDetailClient({
             <button className={`button ${settingsTab === 'rooms' ? '' : 'secondary'}`} onClick={() => routeToSettings('rooms')}>考室管理</button>
             <button className={`button ${settingsTab === 'candidates' ? '' : 'secondary'}`} onClick={() => routeToSettings('candidates')}>考生管理</button>
             <button className={`button ${settingsTab === 'external-board' ? '' : 'secondary'}`} onClick={() => routeToSettings('external-board')}>外榜推送</button>
+            {state.exam.platform === 'HYDRO' && state.exam.platformContestId === 'local' ? <button className={`button ${settingsTab === 'federation' ? '' : 'secondary'}`} onClick={() => routeToSettings('federation')}>跨网同步</button> : null}
+            {state.exam.platform === 'NOVAJUDGE' ? <button className="button secondary" onClick={() => router.push(`/dashboard/exams/${examId}/reactions`)}>Reaction 录像</button> : null}
             {state.exam.platform !== 'NOVAJUDGE' ? <button className="button secondary" onClick={() => router.push(`/dashboard/exams/${examId}/code-check`)}>代码查重</button> : null}
           </div>
 
+          {settingsTab === 'federation' && state.exam.platform === 'HYDRO' && state.exam.platformContestId === 'local' ? <ExamFederationSettings key={examId} examId={examId} /> : null}
           {settingsTab === 'external-board' ? <ExternalBoardSettings key={examId} examId={examId} /> : null}
 
           {settingsTab === 'problems' && state.exam.platform === 'NOVAJUDGE' ? <section className="card"><h2>NovaJudge 题目管理</h2><p>本场考试的题目、提交、判题、排行榜、答疑和打印由 NovaJudge 管理。</p><a className="button secondary" href={`${state.exam.platformBaseUrl}/contest/${state.exam.platformContestId}`} target="_blank" rel="noreferrer">打开 NovaJudge 比赛</a></section> : null}

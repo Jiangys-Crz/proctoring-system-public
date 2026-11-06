@@ -4,9 +4,10 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ArrowRight, CalendarDays, Clock3, LoaderCircle, Plus, RefreshCw, Trophy, Users } from 'lucide-react';
 import { api } from './api';
+import { compareExamStart } from '@/lib/exam-list-order';
 
 interface ExamSummary {
-  platform: 'HYDRO' | 'NOVAJUDGE'; id: string; examCode: string; name: string; startAt: string; durationMinutes: number;
+  platform: 'HYDRO' | 'NOVAJUDGE'; id: string; examCode: string; name: string; startAt: string; endAt: string; durationMinutes: number;
   contestRule: 'GPLT' | 'XCPC' | 'LANQIAO' | 'ACM' | 'OI' | 'IOI' | 'KS'; canManage: boolean;
   _count?: { candidates: number };
 }
@@ -17,6 +18,8 @@ function durationLabel(minutes: number) {
 }
 export function ExamsPageClient({ role }: { role: 'ADMIN' | 'SUPER_ADMIN' }) {
   const [exams, setExams] = useState<ExamSummary[]>([]);
+  const [query, setQuery] = useState('');
+  const [now, setNow] = useState(() => Date.now());
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   async function load() {
@@ -26,10 +29,12 @@ export function ExamsPageClient({ role }: { role: 'ADMIN' | 'SUPER_ADMIN' }) {
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
-  const visibleExams = [...exams].sort((a, b) => +new Date(a.startAt) - +new Date(b.startAt));
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(timer); }, []);
+  const visibleExams = exams.filter(exam => exam.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).sort((a, b) => compareExamStart(a, b, now));
   return <div className="grid exam-publish-page">
     <div className="topbar"><h1 style={{ margin: 0 }}>考试管理</h1><div className="exam-list-actions"><button className="button secondary" disabled={loading} onClick={() => void load()}><RefreshCw size={16} className={loading ? 'spin' : ''} />{loading ? '刷新中' : '刷新'}</button>{role === 'SUPER_ADMIN' ? <Link className="button" href="/dashboard/exams/new"><Plus size={17} /> 发布考试</Link> : null}</div></div>
+    <label className="exam-list-search">搜索考试名称<input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="输入考试名称" aria-label="搜索考试名称" /></label>
     {error ? <div className="exam-editor-error" role="alert">{error}</div> : null}
-    <div className="exam-publish-list">{visibleExams.map(exam => <article className="exam-publish-item" key={exam.id}><Link className="exam-publish-main-link" href={`/dashboard/exams/${exam.id}`}><div className="exam-publish-content"><h2>{exam.name}</h2><div className="exam-publish-meta"><span title="考试编号">#{exam.examCode}</span><span className="exam-rule-badge"><Trophy size={17} />{exam.platform === 'NOVAJUDGE' ? 'NovaJudge' : ruleLabels[exam.contestRule]}</span><span title="开始时间"><CalendarDays size={17} /><time dateTime={exam.startAt}>{new Date(exam.startAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}</time></span><span title="考试时长"><Clock3 size={17} />{durationLabel(exam.durationMinutes)}</span><span title="参与人数"><Users size={17} />{exam._count?.candidates || 0} 人</span></div></div><span className="exam-publish-open">查看详情 <ArrowRight size={17} /></span></Link></article>)}{!visibleExams.length ? <div className="exam-list-empty">{loading ? <><LoaderCircle className="spin" size={20} /> 正在加载考试…</> : '暂无考试'}</div> : null}</div>
+    <div className="exam-publish-list">{visibleExams.map(exam => <article className="exam-publish-item" key={exam.id}><Link className="exam-publish-main-link" href={`/dashboard/exams/${exam.id}`}><div className="exam-publish-content"><h2>{exam.name}</h2><div className="exam-publish-meta"><span title="考试编号">#{exam.examCode}</span><span className="exam-rule-badge"><Trophy size={17} />{exam.platform === 'NOVAJUDGE' ? 'NovaJudge' : ruleLabels[exam.contestRule]}</span><span title="开始时间"><CalendarDays size={17} /><time dateTime={exam.startAt}>{new Date(exam.startAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}</time></span><span title="考试时长"><Clock3 size={17} />{durationLabel(exam.durationMinutes)}</span><span title="参与人数"><Users size={17} />{exam._count?.candidates || 0} 人</span></div></div><span className="exam-publish-open">查看详情 <ArrowRight size={17} /></span></Link></article>)}{!visibleExams.length ? <div className="exam-list-empty">{loading ? <><LoaderCircle className="spin" size={20} /> 正在加载考试…</> : query.trim() ? '没有匹配的考试' : '暂无考试'}</div> : null}</div>
   </div>;
 }

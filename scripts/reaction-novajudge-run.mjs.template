@@ -1,0 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { parseEnv } from 'node:util';
+import { spawn } from 'node:child_process';
+const runtime = parseEnv(readFileSync('.local/reaction-e2e/runtime.env','utf8'));
+const db = new URL(runtime.DATABASE_URL);
+if (runtime.REACTION_TEST_RUNTIME !== '1' || !['localhost','127.0.0.1','[::1]'].includes(db.hostname) || !/^\/reaction_e2e_[a-z0-9_]+$/.test(db.pathname)) throw new Error('Refusing a non-test database');
+if (!process.argv[2]) throw new Error('Pass the Node script to run');
+const child = spawn(process.execPath, process.argv.slice(2), { windowsHide: true, stdio:'inherit', env:{...process.env,...runtime} });
+child.on('error', () => { process.exitCode = 1; });
+child.on('close', code => { process.exitCode = code ?? 1; });

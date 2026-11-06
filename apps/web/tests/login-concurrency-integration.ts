@@ -87,12 +87,12 @@ try {
   console.log(`PASS: 30 simultaneous desktop pairing polls and 90 authenticated heartbeats; heartbeat p95=${Math.round(beats[85])}ms, max=${Math.round(beats.at(-1)!)}ms.`);
   const target = fixtures[30], competing = await pair();
   const duplicate = await Promise.all([target.pairing, competing].map(pairing => login(exam.examCode, target.candidate.examNumber, pairing.pairCode)));
-  assert.deepEqual(duplicate.map(result => result.status).sort(), [201, 409]);
+  assert.deepEqual(duplicate.map(result => result.status).sort(), [201, 201]);
   assert.equal(await prisma.clientSession.count({ where: { candidateId: target.candidate.id, revokedAt: null } }), 1);
-  assert.equal(await prisma.loginRequest.count({ where: { examId } }), 31);
-  console.log('PASS: competing logins for the same candidate create exactly one session.');
-  // A heartbeat that has updated but not committed must win over a relogin
-  // observing the preceding two-minute-offline snapshot.
+  assert.equal(await prisma.loginRequest.count({ where: { examId } }), 32);
+  console.log('PASS: competing logins for the same candidate leave exactly one active session.');
+  // A successful replacement login takes over even when an old heartbeat
+  // is completing; the old token must not revive the superseded session.
   const recovering = tokens[0];
   await prisma.clientSession.update({ where: { id: recovering.sessionId }, data: {
     status: 'OFFLINE', lastDesktopSeenAt: new Date(Date.now() - 180_000),
@@ -114,11 +114,11 @@ try {
     unlock();
     await inFlightHeartbeat;
     const result = await relogin;
-    assert.equal(result.status, 409, JSON.stringify(result.body));
+    assert.equal(result.status, 201, JSON.stringify(result.body));
     const preserved = await prisma.clientSession.findUniqueOrThrow({ where: { id: recovering.sessionId } });
-    assert.equal(preserved.revokedAt, null);
-    assert.ok(preserved.desktopTokenHash);
-    console.log('PASS: a concurrent recovering heartbeat prevents relogin from revoking its refreshed session.');
+    assert.ok(preserved.revokedAt);
+    assert.equal(preserved.desktopTokenHash, null);
+    console.log('PASS: a replacement login revokes the old token even with a concurrent recovering heartbeat.');
   } finally { unlock(); await inFlightHeartbeat; await heartbeatDb.$disconnect(); }
 } finally {
   await prisma.pairingSession.deleteMany({ where: { desktopDeviceId: marker } });

@@ -5,30 +5,47 @@ import { LoginFlowError, requireRoomLoginMethod, type LoginMethod } from './room
 import { issueApprovedSessionOjTicket } from './login-approval';
 import { isPublicTestExam } from './public-test';
 import { candidateLoginError } from './contest-rules';
-import { allSessionsFullyOfflineForRelogin } from './client-session-policy';
 import { validatedLoginMaterials } from './upload-security';
 import { getStorageSettings } from './settings';
 import { assertLoginIp, bindCandidateLoginIp } from './login-ip';
 
-async function loginTransaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+export async function candidateLoginTransaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>, options: {
+  signal?: AbortSignal; deadlineAt?: number;
+} = {}): Promise<T> {
+  const deadlineAt = options.deadlineAt ?? Date.now() + 30_000;
   for (let attempt = 0; ; attempt++) {
+    const remaining = deadlineAt - Date.now();
+    const assertCurrent = () => {
+      if (options.signal?.aborted || Date.now() >= deadlineAt) throw new LoginFlowError('登录请求已取消或等待超时，请重新提交', 503);
+    };
+    assertCurrent();
     try {
-      return await prisma.$transaction(operation, { isolationLevel: 'ReadCommitted', maxWait: 10_000, timeout: 15_000 });
+      return await prisma.$transaction(async tx => {
+        assertCurrent();
+        const result = await operation(tx);
+        // Every mutation here is transactional. A cancellation observed before
+        // this callback finishes rolls back the takeover and old revocation.
+        assertCurrent();
+        return result;
+      }, { isolationLevel: 'ReadCommitted', maxWait: Math.min(10_000, remaining), timeout: Math.min(15_000, remaining) });
     } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && ['P2024', 'P2028'].includes(String(error.code))) throw new LoginFlowError('登录服务繁忙，请稍后重试', 503);
       // Heartbeat/revocation also touch a candidate and its sessions. Retry the
       // entire rolled-back login when MySQL resolves a competing lock order.
-      if (attempt >= 2 || !error || typeof error !== 'object' || !('code' in error) || error.code !== 'P2034') throw error;
+      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'P2034') throw error;
+      if (attempt >= 2) throw new LoginFlowError('登录请求竞争繁忙，请稍后重试', 503);
       await new Promise(resolve => setTimeout(resolve, 20 * (attempt + 1)));
     }
   }
 }
 
-export async function createCandidateLoginRequest({ exam, pairing, candidateId, memberIdentity, materials, method, now = new Date() }: {
+export async function createCandidateLoginRequest({ exam, pairing, candidateId, memberIdentity, materials, method, now = new Date(), signal }: {
   exam: Exam; pairing: PairingSession; candidateId: string;
   memberIdentity: { memberStudentId: string | null; memberName: string | null } | null;
   materials: { uploadTicket?: string; miniProgramDeviceId?: string; identityPhotoPath?: string; roomVideoPath?: string };
-  method: LoginMethod; now?: Date;
+  method: LoginMethod; now?: Date; signal?: AbortSignal;
 }) {
+  const deadlineAt = Date.now() + 30_000;
   if (await isPublicTestExam(exam.id)) throw new LoginFlowError('请在浏览器填写测试账号，通过扫码或配对码登录', 403);
   const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
   if (!candidate || candidate.examId !== exam.id) throw new LoginFlowError('考生不存在', 404);
@@ -43,27 +60,39 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
   const requireFrontCamera = room?.requireFrontCamera ?? exam.requireFrontCamera;
   const requireSecondCamera = room?.requireSecondCamera ?? exam.requireMiniProgram;
   const autoApprove = room!.loginReviewMode === 'AUTO';
+  if (requireFrontCamera && !pairing.desktopCameraOk) throw new LoginFlowError('所在考室要求电脑摄像头，请在客户端重新完成摄像头实测后登录', 400);
   if (requireSecondCamera && (!materials.identityPhotoPath || !materials.roomVideoPath)) throw new LoginFlowError('所在考室要求第二机位，请提交身份照片和 3–15 秒环境视频', 400);
 
   const miniProgramToken = createClientSessionToken();
   const storage = requireSecondCamera ? await getStorageSettings() : undefined;
-  const loginRequest = await loginTransaction(async (tx) => {
-    // Lock only this candidate. Serializable range reads on active sessions can
-    // block unrelated candidates during a simultaneous login burst.
+  const preparedMaterials = requireSecondCamera
+    ? await validatedLoginMaterials(prisma, materials, exam.id, candidateId, pairing.id, new Date(), memberIdentity, storage) : null;
+  const loginRequest = await candidateLoginTransaction(async (tx) => {
+    // Match heartbeat/revocation lock order: sessions, then candidate. Recheck
+    // sessions below after the candidate lock to serialize first-time logins.
+    await tx.$queryRaw`SELECT id FROM ClientSession WHERE candidateId = ${candidateId}
+      AND status IN ('WAITING_REVIEW', 'APPROVED', 'IN_EXAM', 'LOCKED', 'OFFLINE') ORDER BY id FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${candidateId} FOR UPDATE`;
     const current = await tx.candidate.findUnique({ where: { id: candidateId } });
     if (!current || current.examId !== exam.id) throw new LoginFlowError('考生不存在', 404);
     if (current.status === 'FINISHED') throw new LoginFlowError('该考生的考试已经结束，不能再次登录', 403);
-    const currentIpPolicy = await tx.exam.findUnique({ where: { id: exam.id }, select: { ipLoginRestrictionEnabled: true } });
-    assertLoginIp(currentIpPolicy?.ipLoginRestrictionEnabled !== false, current.loginIp, pairing.desktopLoginIp);
+    const currentExam = await tx.exam.findUnique({ where: { id: exam.id } });
+    if (!currentExam) throw new LoginFlowError('考试不存在', 404);
+    const currentRoom = await tx.examRoom.findFirst({ where: { examId: exam.id, candidates: { some: { candidateId } } } });
+    requireRoomLoginMethod(currentRoom, method);
+    if (currentRoom!.id !== room!.id || currentRoom!.requireFrontCamera !== requireFrontCamera
+      || currentRoom!.requireSecondCamera !== requireSecondCamera || currentRoom!.loginReviewMode !== room!.loginReviewMode) {
+      throw new LoginFlowError('考室设置已更新，请重新提交登录', 409);
+    }
+    const loginNow = new Date();
+    assertLoginIp(currentExam.ipLoginRestrictionEnabled, current.loginIp, pairing.desktopLoginIp);
     const teacherReleased = Boolean(current.loginIpReleasedAt && !current.loginIp);
     const firstStartedAt = current.startedAt;
-    const currentTimingError = candidateLoginError(exam, firstStartedAt, new Date(), false, current.lateStartAllowedAt);
+    const currentTimingError = candidateLoginError(currentExam, firstStartedAt, loginNow, false, current.lateStartAllowedAt);
     if (currentTimingError) throw new LoginFlowError(currentTimingError, 403);
-    const checkedMaterials = requireSecondCamera ? await validatedLoginMaterials(tx, materials, exam.id, candidateId, pairing.id, now, memberIdentity, storage) : null;
-    // A heartbeat can refresh its session without rewriting Candidate. Lock
-    // the old sessions before checking their clocks, so a concurrent recovery
-    // cannot be revoked using a snapshot read before that heartbeat commits.
+    const checkedMaterials = requireSecondCamera ? await validatedLoginMaterials(tx, materials, exam.id, candidateId, pairing.id, loginNow, memberIdentity, storage, preparedMaterials?.verifiedFiles) : null;
+    // Re-read after acquiring the candidate lock: a concurrent initial login
+    // may have committed a session since the first session lookup.
     await tx.$queryRaw`SELECT id FROM ClientSession WHERE candidateId = ${candidateId}
       AND status IN ('WAITING_REVIEW', 'APPROVED', 'IN_EXAM', 'LOCKED', 'OFFLINE') ORDER BY id FOR UPDATE`;
     const activeSessions = await tx.clientSession.findMany({
@@ -73,11 +102,10 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
       },
       orderBy: { createdAt: 'desc' }
     });
-    if (activeSessions.length && !teacherReleased && !allSessionsFullyOfflineForRelogin(activeSessions, now, requireSecondCamera)) {
-      throw new LoginFlowError('该考生已有未结束的登录或考试会话；所需客户端均离线满 2 分钟后自动注销并可重新登录，单端掉线请通过原电脑端恢复二维码重连', 409);
-    }
+    // Reinstalling or logging in again cannot erase a proctor's active lock.
+    const inheritedLock = activeSessions.find(session => session.lockdown);
     const claimed = await tx.pairingSession.updateMany({
-      where: { id: pairing.id, purpose: 'INITIAL', pollTokenHash: pairing.pollTokenHash, claimedAt: null, expiresAt: { gt: now } }, data: { claimedAt: now }
+      where: { id: pairing.id, purpose: 'INITIAL', pollTokenHash: pairing.pollTokenHash, claimedAt: null, expiresAt: { gt: loginNow } }, data: { claimedAt: loginNow }
     });
     if (!claimed.count) throw new LoginFlowError('登录配对已使用或过期，请返回客户端重新登录', 409);
     await bindCandidateLoginIp(tx, exam.id, candidateId, pairing.desktopLoginIp);
@@ -88,18 +116,18 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
         .filter((id): id is string => Boolean(id));
       await tx.clientSession.updateMany({
         where: { id: { in: activeSessionIds }, status: { in: ['WAITING_REVIEW', 'APPROVED', 'IN_EXAM', 'LOCKED', 'OFFLINE'] } },
-        data: { status: 'FINISHED', revokedAt: now, endedAt: now, desktopTokenHash: null, miniProgramTokenHash: null, lockdown: false, lockdownReason: null }
+        data: { status: 'FINISHED', revokedAt: loginNow, endedAt: loginNow, desktopTokenHash: null, miniProgramTokenHash: null, lockdown: false, lockdownReason: null }
       });
       await tx.pairingSession.updateMany({
         where: { OR: [{ recoverySessionId: { in: activeSessionIds } }, ...(activeLoginRequestIds.length ? [{ loginRequestId: { in: activeLoginRequestIds } }] : [])] },
-        data: { pollTokenHash: null, recoveryTokenHash: null, expiresAt: now },
+        data: { pollTokenHash: null, recoveryTokenHash: null, expiresAt: loginNow },
       });
       if (activeLoginRequestIds.length) {
         await tx.loginRequest.updateMany({
           where: { id: { in: activeLoginRequestIds }, status: 'REQUESTING' },
           data: { status: 'REJECTED', rejectReason: teacherReleased
             ? '监考已解除一次登录 IP 限制，考生更换电脑重新登录，旧会话已注销'
-            : '客户端所需端均离线满 2 分钟，旧会话已注销，考生已重新发起登录请求' }
+            : '同一账号已重新登录，旧会话已注销，原考试计时保持不变' }
         });
       }
     }
@@ -113,14 +141,14 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
         roomVideoPath: materials.roomVideoPath,
         miniProgramDeviceId: materials.miniProgramDeviceId,
         status: autoApprove ? 'APPROVED' : 'REQUESTING',
-        reviewedAt: autoApprove ? now : undefined
+        reviewedAt: autoApprove ? loginNow : undefined
       },
     });
     await tx.pairingSession.update({
       where: { id: pairing.id },
       data: {
         loginRequestId: created.id,
-        claimedAt: now
+        claimedAt: loginNow
       }
     });
     const session = await tx.clientSession.create({
@@ -133,8 +161,10 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
         desktopDeviceId: pairing.desktopDeviceId,
         miniProgramDeviceId: materials.miniProgramDeviceId,
         miniProgramTokenHash: miniProgramToken.tokenHash,
-        status: autoApprove ? (firstStartedAt ? 'IN_EXAM' : 'APPROVED') : 'WAITING_REVIEW',
-        approvedAt: autoApprove ? now : undefined,
+        status: inheritedLock ? 'LOCKED' : autoApprove ? (firstStartedAt ? 'IN_EXAM' : 'APPROVED') : 'WAITING_REVIEW',
+        lockdown: Boolean(inheritedLock),
+        lockdownReason: inheritedLock?.lockdownReason,
+        approvedAt: autoApprove ? loginNow : undefined,
         startedAt: autoApprove ? firstStartedAt : undefined,
         peripheralsBaselineFingerprint: pairing.peripheralsFingerprint,
         lastPeripheralsFingerprint: pairing.peripheralsFingerprint
@@ -142,12 +172,13 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
     });
     const updatedCandidate = await tx.candidate.update({
       where: { id: candidateId },
-      data: { status: autoApprove ? (firstStartedAt ? 'ONLINE_NORMAL' : 'APPROVED') : 'REQUESTING' }
+      data: { status: inheritedLock ? 'ONLINE_ABNORMAL' : autoApprove ? (firstStartedAt ? 'ONLINE_NORMAL' : 'APPROVED') : 'REQUESTING',
+        ...(inheritedLock ? { abnormal: true } : {}) }
     });
     if (checkedMaterials) {
       const consumed = await tx.materialUploadGrant.updateMany({
-        where: { id: checkedMaterials.grant.id, consumedAt: null, expiresAt: { gt: now } },
-        data: { consumedAt: now, loginRequestId: created.id }
+        where: { id: checkedMaterials.grant.id, consumedAt: null, expiresAt: { gt: loginNow } },
+        data: { consumedAt: loginNow, loginRequestId: created.id }
       });
       if (!consumed.count) throw new LoginFlowError('材料上传凭据已被使用，请重新提交', 409);
       const bound = await tx.mediaSegment.updateMany({
@@ -156,12 +187,12 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
       });
       if (bound.count !== 2) throw new LoginFlowError('材料已被其他会话使用，请重新提交', 409);
     }
-    return { loginRequest: { ...created, sessionId: session.id }, candidate: updatedCandidate };
-  });
+    return { loginRequest: { ...created, sessionId: session.id }, candidate: updatedCandidate, exam: currentExam };
+  }, { signal, deadlineAt });
 
   if (autoApprove) {
     void issueApprovedSessionOjTicket({
-      exam,
+      exam: loginRequest.exam,
       candidate: loginRequest.candidate,
       sessionId: loginRequest.loginRequest.sessionId
     }).catch((error) => console.error('Failed to issue OJ login ticket after candidate login', error));
@@ -171,7 +202,8 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
     ...loginRequest.loginRequest,
     miniProgramSessionToken: miniProgramToken.token,
     requirements: {
-      saveFullRecording: exam.saveFullRecording, saveIncidentRecording: exam.saveIncidentRecording,
+      saveFullRecording: loginRequest.exam.saveFullRecording, saveIncidentRecording: loginRequest.exam.saveIncidentRecording,
+      reactionEnabled: loginRequest.exam.reactionEnabled,
       requireFrontCamera,
       requireSecondCamera,
       loginMode: room!.loginMode, isPublicTest: false
