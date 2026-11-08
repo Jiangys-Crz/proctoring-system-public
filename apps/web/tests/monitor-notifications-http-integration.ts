@@ -77,12 +77,12 @@ try {
   await page.route('**/api/media/hls/**', route => route.fulfill({ status: 404, body: '' }));
   let voiceReads = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === '/api/voice') voiceReads++; });
-  await page.goto(new URL(`/dashboard/exams/${examId}/monitor`, base).href);
-  await page.getByTitle('异常提醒', { exact: true }).click();
+  await page.goto(new URL(`/dashboard/exams/${examId}/status`, base).href);
+  await page.getByRole('button', { name: /^异常提醒/ }).click();
   const panel = page.locator('.monitor-alert-panel');
-  await panel.getByText('相同异常 4 次', { exact: true }).waitFor();
+  await panel.getByText('同类异常 4 次', { exact: true }).waitFor();
   assert.equal(await panel.locator('article').count(), 2, 'severity escalation stays separate from the collapsed burst');
-  assert.equal(await page.locator('.monitor-alert-button b').textContent(), '2');
+  assert.equal(await page.locator('.monitor-alert-count').textContent(), '2');
   await panel.getByRole('button', { name: '展开其余 3 条', exact: true }).click();
   assert.equal(await panel.locator('article').count(), 5, 'all original records remain inspectable');
   await panel.getByRole('button', { name: '收起重复记录', exact: true }).click();
@@ -100,16 +100,15 @@ try {
   });
   await panel.getByRole('button', { name: '本组全部标记已处理', exact: true }).click();
   await panel.getByRole('button', { name: '本组全部标记已处理', exact: true }).waitFor({ state: 'hidden' });
-  await page.waitForFunction(() => document.querySelector('.monitor-alert-button b')?.textContent === '2');
+  await page.waitForFunction(() => document.querySelector('.monitor-alert-count')?.textContent === '2');
   assert.equal((await prisma.alert.count({ where: { candidateId: candidate.id, acknowledgedAt: null } })), 2);
   assert.equal((await prisma.candidate.findUniqueOrThrow({ where: { id: candidate.id } })).abnormal, true, 'the separate severe alert still requires handling');
   await panel.getByRole('button', { name: '标记已处理', exact: true }).first().click();
-  await page.waitForFunction(() => document.querySelector('.monitor-alert-button b')?.textContent === '1');
+  await page.waitForFunction(() => document.querySelector('.monitor-alert-count')?.textContent === '1');
   await panel.getByRole('button', { name: '标记已处理', exact: true }).click();
   await panel.getByText('暂无待处理异常提醒', { exact: true }).waitFor();
-  await page.locator('.candidate-feed').getByText('状态：考试中', { exact: true }).waitFor();
   assert.equal((await prisma.candidate.findUniqueOrThrow({ where: { id: candidate.id } })).abnormal, false);
-  assert.equal(await page.locator('.monitor-alert-button b').count(), 0);
+  assert.equal(await page.locator('.monitor-alert-count').count(), 0);
   await panel.getByRole('button', { name: '全部', exact: true }).click();
   assert.ok(await panel.locator('.handled').count() > 0, 'acknowledgement does not remove evidence/history');
 
@@ -117,6 +116,7 @@ try {
     lockdownReason: 'USB 外设检测不可用或结果已过期，请恢复检测后联系监考员解锁' } });
   await prisma.candidate.update({ where: { id: candidate.id }, data: { status: 'ONLINE_ABNORMAL', abnormal: true } });
   await panel.getByTitle('关闭', { exact: true }).click();
+  await page.goto(new URL(`/dashboard/exams/${examId}/monitor`, base).href);
   await page.getByRole('button', { name: 'USB异常处理', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('处理原因（必填）').fill('测试夹具：检测已恢复，现场核查完成');
@@ -171,7 +171,7 @@ try {
   const beforeLeaving = await page.evaluate(() => { (window as any).__voiceTest.delay = false; return (window as any).__voiceTest.stops; });
   await page.getByRole('button', { name: '语音通话', exact: true }).click();
   await voice.getByText('正在呼叫电脑客户端…', { exact: true }).waitFor();
-  await page.getByRole('button', { name: '返回详情', exact: true }).click();
+  await page.getByRole('button', { name: '考生状态', exact: true }).click();
   await page.waitForURL(`**/dashboard/exams/${examId}/status`);
   await page.waitForFunction(previous => (window as any).__voiceTest.stops > previous, beforeLeaving);
   assert.equal((await voiceSends()).length, 3, 'leaving the monitor closes its last call');

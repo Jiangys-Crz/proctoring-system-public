@@ -1,8 +1,8 @@
 'use client';
+import { formatScore, parseObjectiveContent, serializeObjectiveAnswers } from '@cwnupaa/proctor-shared';
 
 import {
   AlertTriangle,
-  ArrowLeft,
   Bell,
   CalendarClock,
   Check,
@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
-import { parentRoutePath, sanitizeStatementHtml, groupJudgeLanguages, statementDownloadTarget, problemTypeLabel } from '@cwnupaa/proctor-shared';
+import { sanitizeStatementHtml, groupJudgeLanguages, statementDownloadTarget, problemTypeLabel } from '@cwnupaa/proctor-shared';
 import { saveDownloadBlob } from '@/lib/file-download';
 import { startSerialPolling, submissionPollDelay, readWithDeadline } from '@/lib/contest-polling';
 import rehypeKatex from 'rehype-katex';
@@ -170,7 +170,7 @@ interface ContestData {
 }
 
 function LeaderboardTables({ leaderboard, contest, problems, onRefresh, refreshing = false, onTimeChange }: { leaderboard: LeaderboardData; contest: ContestData['contest']; problems: ContestProblem[]; onRefresh?: () => void; refreshing?: boolean; onTimeChange?: (timePoint: number | null) => void }) {
-  return <LeaderboardTable leaderboard={leaderboard} rule={(contest.sourceRule || contest.rule).toUpperCase()} title={contest.title}
+  return <LeaderboardTable leaderboard={leaderboard} rule={(contest.sourceRule || contest.rule).toUpperCase()} isTeam={contest.contestType === 'TEAM'} title={contest.title}
     exportScope="visible" onDownload={saveDownloadBlob}
     startAt={contest.beginAt} endAt={contest.endAt} onRefresh={onRefresh} refreshing={refreshing} onTimeChange={onTimeChange}
     problems={problems.map(problem => ({ id: String(problem.pid), label: problem.index, title: problem.title, score: problem.score }))} />;
@@ -331,50 +331,18 @@ function localizedProblemContent(content: string) {
 }
 
 function parseObjectiveProblem(content: string) {
-  content = localizedProblemContent(content).replace(/\\n/g, '\n');
-  const blocks: Array<{ markdown: string } | { question: ObjectiveQuestion }> = [];
-  const questions: ObjectiveQuestion[] = [];
-  const pattern = /\{\{\s*(select|multiselect|input)\(([A-Za-z0-9_.-]+)\)\s*\}\}/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(content))) {
-    if (match.index > cursor) blocks.push({ markdown: content.slice(cursor, match.index) });
-    const options: string[] = [];
-    const remainder = content.slice(pattern.lastIndex);
-    const htmlList = remainder.match(/^(\s*)<(ul|ol)\b[^>]*>([\s\S]*?)<\/\2>\s*/i);
-    if (htmlList) {
-      for (const item of htmlList[3].matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)) options.push(item[1].trim());
-    }
-    const lines = remainder.split(/\n/);
-    let consumed = 0;
-    if (htmlList && options.length) {
-      consumed = htmlList[0].length;
-    } else {
-      for (const line of lines) {
-        if (!line.trim()) { consumed += line.length + 1; continue; }
-        const option = line.match(/^\s*[-*+]\s+(.*)$/);
-        if (!option) break;
-        options.push(option[1]);
-        consumed += line.length + 1;
-      }
-    }
-    const question: ObjectiveQuestion = { id: match[2], kind: match[1] as ObjectiveQuestion['kind'], options };
-    questions.push(question);
-    blocks.push({ question });
-    cursor = pattern.lastIndex + consumed;
-    pattern.lastIndex = cursor;
-  }
-  if (cursor < content.length) blocks.push({ markdown: content.slice(cursor) });
-  return { blocks, questions };
+  return parseObjectiveContent(localizedProblemContent(content));
 }
-
-function objectiveAnswerCode(answers: Record<string, ObjectiveAnswer>) {
-  return Object.entries(answers).map(([id, answer]) => Array.isArray(answer)
-    ? `${id}:\n${answer.map(item => `  - ${item}`).join('\n')}`
-    : `${id}: ${answer}`).join('\n');
-}
+const objectiveAnswerCode = serializeObjectiveAnswers;
 
 function parseObjectiveAnswerCode(code: string): Record<string, ObjectiveAnswer> {
+  try {
+    const parsed: unknown = JSON.parse(code);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === 'string'
+        || (Array.isArray(value) && value.every(item => typeof item === 'string')))) as Record<string, ObjectiveAnswer>;
+    }
+  } catch { /* Continue to support historical YAML answers. */ }
   const answers: Record<string, ObjectiveAnswer> = {};
   let currentId = '';
   for (const line of code.replace(/\r\n?/g, '\n').split('\n')) {
@@ -526,7 +494,7 @@ function ObjectiveControl({ question, answer, onChange, api, sessionId, problemI
   return <section className="candidate-objective-question" id={`candidate-objective-${question.id}`}>
     {question.kind === 'input' ? <input value={typeof answer === 'string' ? answer : ''} onChange={event => onChange(event.target.value)} placeholder="请输入答案" /> : <div className="candidate-objective-options">{question.options.map((raw, index) => {
       const letter = String.fromCharCode(65 + index);
-      const content = raw.replace(/^\s*(?:[（(]?[A-Za-z][.、)）．]\s*)/, '');
+      const content = raw;
       const checked = Array.isArray(answer) ? answer.includes(letter) : answer === letter;
       return <label className={checked ? 'selected' : ''} key={`${question.id}-${letter}`}><input type={question.kind === 'multiselect' ? 'checkbox' : 'radio'} name={`candidate-objective-${question.id}`} checked={checked} onChange={() => { if (question.kind !== 'multiselect') onChange(letter); else { const current = Array.isArray(answer) ? answer : []; onChange(current.includes(letter) ? current.filter(item => item !== letter) : [...current, letter]); } }} /><span>{letter}</span>{/<[A-Za-z][\s\S]*>/.test(content) ? <HtmlStatementSegment content={content} api={api} sessionId={sessionId} problemId={problemId} /> : <HydroMarkdownSegment content={content} api={api} sessionId={sessionId} problemId={problemId} />}</label>;
     })}{!question.options.length ? <div className="candidate-objective-empty">未能读取本题选项，请刷新页面后重试。</div> : null}</div>}
@@ -616,19 +584,18 @@ function SubmissionTable({ submissions, contest, problems, onOpen, fixedProblem 
         ? '提交答案'
         : contest.langs.find(language => language.id === submission.lang)?.name || submission.lang;
       const canOpen = submission.canViewDetail !== false;
-      return <tr className={canOpen ? 'submission-row-clickable' : ''} key={submission.id} role={canOpen ? 'link' : undefined} tabIndex={canOpen ? 0 : undefined} aria-label={canOpen ? `查看提交 ${submission.id}` : undefined} onClick={canOpen ? () => onOpen(submission) : undefined} onKeyDown={canOpen ? event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen(submission); } } : undefined}><td className="submission-id" title={submission.id}>{submission.id}</td><td><strong>{submission.problemIndex} - {submission.problemTitle}</strong></td><td><span className={`submission-status-tag ${hidden ? 'submitted' : pending ? 'pending' : submission.status === 1 ? 'accepted' : 'failed'}`}>{statusText}</span></td>{scoreColumn ? <td className="submission-score">{submission.scoreVisible === false || submission.score === null ? '—' : `${Number(submission.score.toFixed(2))} / ${problem?.score ?? '—'}`}</td> : null}{testCaseColumn ? <td>{typeof submission.passedTestCases === 'number' ? `${submission.passedTestCases} / ${submission.totalTestCases ?? 0}` : '—'}</td> : null}<td className="submission-owner"><strong>{submission.submittedBy?.displayName || submission.submittedBy?.username || '—'}</strong><small>{submission.submittedBy?.username || ''}</small></td><td>{hidden || pending ? '—' : `${submission.time || 0} ms`}</td><td>{hidden || pending ? '—' : `${submission.memory || 0} KB`}</td><td className="submission-language"><strong>{languageName}</strong><small>{submission.lang}</small></td><td>{formatDate(submission.createdAt)}</td><td>{canOpen ? <span className="submission-row-open-label">查看详情</span> : <span className="private-submission-label">仅本人</span>}</td></tr>;
+      return <tr className={canOpen ? 'submission-row-clickable' : ''} key={submission.id} role={canOpen ? 'link' : undefined} tabIndex={canOpen ? 0 : undefined} aria-label={canOpen ? `查看提交 ${submission.id}` : undefined} onClick={canOpen ? () => onOpen(submission) : undefined} onKeyDown={canOpen ? event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen(submission); } } : undefined}><td className="submission-id" title={submission.id}>{submission.id}</td><td><strong>{submission.problemIndex} - {submission.problemTitle}</strong></td><td><span className={`submission-status-tag ${hidden ? 'submitted' : pending ? 'pending' : submission.status === 1 ? 'accepted' : 'failed'}`}>{statusText}</span></td>{scoreColumn ? <td className="submission-score">{submission.scoreVisible === false || submission.score === null ? '—' : `${formatScore(submission.score)} / ${formatScore(problem?.score)}`}</td> : null}{testCaseColumn ? <td>{typeof submission.passedTestCases === 'number' ? `${submission.passedTestCases} / ${submission.totalTestCases ?? 0}` : '—'}</td> : null}<td className="submission-owner"><strong>{submission.submittedBy?.displayName || submission.submittedBy?.username || '—'}</strong><small>{submission.submittedBy?.username || ''}</small></td><td>{hidden || pending ? '—' : `${submission.time || 0} ms`}</td><td>{hidden || pending ? '—' : `${submission.memory || 0} KB`}</td><td className="submission-language"><strong>{languageName}</strong><small>{submission.lang}</small></td><td>{formatDate(submission.createdAt)}</td><td>{canOpen ? <span className="submission-row-open-label">查看详情</span> : <span className="private-submission-label">仅本人</span>}</td></tr>;
     })}</tbody></table>{!filtered.length ? <div className="contest-empty">没有符合条件的提交记录</div> : null}</div>
   </div>;
 }
 
-function SubmissionDetail({ submission, contest, user, maximumScore, resultVisible, scoreVisible, onBack }: {
+function SubmissionDetail({ submission, contest, user, maximumScore, resultVisible, scoreVisible }: {
   submission: Submission;
   contest: ContestData['contest'];
   user: ContestData['user'];
   maximumScore: number | null;
   resultVisible: boolean;
   scoreVisible: boolean;
-  onBack: () => void;
 }) {
   const pending = resultVisible && isPendingStatus(submission.status);
   const tone = !resultVisible ? 'submitted' : pending ? 'pending' : submission.status === 1 ? 'accepted' : 'failed';
@@ -637,11 +604,10 @@ function SubmissionDetail({ submission, contest, user, maximumScore, resultVisib
   const languageName = submission.lang === '_' ? '提交答案' : contest.langs.find(language => language.id === submission.lang)?.name || submission.lang;
   const ksVerdictOnly = contest.sourceRule?.toUpperCase() === 'KS' || contest.rule === 'ks';
   return <div className="contest-submission-page"><section className="contest-submission-modal" role="dialog" aria-modal="true">
-    <div className="candidate-page-back-row"><button className="back-link" type="button" onClick={onBack}><ArrowLeft size={16} />返回上级</button></div>
     <header>
       <div><span className="contest-eyebrow"><FileCode2 size={14} />SUBMISSION DETAIL</span><h2>提交 #{submission.id}</h2><p>{submission.problemIndex} · {submission.problemTitle}</p></div>
     </header>
-    <div className={`submission-result-inline ${tone}`}><strong>{resultVisible ? statusName(submission) : 'Submitted'}</strong>{scoreVisible && submission.score !== null && maximumScore !== null ? <em>得分 {Number(submission.score.toFixed(2))} / {maximumScore}</em> : null}{resultVisible && typeof submission.passedTestCases === 'number' ? <span>通过测试点 {submission.passedTestCases}/{submission.totalTestCases}</span> : null}</div>
+    <div className={`submission-result-inline ${tone}`}><strong>{resultVisible ? statusName(submission) : 'Submitted'}</strong>{scoreVisible && submission.score !== null && maximumScore !== null ? <em>得分 {formatScore(submission.score)} / {formatScore(maximumScore)}</em> : null}{resultVisible && typeof submission.passedTestCases === 'number' ? <span>通过测试点 {submission.passedTestCases}/{submission.totalTestCases}</span> : null}</div>
     <div className="submission-detail-meta"><div><span>提交用户</span><strong>{submitterName}</strong><small>{submitterUsername}</small></div><div><span>提交语言</span><strong>{languageName}</strong><small>{submission.lang}</small></div><div><span>提交时间</span><strong>{formatDate(submission.createdAt)}</strong></div></div>
     {resultVisible && submission.testCases.length > 0 ? <div className="submission-detail-tests"><div className="section-heading"><div><span className="contest-eyebrow">TEST CASES</span><h3>测试点判题结果</h3></div><span>{submission.testCases.length} 个测试点</span></div><div className={`testcase-grid detail${ksVerdictOnly ? ' verdict-only' : ''}`}>{submission.testCases.map((testCase, index) => <div className="testcase" key={`${submission.id}-detail-${index}`}><span>测试点 {index + 1}</span><strong className={testcaseStatus(testCase.status).className}>{testcaseStatus(testCase.status).text}</strong>{!ksVerdictOnly ? <><em>{typeof testCase.time === 'number' ? `${testCase.time} ms` : '—'}{typeof testCase.memory === 'number' ? ` · ${Math.ceil(testCase.memory / 1024)} MB` : ''}</em>{testCase.message ? <small>{testCase.message}</small> : null}</> : null}</div>)}</div></div> : null}
     <div className="submission-source"><div className="section-heading"><div><span className="contest-eyebrow">SOURCE CODE</span><h3>{submission.lang === '_' ? '提交答案' : '提交代码'}</h3></div><span>{submission.code.length.toLocaleString()} 字符</span></div><CodePreview code={submission.detailsLoaded === false ? '正在加载提交详情…' : submission.code || '暂未返回代码内容'} language={submission.lang} toolbarLabel={submission.lang === '_' ? '提交答案' : 'Source Code'} languageLabel={languageName} showLineNumbers className="submission-detail-code" /></div>
@@ -700,6 +666,15 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
   const [leaderboard, setLeaderboard] = useState<LeaderboardData | null>(null);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmSubmission | null>(null);
+  const [submissionError, setSubmissionError] = useState('');
+  const confirmDialog = useRef<HTMLDialogElement>(null);
+  const confirming = confirm !== null;
+  useEffect(() => {
+    if (!confirming) return;
+    const dialog = confirmDialog.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, [confirming]);
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
   const [routeSubmissionId, setRouteSubmissionId] = useState<string | null>(null);
   const [detailRetry, setDetailRetry] = useState(0);
@@ -781,10 +756,6 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     window.history[replace ? 'replaceState' : 'pushState'](null, '', nextUrl);
     applyRoute(route);
   }, [applyRoute]);
-
-  const goPreviousPage = useCallback(() => {
-    navigate(contestRouteFromPathname(parentRoutePath(window.location.pathname)), true);
-  }, [navigate]);
 
   const openSubmission = useCallback((submission: Submission, problemPid?: number) => {
     if (submission.canViewDetail === false) {
@@ -1204,8 +1175,14 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [examEnded, examStarted, hasPendingSubmissions, mockMode, sessionId, sessionToken]);
 
+  function openSubmissionConfirm(submission: ConfirmSubmission) {
+    setSubmissionError('');
+    setConfirm(submission);
+  }
+
   async function submitCode() {
-    if (!confirm || !sessionId) return;
+    if (!confirm || !sessionId || busy === 'submit') return;
+    setSubmissionError('');
     setBusy('submit');
     try {
       if (mockMode) {
@@ -1250,7 +1227,7 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
       window.setTimeout(() => setNotice(''), 5000);
       void refreshSubmissions();
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : '提交失败');
+      setSubmissionError(cause instanceof Error ? cause.message : '提交失败');
     } finally {
       setBusy('');
     }
@@ -1378,7 +1355,6 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
 
       <section className="exam-portal-main">
         {page !== 'overview' ? contestHeading : null}
-        {['problem', 'submit', 'problemSubmissions'].includes(page) ? <div className="candidate-page-back-row"><button className="back-link" type="button" onClick={goPreviousPage}><ArrowLeft size={16} />返回上级</button></div> : null}
         {page === 'overview' ? <div className="candidate-contest-overview">
           <div className="candidate-overview-main">
             <section className="candidate-overview-hero">
@@ -1448,10 +1424,10 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
           if (scored && !hidden && !submittedOnly) {
             const status = statusName(scored);
             const showScore = !['ACM', 'XCPC'].includes(sourceRule) && scored.scoreVisible !== false && scored.score !== null;
-            resultText = showScore ? `${status} ${Number(scored.score!.toFixed(2))}/${problem.score}` : status;
+            resultText = showScore ? `${status} ${formatScore(scored.score)}/${formatScore(problem.score)}` : status;
             resultClass = scored.status === 1 ? 'accepted' : isPendingStatus(scored.status) ? 'pending' : (scored.score ?? 0) > 0 ? 'partial' : 'failed';
           }
-          return <tr key={problem.pid} tabIndex={0} onClick={() => navigate({ page: 'problem', pid: problem.pid })} onKeyDown={event => { if (event.key === 'Enter' && event.target === event.currentTarget) navigate({ page: 'problem', pid: problem.pid }); }}><td>{scored ? <button className={`problem-result ${resultClass}`} onClick={event => { event.stopPropagation(); openSubmission(scored, problem.pid); }}>{resultText}</button> : <span className={`problem-result ${resultClass}`}>{resultText}</span>}</td><td><b className="problem-index">{problem.index}</b></td><td><strong>{problem.title}</strong></td><td>{problemTypeLabel(problem.problemType)}</td>{showProblemScore ? <td><strong>{problem.score} 分</strong></td> : null}<td>{problem.problemType === 'objective' ? '—' : problem.timeLimit ? `${problem.timeLimit} ms` : '—'}</td><td>{problem.problemType === 'objective' ? '—' : problem.memoryLimit ? `${problem.memoryLimit} MB` : '—'}</td><td><button className="table-action" onClick={event => { event.stopPropagation(); navigate({ page: 'problem', pid: problem.pid }); }}>查看题目</button></td><td><button className="table-action primary" disabled={!canSubmit} onClick={event => { event.stopPropagation(); navigate({ page: problem.problemType === 'objective' ? 'problem' : 'submit', pid: problem.pid }); }}>{problem.problemType === 'objective' ? '作答' : '递交'}</button></td></tr>;
+          return <tr key={problem.pid} tabIndex={0} onClick={() => navigate({ page: 'problem', pid: problem.pid })} onKeyDown={event => { if (event.key === 'Enter' && event.target === event.currentTarget) navigate({ page: 'problem', pid: problem.pid }); }}><td>{scored ? <button className={`problem-result ${resultClass}`} onClick={event => { event.stopPropagation(); openSubmission(scored, problem.pid); }}>{resultText}</button> : <span className={`problem-result ${resultClass}`}>{resultText}</span>}</td><td><b className="problem-index">{problem.index}</b></td><td><strong>{problem.title}</strong></td><td>{problemTypeLabel(problem.problemType)}</td>{showProblemScore ? <td><strong>{formatScore(problem.score)} 分</strong></td> : null}<td>{problem.problemType === 'objective' ? '—' : problem.timeLimit ? `${problem.timeLimit} ms` : '—'}</td><td>{problem.problemType === 'objective' ? '—' : problem.memoryLimit ? `${problem.memoryLimit} MB` : '—'}</td><td><button className="table-action" onClick={event => { event.stopPropagation(); navigate({ page: 'problem', pid: problem.pid }); }}>查看题目</button></td><td><button className="table-action primary" disabled={!canSubmit} onClick={event => { event.stopPropagation(); navigate({ page: problem.problemType === 'objective' ? 'problem' : 'submit', pid: problem.pid }); }}>{problem.problemType === 'objective' ? '作答' : '递交'}</button></td></tr>;
         })}</tbody></table></div></div> : null}
 
         {page === 'problem' && activeProblem ? <div className="candidate-problem-detail">
@@ -1460,7 +1436,7 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
               <h1><span>{activeProblem.index} -</span>{activeProblem.title}</h1>
               <div className="candidate-problem-meta">
                 <span>题型：{problemTypeLabel(activeProblem.problemType)}</span>
-                {showProblemScore ? <span>本场分数：{activeProblem.score} 分</span> : null}
+                {showProblemScore ? <span>本场分数：{formatScore(activeProblem.score)} 分</span> : null}
                 {activeProblem.problemType !== 'objective' && activeProblem.timeLimit ? <span>时间限制：{activeProblem.timeLimit} ms</span> : null}
                 {activeProblem.problemType !== 'objective' && activeProblem.memoryLimit ? <span>空间限制：{activeProblem.memoryLimit} MB</span> : null}
               </div>
@@ -1470,7 +1446,7 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
           <aside className="candidate-problem-subnav">
             <section className="nova-problem-info">
               <h2>题目信息</h2>
-              <dl><div><dt>题号</dt><dd>{activeProblem.index}</dd></div><div><dt>题目类型</dt><dd>{problemTypeLabel(activeProblem.problemType)}</dd></div>{activeProblem.problemType !== 'objective' ? <><div><dt>时间限制</dt><dd>{activeProblem.timeLimit ? `${activeProblem.timeLimit} ms` : '—'}</dd></div><div><dt>空间限制</dt><dd>{activeProblem.memoryLimit ? `${activeProblem.memoryLimit} MB` : '—'}</dd></div></> : null}{showProblemScore ? <div><dt>本场分数</dt><dd>{activeProblem.score} 分</dd></div> : null}</dl>
+              <dl><div><dt>题号</dt><dd>{activeProblem.index}</dd></div><div><dt>题目类型</dt><dd>{problemTypeLabel(activeProblem.problemType)}</dd></div>{activeProblem.problemType !== 'objective' ? <><div><dt>时间限制</dt><dd>{activeProblem.timeLimit ? `${activeProblem.timeLimit} ms` : '—'}</dd></div><div><dt>空间限制</dt><dd>{activeProblem.memoryLimit ? `${activeProblem.memoryLimit} MB` : '—'}</dd></div></> : null}{showProblemScore ? <div><dt>本场分数</dt><dd>{formatScore(activeProblem.score)} 分</dd></div> : null}</dl>
             </section>
             {activeProblem.problemType === 'objective' ? <section className="candidate-objective-progress">
               <div className="candidate-subnav-title"><h2>本题小题</h2><span>{activeObjectiveAnsweredCount}/{activeObjective.questions.length}</span></div>
@@ -1492,19 +1468,19 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
             <section className="candidate-problem-actions">
               <button onClick={() => navigate({ page: 'problemSubmissions', pid: activeProblem.pid })}><History size={16} />提交记录</button>
               {activeProblem.problemType === 'objective'
-                ? <button className="primary" disabled={!canSubmit || !activeObjectiveCode.trim()} onClick={() => setConfirm({ problem: activeProblem, lang: '_', languageName: '提交答案', code: activeObjectiveCode })}><Send size={16} />提交答案</button>
+                ? <button className="primary" disabled={!canSubmit || !activeObjectiveCode.trim()} onClick={() => openSubmissionConfirm({ problem: activeProblem, lang: '_', languageName: '提交答案', code: activeObjectiveCode })}><Send size={16} />提交答案</button>
                 : <button className="primary" disabled={!canSubmit} onClick={() => navigate({ page: 'submit', pid: activeProblem.pid })}><Send size={16} />提交代码</button>}
             </section>
           </aside>
         </div> : null}
 
         {page === 'submit' && activeProblem ? <div className="candidate-submit-page">
-          <aside className="nova-submit-sidebar"><section className="nova-problem-info"><h2>题目信息</h2><dl><div><dt>题号</dt><dd>{activeProblem.index}</dd></div><div><dt>时间限制</dt><dd>{activeProblem.timeLimit ? `${activeProblem.timeLimit} ms` : '—'}</dd></div><div><dt>空间限制</dt><dd>{activeProblem.memoryLimit ? `${activeProblem.memoryLimit} MB` : '—'}</dd></div></dl><div className="candidate-problem-actions"><button className="primary" onClick={() => navigate({ page: 'problem', pid: activeProblem.pid })}><ArrowLeft size={16} />查看题目</button><button onClick={() => navigate({ page: 'problemSubmissions', pid: activeProblem.pid })}><History size={16} />提交记录</button></div></section></aside>
+          <aside className="nova-submit-sidebar"><section className="nova-problem-info"><h2>题目信息</h2><dl><div><dt>题号</dt><dd>{activeProblem.index}</dd></div><div><dt>时间限制</dt><dd>{activeProblem.timeLimit ? `${activeProblem.timeLimit} ms` : '—'}</dd></div><div><dt>空间限制</dt><dd>{activeProblem.memoryLimit ? `${activeProblem.memoryLimit} MB` : '—'}</dd></div></dl><div className="candidate-problem-actions"><button className="primary" onClick={() => navigate({ page: 'problem', pid: activeProblem.pid })}>查看题目</button><button onClick={() => navigate({ page: 'problemSubmissions', pid: activeProblem.pid })}><History size={16} />提交记录</button></div></section></aside>
           <section className="candidate-submit-card">
             <div className="candidate-submit-title"><div><h2>递交代码</h2><p>{activeProblem.index} · {activeProblem.title}</p></div><Code2 size={22} /></div>
             <label className="candidate-language-field">语言<select value={activeLang} onChange={event => setLangByPid(current => ({ ...current, [String(activeProblem.pid)]: event.target.value }))}>{groupJudgeLanguages(effectiveLanguages).map(group => <optgroup key={group.id} label={group.name}>{group.versions.map(language => <option key={language.id} value={language.id}>{language.name} ({language.id})</option>)}</optgroup>)}</select></label>
             {!effectiveLanguages.length ? <p role="alert">{data.contest.languagesError || '暂未获取到本题可用语言，请重试；若仍不可用，请联系管理员检查评测服务及题目语言限制。'} <button className="contest-button secondary" type="button" onClick={() => void loadContest()}><RefreshCw size={16} />重新获取语言</button></p> : null}<label className="candidate-code-field">代码<HighlightCodeEditor value={activeCode} onChange={updateCode} language={activeLang} rows={25} placeholder="粘贴或编写你的代码" /></label>
-            <div className="candidate-submit-actions"><button className="contest-button submit-code-button" disabled={!activeCode.trim() || !canSubmit || !activeLang} onClick={() => setConfirm({ problem: activeProblem, lang: activeLang, languageName: effectiveLanguages.find(language => language.id === activeLang)?.name || activeLang, code: activeCode })}><Send size={17} />{canSubmit ? '提交测评' : submissionDisabledReason}</button></div>
+            <div className="candidate-submit-actions"><button className="contest-button submit-code-button" disabled={!activeCode.trim() || !canSubmit || !activeLang} onClick={() => openSubmissionConfirm({ problem: activeProblem, lang: activeLang, languageName: effectiveLanguages.find(language => language.id === activeLang)?.name || activeLang, code: activeCode })}><Send size={17} />{canSubmit ? '提交测评' : submissionDisabledReason}</button></div>
           </section>
         </div> : null}
 
@@ -1535,9 +1511,30 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
 
       <footer className="nova-contest-footer">程序设计算法协会 · 在线考试平台</footer>
 
-      {confirm ? <div className="contest-modal-backdrop"><section className="contest-confirm-modal" role="dialog" aria-modal="true"><header><div className="return-only-row"><button className="modal-back-button" type="button" onClick={() => setConfirm(null)}><ArrowLeft size={16} />返回修改</button></div><div><span className="contest-eyebrow">CONFIRM SUBMISSION</span><h2>{confirm.problem.problemType === 'objective' ? '确认提交答案' : '确认提交代码'}</h2><p>{confirm.problem.index} · {confirm.problem.title}</p></div></header><div className="confirm-language"><span>提交类型</span><strong>{confirm.languageName}</strong><span>内容长度</span><strong>{confirm.code.length.toLocaleString()} 字符</strong></div><CodePreview code={confirm.code} language={confirm.lang} showLineNumbers className="confirm-code-preview" /><footer><button className="contest-button submit-code-button" type="button" onClick={() => void submitCode()} disabled={busy === 'submit'}>{busy === 'submit' ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}{busy === 'submit' ? '正在提交…' : '确认提交'}</button></footer></section></div> : null}
+      {confirm ? <dialog ref={confirmDialog} className="nova-dialog candidate-confirm-dialog" aria-labelledby="candidate-submit-confirm-title" onCancel={event => {
+        event.preventDefault();
+        if (busy !== 'submit') setConfirm(null);
+      }}>
+        <header className="nova-dialog-header">
+          <h2 id="candidate-submit-confirm-title">{confirm.lang === '_' ? '确认提交答案' : '确认提交代码'}</h2>
+          <button type="button" className="nova-dialog-close" aria-label="关闭确认弹窗" disabled={busy === 'submit'} onClick={() => setConfirm(null)}><X size={20} /></button>
+        </header>
+        <div className="nova-dialog-body">
+          <p>{confirm.problem.index} · {confirm.problem.title}</p>
+          <div className="confirm-language"><span>提交类型</span><strong>{confirm.languageName}</strong><span>内容长度</span><strong>{confirm.code.length.toLocaleString()} 字符</strong></div>
+          <CodePreview code={confirm.code} language={confirm.lang} showLineNumbers className="confirm-code-preview" />
+          {submissionError ? <p className="nova-dialog-error" role="alert">{submissionError}</p> : null}
+        </div>
+        <footer className="nova-dialog-footer">
+          <button className="contest-button secondary" type="button" autoFocus disabled={busy === 'submit'} onClick={() => setConfirm(null)}>取消</button>
+          <button className="contest-button submit-code-button" type="button" disabled={busy === 'submit'} onClick={() => void submitCode()}>
+            {busy === 'submit' ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}
+            {busy === 'submit' ? '正在提交…' : '确认提交'}
+          </button>
+        </footer>
+      </dialog> : null}
 
-      {selectedSubmission ? <div className="nova-submission-workspace">{contestHeading}<SubmissionDetail submission={selectedSubmission} contest={data.contest} user={data.user} maximumScore={data.problems.find(problem => problem.index === selectedSubmission.problemIndex)?.score ?? null} resultVisible={selectedResultVisible} scoreVisible={selectedScoreVisible} onBack={goPreviousPage} /></div> : null}
+      {selectedSubmission ? <div className="nova-submission-workspace">{contestHeading}<SubmissionDetail submission={selectedSubmission} contest={data.contest} user={data.user} maximumScore={data.problems.find(problem => problem.index === selectedSubmission.problemIndex)?.score ?? null} resultVisible={selectedResultVisible} scoreVisible={selectedScoreVisible} /></div> : null}
 
       {leaderboardOpen ? <div className="contest-modal-backdrop"><section className="contest-leaderboard-modal" role="dialog" aria-modal="true"><button className="icon-button leaderboard-modal-close" type="button" onClick={() => setLeaderboardOpen(false)}><X size={18} /></button>{leaderboard?.available ? <LeaderboardTables leaderboard={leaderboard} contest={data.contest} problems={data.problems} /> : <div className="leaderboard-unavailable"><Trophy size={32} /><strong>排行榜暂未开放</strong></div>}<footer><button className="contest-button secondary" type="button" onClick={() => setLeaderboardOpen(false)}>关闭</button></footer></section></div> : null}
       {announcementQueue[0] ? <div className="contest-modal-backdrop"><section className="qa-announcement-popup" role="alertdialog" aria-modal="true"><header><div><span className="contest-eyebrow">{announcementQueue[0].kind === 'reply' ? 'QUESTION REPLY' : 'ANNOUNCEMENT'}</span><h2>{announcementQueue[0].kind === 'reply' ? '监考老师回复了你的问题' : announcementQueue[0].candidateId ? '发给你的公告' : '考试公告'}</h2></div>{announcementQueue[0].kind === 'reply' ? <MessageCircleQuestion size={22} /> : <Bell size={22} />}</header><MarkdownContent content={announcementQueue[0].content} />{notificationAckError ? <p role="alert">{notificationAckError}</p> : null}<footer><time>{formatDate(announcementQueue[0].createdAt)}</time><button className="contest-button submit-code-button" type="button" disabled={notificationAckBusy} onClick={() => void acknowledgeNotification(announcementQueue[0])}>{notificationAckBusy ? '正在确认…' : '确认已读'}</button></footer></section></div> : null}

@@ -1,4 +1,6 @@
-import { z } from 'zod';
+import { parseBody } from '@/lib/http';
+import { admittedRelay } from '@/lib/live-relay-http';
+import { RelayMediaAuthSchema, authorizeRelayMedia } from '@/lib/live-relay-media-auth';
 import { prisma } from '@/lib/db';
 import { verifyMediaPublishToken } from '@/lib/media-publish-token';
 import { canPublishChannel } from '@/lib/media-publish-access';
@@ -13,13 +15,6 @@ import { canAccessCandidate } from '@/lib/permissions';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const MediaAuthSchema = z.object({
-  action: z.string(),
-  path: z.string(),
-  protocol: z.string(),
-  token: z.string().optional().default('')
-});
-
 const publishPathPattern = /^live\/([^/]+)_(DESKTOP_SCREEN|DESKTOP_CAMERA|MOBILE_CAMERA)$/;
 
 function unauthorized() {
@@ -27,9 +22,16 @@ function unauthorized() {
 }
 
 export async function POST(request: Request) {
-  const parsed = MediaAuthSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return unauthorized();
-  if (parsed.data.action === 'api') return new Response(null, { status: verifyMediaApiToken(parsed.data.token) ? 204 : 401 });
+  const parsed = await parseBody(request, RelayMediaAuthSchema, 8192).then(data => ({ data })).catch(() => null);
+  if (!parsed) return unauthorized();
+  const input = parsed.data;
+  // API callbacks must never queue behind publisher transactions: media
+  // inventory and cleanup use this API while publisher authentication waits.
+  if (input.action === 'api') return new Response(null, { status: verifyMediaApiToken(input.token) ? 204 : 401 });
+  if (input.path.startsWith('relay/')) return admittedRelay(request, async () => {
+    await authorizeRelayMedia(input);
+    return new Response(null, { status: 204 });
+  });
 
   if (parsed.data.path.replace(/^\/+/, '').startsWith('voice/')) {
     if (parsed.data.protocol !== 'webrtc') return unauthorized();

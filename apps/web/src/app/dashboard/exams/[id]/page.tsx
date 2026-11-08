@@ -8,5 +8,5 @@ export default async function ExamDetailPage({ params }: { params: Promise<{ id:
   const user = await getCurrentUser();
   if (!user) redirect('/login');
   if (!await canAccessExam(user, id)) redirect('/dashboard/exams');
-  return <ExamOverviewClient examId={id} initialCanManage={await canManageExam(user, id)} />;
+  return <ExamOverviewClient examId={id} initialCanManage={await canManageExam(user, id)} canViewProctorRecords={user.role === 'SUPER_ADMIN'} />;
 }

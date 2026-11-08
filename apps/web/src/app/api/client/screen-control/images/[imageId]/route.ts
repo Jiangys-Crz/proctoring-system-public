@@ -2,11 +2,11 @@ import { requireClientSession } from '@/lib/client-auth';
 import { prisma } from '@/lib/db';
 import { fail, options } from '@/lib/http';
 import { getClientScreenControl } from '@/lib/screen-control';
-import { screenControlImageResponse, screenControlRouteError } from '@/lib/screen-control-route';
+import { admittedScreenControlImage, screenControlImageResponse, screenControlRouteError } from '@/lib/screen-control-route';
 import { screenControlTextValues } from '@/lib/screen-control-personalization';
 import { readScreenImageTemplate } from '@/lib/screen-control-template';
 
-export async function GET(request: Request, context: { params: Promise<{ imageId: string }> }) {
+async function getImage(request: Request, context: { params: Promise<{ imageId: string }> }) {
   try {
     const sessionId = new URL(request.url).searchParams.get('sessionId');
     if (!sessionId) return fail('缺少客户端会话', 400);
@@ -26,6 +26,10 @@ export async function GET(request: Request, context: { params: Promise<{ imageId
       ? await screenControlTextValues(authorization.session.examId, authorization.session.candidateId) : undefined;
     return await screenControlImageResponse(image, values);
   } catch (error) { return screenControlRouteError(error); }
+}
+
+export async function GET(request: Request, context: { params: Promise<{ imageId: string }> }) {
+  return admittedScreenControlImage(request, () => getImage(request, context));
 }
 
 export const OPTIONS = options;

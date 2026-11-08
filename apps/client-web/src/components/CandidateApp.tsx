@@ -4,7 +4,6 @@ import jsQR from 'jsqr';
 import { ROOM_VIDEO_MIN_SECONDS, ROOM_VIDEO_MAX_SECONDS } from '@cwnupaa/proctor-shared';
 import {
   AlertTriangle,
-  ArrowLeft,
   Camera,
   CameraIcon,
   Check,
@@ -752,7 +751,7 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
       } else if (queryTest && /^[A-Za-z0-9_-]{43}$/.test(testSecret) && !rejected) {
         setScannedLoginProof({ code: queryPair, secret: testSecret });
         setPairCode(queryPair);
-        setMessage('客户端已绑定，请填写考试编号、姓名、考号和密码。');
+        setMessage('客户端已绑定，请填写考试编号、考号和密码。');
       } else if (queryTest && !restored.id) {
         setMessage('请输入客户端配对码');
       } else {
@@ -836,7 +835,6 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
   async function verifyIdentity() {
     if (!selectedExam) return setMessage('请输入有效的 10 位考试编号');
     const required: Array<[keyof CandidateForm, string]> = [
-      ['name', '请输入姓名'],
       ['examNumber', '请输入考号'],
       ['password', '请输入密码']
     ];
@@ -845,12 +843,13 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
     setBusy('verify');
     setMessage('');
     try {
-      const verified = await api.request<{ requirements?: RoomRequirements | null }>('/api/client/candidate-verify', {
+      const verified = await api.request<{ requirements?: RoomRequirements | null; name?: string }>('/api/client/candidate-verify', {
         method: 'POST',
         body: JSON.stringify({
           examCode: form.examCode, name: form.name.trim(), examNumber: form.examNumber.trim(), password: form.password
         })
       });
+      setForm(current => ({ ...current, name: verified.name || current.name }));
       setRoomRequirements(verified.requirements || null);
       setStep('materials');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1026,7 +1025,7 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
         setPairCode(payload.pairCode);
         setCaptureMode(null);
         setStep('identity');
-        setMessage('客户端已绑定，请填写考试编号、姓名、考号和密码。');
+        setMessage('客户端已绑定，请填写考试编号、考号和密码。');
         return;
       }
       setTestPair(null);
@@ -1695,7 +1694,7 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
           <aside className="intro-panel">
             <span className="eyebrow">BROWSER CLIENT</span>
             <h1>考生身份验证</h1>
-            <p>填写考试编号、姓名、考号和密码，通过核验后按考室要求完成验证。</p>
+            <p>填写考试编号、考号和密码，通过核验后按考室要求完成验证。</p>
             <div className="feature-list">
               <span><ShieldCheck />身份信息安全核验</span>
               <span><QrCode />绑定电脑客户端</span>
@@ -1713,7 +1712,6 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
               </div>
             ) : null}
             <div className="form-grid">
-              <label className="field"><span>姓名</span><input value={form.name} onChange={(event) => updateForm('name', event.target.value)} placeholder="请输入姓名" autoComplete="name" /></label>
               <label className="field"><span>考号</span><input value={form.examNumber} onChange={(event) => updateForm('examNumber', event.target.value)} placeholder="请输入考号" autoComplete="username" /></label>
               <label className="field full"><span>登录密码</span><input type="password" value={form.password} onChange={(event) => updateForm('password', event.target.value)} placeholder="请输入登录密码" autoComplete="current-password" /></label>
             </div>
@@ -1727,7 +1725,7 @@ export default function CandidateApp({ configuredApiBase }: { configuredApiBase:
 
       {step === 'materials' ? (
         <div className="materials-shell">
-          {!credentialTicket ? <div className="return-only-row"><button className="back-link" type="button" onClick={() => setStep('identity')}><ArrowLeft size={17} />返回修改信息</button></div> : null}
+          {!credentialTicket ? <button className="login-reconnect-button" type="button" onClick={() => setStep('identity')}>修改登录信息</button> : null}
           <div className="materials-title"><span className="eyebrow">IDENTITY MATERIALS</span><h1>提交登录材料</h1><p>完成身份照片和环境视频采集后登录。</p></div>
           <section className="confirm-strip">
             <div><span>考试</span><strong>{selectedExam?.name}</strong></div><div><span>姓名</span><strong>{form.name}</strong></div><div><span>考号</span><strong>{form.examNumber}</strong></div>

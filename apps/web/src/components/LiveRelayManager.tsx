@@ -1,78 +1,224 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { Copy, RefreshCw } from 'lucide-react';
+
 import Link from 'next/link';
+import { useEffect, useRef, useState } from 'react';
+import { Archive, CircleCheck, Copy, LoaderCircle, Plus, Radio, RefreshCw, Search, X } from 'lucide-react';
 import { api } from './api';
-type State = { configured: boolean; onlineCount: number; registrationLimit: number; mediaError: string; streams: { id: string; name: string; enabled: boolean; online: boolean }[] };
+
+type Stream = { id: string; name: string; enabled: boolean; online: boolean };
+type State = { configured: boolean; rtmpBase: string; rtmpsBase: string; onlineCount: number; registrationLimit: number; mediaError: string; streams: Stream[] };
 type Key = { id: string; name: string; enabled: boolean; copyable: boolean };
+type LinkKind = 'read' | 'whip' | 'rtmp-key';
+
+const linkFields = [
+  { kind: 'whip', label: 'WHIP 推流地址' },
+  { kind: 'rtmp-key', label: 'RTMP / RTMPS 流密钥' },
+  { kind: 'read', label: '播放 API 链接' },
+] as const;
+
+function streamLink(origin: string, id: string, kind: LinkKind, key: string) {
+  const query = '?apikey=' + key;
+  if (kind === 'rtmp-key') return id + query;
+  const path = kind === 'whip' ? '/api/live-relay/publish/' : '/api/live/';
+  return origin + path + encodeURIComponent(id) + query;
+}
+
 export function LiveRelayManager() {
-  const [state, setState] = useState<State | null>(null), [keys, setKeys] = useState<Key[]>([]), [keyId, setKeyId] = useState('');
-  const [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false), [reload, setReload] = useState(0);
+  const [state, setState] = useState<State | null>(null);
+  const [keys, setKeys] = useState<Key[]>([]);
+  const [keyId, setKeyId] = useState('');
+  const [query, setQuery] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [keysError, setKeysError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [notice, setNotice] = useState<{ text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [reload, setReload] = useState(0);
   const [newId, setNewId] = useState('');
+  const [newKeyId, setNewKeyId] = useState('');
+  const [createError, setCreateError] = useState('');
+  const dialog = useRef<HTMLDialogElement>(null);
+
   useEffect(() => {
-    const c = new AbortController(); let pending = false;
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 2800);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let pending = false;
     const load = async () => {
-      if (pending || document.hidden) return; pending = true;
-      try { const next = await api<State>('/api/live-relay/streams', { signal: c.signal, cache: 'no-store' }); if (!c.signal.aborted) { setState(next); setError(''); } }
-      catch(e) { if (!c.signal.aborted) setError(e instanceof Error ? e.message : '读取直播失败'); }
-      finally { pending = false; }
+      if (pending || document.hidden) return;
+      pending = true;
+      try {
+        const next = await api<State>('/api/live-relay/streams', { signal: controller.signal, cache: 'no-store' });
+        if (!controller.signal.aborted) { setState(next); setLoadError(''); }
+      } catch (error) {
+        if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : '读取直播失败');
+      } finally {
+        pending = false;
+      }
     };
-    void load(); const timer = setInterval(() => void load(), 5000);
-    return () => { c.abort(); clearInterval(timer); };
+    void load();
+    const timer = setInterval(() => void load(), 5000);
+    return () => { controller.abort(); clearInterval(timer); };
   }, [reload]);
+
   useEffect(() => {
-    const c = new AbortController();
-    void api<Key[]>('/api/settings/live-api-keys', { signal: c.signal, cache: 'no-store' }).then(list => {
-      if (c.signal.aborted) return; const enabled = list.filter(k => k.enabled && k.copyable); setKeys(enabled); setKeyId(enabled[0]?.id || '');
-    }).catch(e => { if (!c.signal.aborted) setError(e.message); });
-    return () => c.abort();
+    const controller = new AbortController();
+    void api<Key[]>('/api/settings/live-api-keys', { signal: controller.signal, cache: 'no-store' }).then(list => {
+      if (controller.signal.aborted) return;
+      setKeys(list.filter(key => key.enabled && key.copyable));
+      setKeysError('');
+    }).catch(error => {
+      if (!controller.signal.aborted) setKeysError(error instanceof Error ? error.message : '读取系统密钥失败');
+    });
+    return () => controller.abort();
   }, [reload]);
+
   const origin = typeof window === 'undefined' ? '' : window.location.origin;
+  const copyKey = keys.find(key => key.id === keyId) || keys[0];
+  const formKey = keys.find(key => key.id === newKeyId) || copyKey;
+  const keyword = query.trim().toLocaleLowerCase();
+  const visibleStreams = state?.streams.filter(stream => stream.id.toLocaleLowerCase().includes(keyword)) ?? [];
+
+  function openCreateDialog() {
+    setNewId('');
+    setNewKeyId(copyKey?.id || '');
+    setCreateError('');
+    dialog.current?.showModal();
+  }
+
   async function createStream() {
-    if (busy || !newId.trim()) return; setBusy(true); setError('');
+    if (busy || !state?.configured || !newId.trim()) return;
+    setBusy(true);
+    setCreateError('');
+    setActionError('');
+    setNotice(null);
     try {
       await api('/api/live-relay/streams', { method: 'POST', body: JSON.stringify({ id: newId.trim() }) });
-      setNewId(''); setMessage('流 ID 已创建，可复制推流地址。一个 ID 同时只允许一台设备推流。'); setReload(n => n + 1);
-    } catch(e) { setError(e instanceof Error ? e.message : '创建失败'); }
-    finally { setBusy(false); }
+      setKeyId(formKey?.id || '');
+      dialog.current?.close();
+      setNotice({ text: '流 ID 已创建，可复制推流地址。' });
+      setReload(n => n + 1);
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : '创建失败');
+    } finally {
+      setBusy(false);
+    }
   }
+
   async function archiveStream(id: string) {
     if (busy || !window.confirm('归档后将停止该直播，且此 ID 不能重新创建。确定归档？')) return;
-    setBusy(true); setError('');
-    try { await api('/api/live-relay/streams', { method: 'PATCH', body: JSON.stringify({ kind: 'stream', id, archived: true }) }); setMessage('已归档流 ID。'); }
-    catch(e) { setError(e instanceof Error ? e.message : '归档失败'); }
-    finally { setBusy(false); setReload(n => n + 1); }
-  }
-  async function copyUrl(id: string, publish = false) {
-    if (busy || !keyId) return; setBusy(true); setMessage('');
+    setBusy(true);
+    setActionError('');
+    setNotice(null);
     try {
-      const { apiKey } = await api<{ apiKey: string }>('/api/settings/live-api-keys/reveal', { method: 'POST', body: JSON.stringify({ id: keyId }) });
-      const path = publish ? '/api/live-relay/publish/' : '/api/live/';
-      await navigator.clipboard.writeText(origin + path + encodeURIComponent(id) + '?apikey=' + encodeURIComponent(apiKey)); setMessage(publish ? '已复制 WHIP 推流地址。' : '已复制 WebRTC 播放 API 链接。');
-    } catch(e) { setError(e instanceof Error ? e.message : '复制失败'); }
-    finally { setBusy(false); }
+      await api('/api/live-relay/streams', { method: 'PATCH', body: JSON.stringify({ kind: 'stream', id, archived: true }) });
+      setNotice({ text: '已归档流 ID。' });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '归档失败');
+    } finally {
+      setBusy(false);
+      setReload(n => n + 1);
+    }
   }
-  return <div className="grid">
-    <div className="topbar"><h1 style={{ margin: 0 }}>直播管理</h1><button className="button secondary" onClick={() => setReload(n => n + 1)}><RefreshCw size={16} />刷新</button></div>
-    <section className="card form"><h2 style={{ margin: 0 }}>正在推流：{state && !state.mediaError ? state.onlineCount : '—'} 路</h2>
-      <p className="muted">WebRTC 推流和播放统一使用<Link href="/dashboard/system">系统设置</Link>中的全局直播 API-KEY。监考画面由各端独立管理。</p>
-      {error ? <p role="alert">{error}</p> : null}{message ? <p role="status">{message}</p> : null}
-      {state && !state.configured ? <p>独立 WebRTC 转发服务尚未启用。</p> : null}
+
+  async function copyUrl(id: string, kind: LinkKind, label: string) {
+    if (busy || !copyKey) return;
+    setBusy(true);
+    setActionError('');
+    setNotice(null);
+    try {
+      const { apiKey } = await api<{ apiKey: string }>('/api/settings/live-api-keys/reveal', { method: 'POST', body: JSON.stringify({ id: copyKey.id }) });
+      await navigator.clipboard.writeText(streamLink(origin, id, kind, encodeURIComponent(apiKey)));
+      setNotice({ text: `已复制${label}。` });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '复制失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="grid management-page">
+    <div className="card management-toolbar live-relay-toolbar">
+      <div className="management-search">
+        <Search size={17} aria-hidden="true" />
+        <input type="search" aria-label="搜索流 ID" placeholder="搜索流 ID" value={query} onChange={event => setQuery(event.target.value)} />
+      </div>
+      <div className="management-actions">
+        <button type="button" className="button" aria-haspopup="dialog" disabled={!state?.configured || busy} onClick={openCreateDialog}><Plus size={17} />新建流</button>
+        <button type="button" className="button secondary" disabled={busy} onClick={() => setReload(n => n + 1)}><RefreshCw size={16} />刷新</button>
+      </div>
+    </div>
+
+    <section className="card live-relay-summary" aria-label="直播流概况">
+      <div className="live-relay-summary-metrics">
+        <span><Radio size={17} />正在推流 <strong>{state?.configured && !state.mediaError ? state.onlineCount : '—'}</strong> 路</span>
+        <span>已登记 <strong>{state ? `${state.streams.length}/${state.registrationLimit}` : '—'}</strong> 路</span>
+        {copyKey ? <span>复制链接使用 <strong>{copyKey.name}</strong></span> : null}
+      </div>
+      {state && !state.configured ? <p>直播转发尚未启用。</p> : null}
       {state?.mediaError ? <p role="alert">{state.mediaError}，暂时无法统计。</p> : null}
-      {keys.length ? <label>复制链接使用的系统密钥<select value={keyId} onChange={e => setKeyId(e.target.value)}>{keys.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}</select></label> : <p className="muted">若需复制包含密钥的完整链接，请先在系统设置生成支持重复复制的直播密钥。</p>}
-      <form onSubmit={e => { e.preventDefault(); void createStream(); }} className="form">
-        <label>新建流 ID<input required maxLength={64} pattern={'[A-Za-z0-9_\\-]+'} value={newId} onChange={e => setNewId(e.target.value)} placeholder="例如：camera-1" /></label>
-        <small className="muted">仅支持字母、数字、下划线和连字符，区分大小写。</small>
-        <button className="button" disabled={busy || !state?.configured || !newId.trim()}>新建流 ID</button>
-      </form>
-      <p className="muted">先创建 ID 才能推流。同一 ID 同时仅允许一个设备连接，其他设备会被拒绝，不能替换原设备。已登记 {state?.streams.length ?? 0}/{state?.registrationLimit ?? '—'} 路。</p>
+      {state && !keysError && !copyKey ? <p>请在<Link href="/dashboard/system">系统设置</Link>中启用可复制的直播密钥，以复制完整链接。</p> : null}
     </section>
-    {state?.streams.map(s => <section className="card form" key={s.id}>
-      <strong>流 ID：{s.id} · {state.mediaError ? '状态未知' : s.online ? '正在推流' : '等待推流'}</strong>
-      <label>WHIP 推流地址<input readOnly value={origin + '/api/live-relay/publish/' + encodeURIComponent(s.id) + '?apikey=系统API-KEY'} /></label>
-      <label>播放 API 链接<input readOnly value={origin + '/api/live/' + encodeURIComponent(s.id) + '?apikey=系统API-KEY'} /></label>
-      <div className="exam-list-actions"><button className="button secondary" disabled={busy || !keyId} onClick={() => void copyUrl(s.id)}><Copy size={16} />复制播放链接</button><button className="button secondary" disabled={busy || !keyId} onClick={() => void copyUrl(s.id, true)}>复制推流地址</button></div>
-      <button className="button secondary" disabled={busy} onClick={() => void archiveStream(s.id)}>归档流 ID</button>
-    </section>)}
+
+    {[loadError, keysError, actionError].filter(Boolean).map((error, index) => <div key={index} className="management-notice" role="alert">{error}</div>)}
+    <div className="management-toast" role="status">
+      {notice ? <div className="management-notice"><CircleCheck size={17} aria-hidden="true" />{notice.text}</div> : null}
+    </div>
+
+    {state && visibleStreams.length ? <div className="live-relay-grid">
+      {visibleStreams.map(stream => {
+        const status = !stream.enabled ? 'ended' : state.mediaError ? 'unknown' : stream.online ? 'ongoing' : 'idle';
+        const statusLabel = { ended: '已停用', unknown: '状态未知', ongoing: '正在推流', idle: '等待推流' }[status];
+        return <section className="card form live-relay-card" key={stream.id}>
+          <header className="live-relay-card-header">
+            <span className="live-relay-card-icon"><Radio size={20} aria-hidden="true" /></span>
+            <div><small>流 ID</small><h2>{stream.id}</h2></div>
+            <span className="management-badge" data-status={status}>{statusLabel}</span>
+          </header>
+          <div className="live-relay-servers">
+            <label>RTMP 服务器<input readOnly value={state.rtmpBase} /></label>
+            {state.rtmpsBase ? <label>RTMPS 服务器<input readOnly value={state.rtmpsBase} /></label> : null}
+          </div>
+          {linkFields.map(({ kind, label }) => <div className="live-relay-address" key={kind}>
+            <label>{label}<input readOnly value={streamLink(origin, stream.id, kind, '系统API-KEY')} /></label>
+            <button type="button" className="button secondary" aria-label={`复制${label}`} disabled={busy || !copyKey} onClick={() => void copyUrl(stream.id, kind, label)}><Copy size={15} />复制</button>
+          </div>)}
+          <footer className="live-relay-card-footer">
+            <button type="button" className="button secondary" disabled={busy} onClick={() => void archiveStream(stream.id)}><Archive size={15} />归档流 ID</button>
+          </footer>
+        </section>;
+      })}
+    </div> : <div className="card management-empty" role="status">
+      {!state && !loadError ? <><LoaderCircle className="spin" size={20} />正在加载直播流…</>
+        : <><Radio size={22} />{!state ? '暂时无法加载直播流' : keyword ? '没有匹配的直播流' : '暂无直播流'}</>}
+    </div>}
+
+    <dialog ref={dialog} className="modal-panel live-relay-dialog" aria-labelledby="live-relay-create-title" onCancel={event => { if (busy) event.preventDefault(); }}>
+      <form className="form" onSubmit={event => { event.preventDefault(); void createStream(); }}>
+        <div className="modal-title">
+          <h2 id="live-relay-create-title">新建流</h2>
+          <button type="button" className="button secondary icon-button" aria-label="关闭新建流" disabled={busy} onClick={() => dialog.current?.close()}><X size={18} /></button>
+        </div>
+        <label>系统密钥
+          <select value={formKey?.id || ''} disabled={busy || !keys.length} onChange={event => setNewKeyId(event.target.value)}>
+            {!keys.length ? <option value="">暂无可用密钥</option> : keys.map(key => <option key={key.id} value={key.id}>{key.name}</option>)}
+          </select>
+        </label>
+        <small>{keys.length ? '创建后，本页将使用此密钥复制推流和播放链接。' : <>可前往<Link href="/dashboard/system">系统设置</Link>启用可复制的直播密钥。</>}</small>
+        <label>流 ID
+          <input required maxLength={64} pattern={'[A-Za-z0-9_\\-]+'} value={newId} disabled={busy} onChange={event => setNewId(event.target.value)} placeholder="例如 camera-1" aria-describedby="live-relay-id-help" />
+        </label>
+        <small id="live-relay-id-help">支持字母、数字、下划线和连字符，推流时区分大小写。</small>
+        {createError ? <div className="management-notice" role="alert">{createError}</div> : null}
+        <div className="management-actions">
+          <button type="button" className="button secondary" disabled={busy} onClick={() => dialog.current?.close()}>取消</button>
+          <button type="submit" className="button" disabled={busy || !state?.configured || !newId.trim()}>{busy ? '创建中…' : '创建流'}</button>
+        </div>
+      </form>
+    </dialog>
   </div>;
 }

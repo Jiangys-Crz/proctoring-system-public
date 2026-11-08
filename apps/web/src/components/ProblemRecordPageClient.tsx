@@ -1,9 +1,11 @@
 'use client';
 
+import { formatScore } from '@cwnupaa/proctor-shared';
+
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, CheckCircle2, LoaderCircle, XCircle } from 'lucide-react';
+import { CheckCircle2, LoaderCircle, XCircle } from 'lucide-react';
 import { api } from './api';
 import { CodePreview } from './CodeHighlight';
 import { hydroStatusIsAwaiting, hydroStatusText, hydroStatusTone } from '@/lib/hydro-status';
@@ -43,8 +45,8 @@ export function ProblemRecordPageClient({ problemId, recordId, examId }: { probl
   useEffect(() => { Promise.all([api<Problem>(`/api/problems/${problemId}`), api<RecordData>(`/api/problems/records/${recordId}`)]).then(([nextProblem, nextRecord]) => { setProblem(nextProblem); setRecord(nextRecord); }).catch(err => setError(err instanceof Error ? err.message : '提交记录加载失败')); }, [problemId, recordId]);
   useEffect(() => { if (!record || !isAwaiting(record)) return; let disposed = false; let refreshing = false; const refresh = async () => { if (refreshing) return; refreshing = true; try { const next = await api<RecordData>(`/api/problems/records/${recordId}`); if (!disposed) setRecord(next); } catch { /* keep waiting and retry */ } finally { refreshing = false; } }; const timer = window.setInterval(() => void refresh(), 1000); return () => { disposed = true; window.clearInterval(timer); }; }, [record?.id, record?.status, record?.statusText, record?.judgeAt, recordId]);
   if (!problem || !record) return <div className="problem-loading">{error || <><LoaderCircle className="spin" size={19} /> 正在加载提交记录…</>}</div>;
-  const waiting = isAwaiting(record); const tone = statusTone(record); const currentStatus = hydroStatusText(record.statusText, record.status); const submitter = record.submitter || record.ownerKey || '当前管理员'; const total = record.totalTestCases ?? record.testCases?.length ?? 0; const passed = record.passedTestCases ?? 0; const fullScore = problemFullScore(problem); const scoreDisplay = `${record.score} / ${fullScore ?? '—'}`;
-  return <div className="problem-record-page"><div className="problem-breadcrumb"><Link href={`/dashboard/problems/${problemId}${examId ? `?examId=${encodeURIComponent(examId)}` : ''}`}><ArrowLeft size={15} /> 返回题面</Link></div><div className="problem-record-title"><h1>{problem.title}</h1></div><main className="hydro-record-page card">
+  const waiting = isAwaiting(record); const tone = statusTone(record); const currentStatus = hydroStatusText(record.statusText, record.status); const submitter = record.submitter || record.ownerKey || '当前管理员'; const total = record.totalTestCases ?? record.testCases?.length ?? 0; const passed = record.passedTestCases ?? 0; const fullScore = problemFullScore(problem); const scoreDisplay = `${formatScore(record.score)} / ${formatScore(fullScore)}`;
+  return <div className="problem-record-page"><div className="problem-record-title"><h1>{problem.title}</h1></div><main className="hydro-record-page card">
     <header className={`hydro-record-result ${tone}`}><div>{waiting ? <LoaderCircle className="spin" size={18} /> : tone === 'accepted' ? <CheckCircle2 size={18} /> : <XCircle size={18} />}<strong>{currentStatus}</strong><span>{scoreDisplay}</span></div></header>
     <div className="hydro-record-metrics hydro-record-metrics-detailed">
       <div><span>状态</span><strong>{currentStatus}</strong></div><div><span>得分</span><strong>{scoreDisplay}</strong></div><div><span>测试点</span><strong>{passed} / {total}</strong></div>

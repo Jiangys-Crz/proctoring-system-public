@@ -7,6 +7,7 @@ import { optionalEnv } from './env';
 import { isTrustedMutationOrigin } from './request-origin';
 
 const COOKIE_NAME = 'cwnupaa_proctor_session';
+const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 
 function secureCookieEnabled() {
   return optionalEnv('APP_BASE_URL', '').startsWith('https://');
@@ -38,7 +39,7 @@ export function createSessionToken(user: Pick<User, 'id' | 'role' | 'username' |
     role: user.role,
     username: user.username,
     numberId: user.numberId,
-    exp: Math.floor(Date.now() / 1000) + 60 * 60 * 12
+    exp: Math.floor(Date.now() / 1000) + SESSION_MAX_AGE
   };
   const encoded = base64url(JSON.stringify(payload));
   return `${encoded}.${sign(encoded)}`;
@@ -51,7 +52,7 @@ export function verifySessionToken(token: string): SessionPayload | null {
   if (Buffer.byteLength(signature) !== Buffer.byteLength(expected)) return null;
   if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
   const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as SessionPayload;
-  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  if (!payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null;
   return payload;
 }
 
@@ -61,7 +62,7 @@ export async function setSessionCookie(response: NextResponse, user: Pick<User, 
     sameSite: 'lax',
     secure: secureCookieEnabled(),
     path: '/',
-    maxAge: 60 * 60 * 12
+    maxAge: SESSION_MAX_AGE
   });
 }
 

@@ -7,17 +7,19 @@ import { processFileDeletions } from '@/lib/file-deletion';
 import { fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 import type { Prisma, User } from '@prisma/client';
 
-async function scope(user: User, kind: 'MEDIA' | 'INSTALLER'): Promise<Prisma.FileDeletionJobWhereInput> {
+async function scope(user: User, kind: 'MEDIA' | 'INSTALLER', examId?: string): Promise<Prisma.FileDeletionJobWhereInput> {
   if (kind === 'INSTALLER' && user.role !== 'SUPER_ADMIN') throw new AuthError('需要超级管理员权限', 403);
-  if (user.role === 'SUPER_ADMIN') return { kind };
-  const exams = await prisma.exam.findMany({ where: { OR: [{ createdById: user.id }, { administrators: { some: { userId: user.id } } }] }, select: { id: true } });
+  if (user.role === 'SUPER_ADMIN') return { kind, ...(examId ? { examId } : {}) };
+  const exams = await prisma.exam.findMany({ where: { ...(examId ? { id: examId } : {}), OR: [{ createdById: user.id }, { administrators: { some: { userId: user.id } } }] }, select: { id: true } });
   return { kind, examId: { in: exams.map(e => e.id) } };
 }
 export async function GET(request: Request) {
   try {
     const user = await requireUser();
-    const kind = z.enum(['MEDIA', 'INSTALLER']).parse(new URL(request.url).searchParams.get('kind'));
-    const where = { AND: [await scope(user, kind), { completedAt: null }] };
+    const query = new URL(request.url).searchParams;
+    const kind = z.enum(['MEDIA', 'INSTALLER']).parse(query.get('kind'));
+    const examId = z.string().min(1).max(191).optional().parse(query.get('examId') ?? undefined);
+    const where = { AND: [await scope(user, kind, examId), { completedAt: null }] };
     const [pending, failed] = await Promise.all([prisma.fileDeletionJob.count({ where }), prisma.fileDeletionJob.count({ where: { AND: [where, { lastError: { not: null } }] } })]);
     return ok({ pending, failed });
   } catch (error) {
@@ -28,8 +30,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const user = await requireUser(request); assertReleaseRequestOrigin(request);
-    const { kind } = await parseBody(request, z.object({ kind: z.enum(['MEDIA', 'INSTALLER']) }).strict());
-    const filter = await scope(user, kind);
+    const { kind, examId } = await parseBody(request, z.object({ kind: z.enum(['MEDIA', 'INSTALLER']), examId: z.string().min(1).max(191).optional() }).strict());
+    const filter = await scope(user, kind, examId);
     await prisma.fileDeletionJob.updateMany({ where: { AND: [filter, { completedAt: null, OR: [{ claimUntil: null }, { claimUntil: { lt: new Date() } }] }] }, data: { nextAttemptAt: new Date() } });
     void processFileDeletions(filter, 5).catch(error => console.error('Manual file cleanup retry failed', error));
     return ok({ retryScheduled: true });

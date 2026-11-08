@@ -42,8 +42,10 @@ test('exam imports recover the real full score from old bridge metadata and defa
   t.mock.method(globalThis, 'fetch', async () => Response.json({ ok: true, data: { id: '9', title: 'A', score: 100, config: { type: 'default', subtasks: [{ score: 25 }] } } }));
   const writes: any[] = [];
   replace(prisma, '$transaction', async (operation: any) => operation({
+    $queryRaw: async () => [],
+    examFederation: { findUnique: async () => null },
     exam: { update: async () => ({ id: 'e' }) },
-    examProblem: { deleteMany: async () => ({}), create: async ({ data }: any) => { writes.push(data); return data; } },
+    examProblem: { findMany: async () => [], deleteMany: async () => ({}), create: async ({ data }: any) => { writes.push(data); return data; } },
   }));
   const input = CreateExamSchema.parse({ name: 'Import', startAt: '2026-11-01T07:10:00Z', latestStartAt: '2026-11-01T07:10:00Z',
     endAt: '2026-11-01T08:40:00Z', durationMinutes: 90, platform: 'HYDRO', contestType: 'INDIVIDUAL', contestRule: 'KS', problemIds: ['9'] });

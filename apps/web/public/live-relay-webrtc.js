@@ -11,9 +11,9 @@ export function createRelayWebRtcReader({ url, video, onStatus }) {
     if (old) void fetch(old, { method: 'DELETE', keepalive: true }).catch(() => {});
     video.pause(); video.srcObject = null;
   }
-  function retry() {
+  function retry(message = '连接中断，正在重连…') {
     if (closed) return;
-    release(); status('连接中断，正在重连…');
+    release(); status(message);
     retryTimer = setTimeout(start, Math.min(8000, 500 * 2 ** Math.min(retries++, 4)) + Math.random() * 250);
   }
   async function start() {
@@ -68,6 +68,8 @@ export function createRelayWebRtcReader({ url, video, onStatus }) {
       await pc.setLocalDescription(await pc.createOffer()); offer = pc.localDescription.sdp;
       const response = await fetch(target, { method: 'POST', headers: { 'content-type': 'application/sdp' }, body: offer, signal });
       if ([401, 403].includes(response.status)) { if (active()) { closed = true; release(); status('直播密钥或授权已失效'); } return; }
+      if (response.status === 404) { if (active()) retry('等待 OBS 或其他设备开始推流…'); return; }
+      if (response.status === 429) { if (active()) retry('直播连接数已达上限，稍后重试…'); return; }
       if (response.status !== 201) throw new Error('Signaling failed');
       const next = new URL(response.headers.get('location') || '', target);
       if (next.origin !== target.origin || next.pathname !== target.pathname || !next.searchParams.get('resource')) throw new Error('Invalid resource');

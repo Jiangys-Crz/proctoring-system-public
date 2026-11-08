@@ -1,7 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { ArrowLeft, ChevronRight, Download } from 'lucide-react';
+import { Download } from 'lucide-react';
 
 export interface ProctorRecordExam {
   id: string;
@@ -54,7 +53,7 @@ function exportRows(rows: ProctorRecordRow[], examName?: string) {
             row.action,
             row.reason,
             row.operator,
-            new Date(row.createdAt).toLocaleString()
+            formatDateTime(row.createdAt)
           ]
         : [
             row.school,
@@ -65,7 +64,7 @@ function exportRows(rows: ProctorRecordRow[], examName?: string) {
             row.action,
             row.reason,
             row.operator,
-            new Date(row.createdAt).toLocaleString()
+            formatDateTime(row.createdAt)
           ])
         .map(csvEscape)
         .join(',')
@@ -81,68 +80,25 @@ function exportRows(rows: ProctorRecordRow[], examName?: string) {
 }
 
 function formatDateTime(value: string) {
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hourCycle: 'h23' });
 }
 
-export function ProctorRecordsPageClient({ exams, rows }: { exams: ProctorRecordExam[]; rows: ProctorRecordRow[] }) {
-  const [selectedExamId, setSelectedExamId] = useState('');
-  const counts = useMemo(() => {
-    const map = new Map<string, number>();
-    rows.forEach((row) => map.set(row.examId, (map.get(row.examId) || 0) + 1));
-    return map;
-  }, [rows]);
-  const selectedExam = exams.find((exam) => exam.id === selectedExamId) || null;
-  const selectedRows = selectedExamId ? rows.filter((row) => row.examId === selectedExamId) : [];
+export function ProctorRecordsPageClient({ exam: selectedExam, rows: selectedRows }: { exam: ProctorRecordExam; rows: ProctorRecordRow[] }) {
   const hasTeam = selectedRows.some((row) => row.isTeam);
 
   return (
     <div className="grid">
-      <div className="topbar">
-        <div>
-          <h1 style={{ margin: 0 }}>监考记录</h1>
-        </div>
-        {selectedExam ? (
+      <div className="topbar topbar-actions">
           <button className="button" onClick={() => exportRows(selectedRows, selectedExam.name)} disabled={!selectedRows.length}>
             <Download size={18} />
             导出本场
           </button>
-        ) : null}
       </div>
 
-      {!selectedExam ? (
-        <section className="grid">
-          <div className="recording-list-grid">
-            {exams.map((exam) => {
-              const count = counts.get(exam.id) || 0;
-              return (
-                <button key={exam.id} className="card proctor-record-exam-card" onClick={() => setSelectedExamId(exam.id)}>
-                  <span className="proctor-record-exam-main">
-                    <strong>{exam.name}</strong>
-                    <span>
-                      {formatDateTime(exam.startAt)} - {formatDateTime(exam.endAt)}
-                    </span>
-                    <b>{count} 条监考记录</b>
-                  </span>
-                  <ChevronRight size={18} />
-                </button>
-              );
-            })}
-          </div>
-          {!exams.length ? <div className="card muted">暂无考试</div> : null}
-        </section>
-      ) : (
-        <>
-          <div className="return-only-row page-back-row"><button className="button secondary recording-back-button" onClick={() => setSelectedExamId('')}>
-            <ArrowLeft size={16} />
-            返回考试列表
-          </button></div>
         <section className="card">
           <div className="proctor-record-detail-head">
-            <div>
-              <h2>{selectedExam.name}</h2>
-              <div className="muted">
-                {formatDateTime(selectedExam.startAt)} - {formatDateTime(selectedExam.endAt)}
-              </div>
+            <div className="muted">
+              {formatDateTime(selectedExam.startAt)} - {formatDateTime(selectedExam.endAt)}
             </div>
             <div className="proctor-record-count">{selectedRows.length} 条</div>
           </div>
@@ -199,8 +155,7 @@ export function ProctorRecordsPageClient({ exams, rows }: { exams: ProctorRecord
             </table>
           </div>
           {!selectedRows.length ? <div className="muted">该考试暂无监考记录</div> : null}
-        </section></>
-      )}
+        </section>
     </div>
   );
 }

@@ -501,8 +501,10 @@ function mediaRtmpBase() {
 }
 
 function isNovaJudgeExam() { return state.exam?.platform === 'NOVAJUDGE'; }
+function isHydroBrowserExam() { return state.exam?.platform === 'HYDRO_BROWSER'; }
+function isBrowserExam() { return isNovaJudgeExam() || isHydroBrowserExam(); }
 
-function showNovaJudgeLogin(phase) {
+function showBrowserLogin(phase) {
   $('novaJudgeWaiting').classList.toggle('hidden', phase === 'ready');
   $('novaJudgeCountdown').classList.toggle('hidden', phase !== 'waiting');
   $('novaJudgeLoading').classList.toggle('hidden', phase !== 'loading');
@@ -513,7 +515,7 @@ function showNovaJudgeLogin(phase) {
 }
 
 function contestWebsiteUrl() {
-  if (isNovaJudgeExam()) return new URL(`/contest/${state.exam.platformContestId}`, state.exam.platformBaseUrl).toString();
+  if (isBrowserExam()) return `${state.exam.platformBaseUrl.replace(/\/$/, '')}/contest/${state.exam.platformContestId}`;
   const origin = contestWebsiteOrigin();
   if (!origin || !state.session?.id || !state.sessionToken) return '';
   const url = new URL('/contest', origin);
@@ -529,6 +531,8 @@ function browserNavigationAllowed(url) {
   try {
     const parsed = new URL(url);
     if (parsed.protocol === 'about:' || parsed.protocol === 'data:' || parsed.protocol === 'blob:') return true;
+    // Native Hydro uses several paths; the main process validates each route and record.
+    if (isHydroBrowserExam()) return parsed.origin === new URL(state.exam.platformBaseUrl).origin;
     if (isNovaJudgeExam()) {
       const origin = new URL(state.exam.platformBaseUrl).origin;
       const prefix = `/contest/${state.exam.platformContestId}`;
@@ -847,8 +851,8 @@ async function saveServerUrlFromInput() {
 function setOnly(id) {
   if (id !== 'examPanel' && id !== 'waitingPanel') { examNoticeInbox.clear(); $('appealModal').classList.add('hidden'); }
   ['setupPanel', 'loginPanel', 'waitingPanel', 'examPanel', 'finishedPanel'].forEach((item) => $(item).classList.toggle('hidden', item !== id));
-  document.body.classList.toggle('novaJudgeMode', id === 'examPanel' && isNovaJudgeExam());
-  if (id !== 'examPanel' || !isNovaJudgeExam()) document.body.classList.remove('novaJudgeConnecting');
+  document.body.classList.toggle('novaJudgeMode', id === 'examPanel' && isBrowserExam());
+  if (id !== 'examPanel' || !isBrowserExam()) document.body.classList.remove('novaJudgeConnecting');
   document.body.classList.toggle('examMode', id === 'examPanel' || id === 'finishedPanel');
   updateLocalPreviews();
 }
@@ -938,7 +942,7 @@ function renderClientUpdate(status) {
 }
 
 function renderNovaJudgeSubmit(status) {
-  $('submitCliStatus').classList.toggle('hidden', status.phase === 'idle');
+  $('submitCliStatus').classList.toggle('hidden', status.phase === 'idle' || !isNovaJudgeExam());
   $('submitCliStatus').classList.toggle('failed', status.phase === 'error');
   $('submitCliMessage').textContent = status.message;
   $('submitCliRetry').classList.toggle('hidden', status.phase !== 'error');
@@ -1190,7 +1194,7 @@ function updateLocalPreviews() {
   $('screenPreviewTile').classList.toggle('hidden', !policy.previewScreen);
   $('cameraPreviewTile').classList.toggle('hidden', !policy.previewCamera);
   const hasPreview = policy.previewScreen || policy.previewCamera;
-  const novaWaiting = isNovaJudgeExam() && !$('novaJudgeWaiting').classList.contains('hidden');
+  const novaWaiting = isBrowserExam() && !$('novaJudgeWaiting').classList.contains('hidden');
   $('monitorPreview').classList.toggle('hidden', !hasPreview || state.monitorPreviewHidden || novaWaiting);
   $('monitorPreviewRestore').classList.toggle('hidden', !hasPreview || !state.monitorPreviewHidden || novaWaiting);
   $('monitorPreview').classList.toggle('single', policy.previewScreen !== policy.previewCamera);
@@ -2215,7 +2219,7 @@ async function submitCredentialLogin() {
   const pair = await requestDesktopPair();
   const result = await api('/api/client/credential-login', {
     method: 'POST', body: JSON.stringify({
-      pairCode: pair.pairCode, examCode: $('loginExamCode').value.trim(), name: $('loginName').value.trim(),
+      pairCode: pair.pairCode, examCode: $('loginExamCode').value.trim(),
       examNumber: $('loginExamNumber').value.trim(), password: $('loginPassword').value
     })
   });
@@ -2494,11 +2498,14 @@ async function enterApproved() {
   setOnly('examPanel');
   $('candidateInfo').innerHTML = candidateInfo(state.candidate, state.requirements?.roomName, state.session?.memberName);
   $('examName').textContent = state.exam.name;
-  $('novaJudgeWaiting').classList.toggle('hidden', !isNovaJudgeExam());
-  $('ojView').classList.toggle('hidden', isNovaJudgeExam());
-  if (isNovaJudgeExam()) showNovaJudgeLogin('waiting');
+  $('novaJudgeWaiting').classList.toggle('hidden', !isBrowserExam());
+  $('ojView').classList.toggle('hidden', isBrowserExam());
+  if (isBrowserExam()) {
+    $('novaJudgeLoginStatus').textContent = isHydroBrowserExam() ? '正在自动登录 HydroOJ，请稍等' : '正在自动登录NovaJudge 请稍等';
+    showBrowserLogin('waiting');
+  }
   state.ojLoginRetryId = '';
-  $('rulesBox').textContent = isNovaJudgeExam() ? state.exam.rules : state.requirements?.isPublicTest ? state.exam.rules : `${state.exam.rules || '请遵守考试规则，独立完成答题。'}\n\n题目、提交和排行榜将在独立比赛网页中显示，并由 HydroOJ 提供数据与判题服务。`;
+  $('rulesBox').textContent = isBrowserExam() ? state.exam.rules : state.requirements?.isPublicTest ? state.exam.rules : `${state.exam.rules || '请遵守考试规则，独立完成答题。'}\n\n题目、提交和排行榜将在独立比赛网页中显示，并由 HydroOJ 提供数据与判题服务。`;
   state.contestPageLoaded = false;
   state.contestPageLoading = false;
   state.contestPageRetryAt = 0;
@@ -2509,7 +2516,7 @@ async function enterApproved() {
 }
 
 async function requestOjAndOpen() {
-  if (isNovaJudgeExam()) { state.contestPageLoaded = false; state.contestPageRetryAt = 0; openContestHome(); return; }
+  if (isBrowserExam()) { state.contestPageLoaded = false; state.contestPageRetryAt = 0; openContestHome(); return; }
   try {
     const ticket = await api('/api/client/oj-cookie', {
       method: 'POST',
@@ -2531,8 +2538,8 @@ function scheduleContestPageRetry(generation = state.contestLoadGeneration) {
 
 function openContestHome() {
   if (!state.exam || state.finishedScreenVisible) return;
-  const nova = isNovaJudgeExam();
-  if (nova && (!state.session?.startedAt || state.session.status !== 'IN_EXAM' || state.session.lockdown)) return;
+  const browser = isBrowserExam();
+  if (browser && (!state.session?.startedAt || state.session.status !== 'IN_EXAM' || state.session.lockdown)) return;
   const url = contestWebsiteUrl();
   if (!url) {
     $('examStatus').textContent = '比赛网页地址未配置，请在客户端 config.js 中配置 PROCTOR_CLIENT_WEB_URL。';
@@ -2542,9 +2549,9 @@ function openContestHome() {
   const generation = ++state.contestLoadGeneration;
   const sessionId = state.session.id;
   const current = () => generation === state.contestLoadGeneration && state.session?.id === sessionId && !state.finishedScreenVisible;
-  $('examStatus').textContent = nova ? '正在自动登录 NovaJudge 比赛' : '已打开项目内置比赛网页，题目由本项目发布，HydroOJ 负责判题。';
-  if (nova) {
-    showNovaJudgeLogin('loading');
+  $('examStatus').textContent = browser ? `正在自动登录 ${isHydroBrowserExam() ? 'HydroOJ' : 'NovaJudge'} 比赛` : '已打开项目内置比赛网页，题目由本项目发布，HydroOJ 负责判题。';
+  if (browser) {
+    showBrowserLogin('loading');
   }
   const visibleUrl = new URL(url);
   visibleUrl.search = '';
@@ -2581,14 +2588,14 @@ function openContestHome() {
   view.classList.remove('hidden');
   const loading = waitForAttached().then(async () => {
     let target = url;
-    if (nova) {
+    if (browser) {
       const login = await api('/api/client/oj-cookie', { method: 'POST', body: JSON.stringify({ sessionId }) });
       if (!current() || state.session.status !== 'IN_EXAM' || state.session.lockdown) return;
-      target = await window.proctorApi.installNovaJudgeLogin(login);
+      target = await (isHydroBrowserExam() ? window.proctorApi.installHydroBrowserLogin(login) : window.proctorApi.installNovaJudgeLogin(login));
     }
     if (!current()) return;
     const navigation = typeof view.loadURL === 'function'
-      ? view.loadURL(target, nova ? {} : { extraHeaders })
+      ? view.loadURL(target, browser ? {} : { extraHeaders })
       : Promise.resolve().then(() => { view.src = target; });
     let timer;
     try {
@@ -2602,26 +2609,26 @@ function openContestHome() {
   });
   Promise.resolve(loading)
     .then(() => {
-      if (!current() || (nova && (state.session.status !== 'IN_EXAM' || state.session.lockdown))) return;
+      if (!current() || (browser && (state.session.status !== 'IN_EXAM' || state.session.lockdown))) return;
       state.contestPageLoaded = true;
       state.contestPageFailures = 0;
-      if (nova) showNovaJudgeLogin('ready');
+      if (browser) showBrowserLogin('ready');
       state.contestPageRetryAt = 0;
       view.setZoomFactor?.(state.browserZoomFactor);
     })
     .catch((error) => {
       if (!current()) return;
-      if (nova) {
-        showNovaJudgeLogin('failed');
+      if (browser) {
+        showBrowserLogin('failed');
       }
       state.contestPageLoaded = false;
-      if (nova && errorMessage(error).includes('[OJ_LOGIN_REJECTED]')) {
+      if (browser && errorMessage(error).includes('[OJ_LOGIN_REJECTED]')) {
         // Account/configuration denials require correction; repeatedly posting
         // the same wrong password can lock the account at the judge service.
         state.contestPageRetryAt = Infinity;
         showError(new Error(errorMessage(error).split('[OJ_LOGIN_REJECTED]').pop().trim()));
       } else scheduleContestPageRetry(generation);
-      if (!nova) showError(error, '考试页面暂时无法打开，正在自动重试');
+      if (!browser) showError(error, '考试页面暂时无法打开，正在自动重试');
     })
     .finally(() => { if (current()) state.contestPageLoading = false; });
 }
@@ -2731,10 +2738,10 @@ function installWebviewGuards() {
     // The loadURL promise owns the in-flight flag. Clearing it here can start
     // another remote login before that same failed navigation has settled.
     scheduleContestPageRetry();
-    if (isNovaJudgeExam() && !state.finishedScreenVisible) showNovaJudgeLogin('failed');
+    if (isBrowserExam() && !state.finishedScreenVisible) showBrowserLogin('failed');
   });
   view.addEventListener('dom-ready', () => {
-    if (isNovaJudgeExam() && state.session?.status === 'IN_EXAM') {
+    if (isBrowserExam() && state.session?.status === 'IN_EXAM') {
       void view.executeJavaScript("Boolean(document.querySelector('input[name=\"password\"]'))").then(needsLogin => {
         if (!needsLogin || state.contestPageLoading) return;
         state.contestPageLoaded = false; state.contestPageRetryAt = 0; openContestHome();
@@ -2756,7 +2763,7 @@ function startClock() {
       $('timeLabel').textContent = '考试总时长';
       $('timeValue').textContent = formatDuration(Number(state.exam.durationMinutes || 0) * 60_000);
       $('timeValue').parentElement?.classList.remove('urgent');
-      if (isNovaJudgeExam()) {
+      if (isBrowserExam()) {
         const remaining = Math.max(0, startAt - now);
         $('novaJudgeCountdown').textContent = remaining > 0 ? `距开考还有 ${formatDuration(remaining)}` : '考试已开始，请确认开始考试';
         $('startBtn').disabled = now < startAt || now >= new Date(state.exam.endAt).getTime() || state.session.lockdown;
@@ -2804,7 +2811,7 @@ async function startExam() {
   });
   acceptSessionSnapshot(session);
   if (state.session?.status === 'FINISHED' || state.finishedScreenVisible) return;
-  if (isNovaJudgeExam()) { $('novaJudgeCountdown').textContent = '监考已开始，正在连接答题平台。'; openContestHome(); }
+  if (isBrowserExam()) { $('novaJudgeCountdown').textContent = '监考已开始，正在连接答题平台。'; openContestHome(); }
   $('ojView').focus();
 }
 
@@ -3363,7 +3370,7 @@ async function sendHeartbeat() {
     state.testMobileOfflineAt = state.session.miniProgramOfflineAt;
     void ensureMobileReconnectQr(true);
   }
-  if (isNovaJudgeExam() && result.ojLoginRetryId && result.ojLoginRetryId !== state.ojLoginRetryId) {
+  if (isBrowserExam() && result.ojLoginRetryId && result.ojLoginRetryId !== state.ojLoginRetryId) {
     state.ojLoginRetryId = result.ojLoginRetryId;
     state.contestLoadGeneration++; state.contestPageLoading = false; state.contestPageLoaded = false; state.contestPageRetryAt = 0;
     openContestHome();

@@ -58,13 +58,13 @@ export function compareSubmissionOrder(a: Pick<ScoreRecord, 'id' | 'createdAt'>,
 }
 export type RankingCandidate = {
   id: string; examNumber: string; name: string | null; teamName: string | null;
-  groupName?: string | null; school?: string | null; college?: string | null; ranked?: boolean; gender?: string | null; teamMembers?: string | null;
+  groupName?: string | null; school?: string | null; college?: string | null; advisor?: string | null; ranked?: boolean; gender?: string | null; teamMembers?: string | null; memberOrder?: number; isTeamLeader?: boolean;
 };
 export type ScoreRow = {
   rank: number; username: string; displayName: string; groupName: string; teamName: string | null;
-  institution: string; members?: string; isStar: boolean; isGirl: boolean; medal?: 'Gold' | 'Silver' | 'Bronze'; penaltyMillis: number;
+  institution: string; members?: string; advisor?: string | null; hasSubmission: boolean; isStar: boolean; isGirl: boolean; medal?: 'Gold' | 'Silver' | 'Bronze'; penaltyMillis: number;
   score: number; solved: number; penalty: number; problemScores: Array<number | null>;
-  cells: Array<{ score: number | null; accepted: boolean; wrong: number; pending: number; seconds: number; penalty: number; penaltyMillis: number; firstBlood: boolean }>;
+  cells: Array<{ score: number | null; accepted: boolean; wrong: number; pending: number; seconds: number; penalty: number; penaltyMillis: number; firstBlood: boolean; maxScore: number }>;
 };
 
 export const IGNORED_SUBMISSION_STATUS = 30;
@@ -80,7 +80,8 @@ export function scaledSubmissionScore(rule: Rule, raw: number, score: number, hy
 }
 
 function assignRanks(rows: ScoreRow[], xcpc: boolean, grouped: boolean, teamNames = false) {
-  const compare = (a: ScoreRow, b: ScoreRow) => (xcpc ? b.solved - a.solved : b.score - a.score)
+  const compare = (a: ScoreRow, b: ScoreRow) => ((xcpc || grouped) ? Number(b.hasSubmission) - Number(a.hasSubmission) : 0)
+    || (xcpc ? b.solved - a.solved : b.score - a.score)
     || a.penaltyMillis - b.penaltyMillis
     || (teamNames ? (a.displayName < b.displayName ? -1 : a.displayName > b.displayName ? 1 : 0) : 0)
     || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0);
@@ -123,12 +124,18 @@ export function scoreRows(exam: Timing & { scoreboardFrozenAt?: Date | null },
   const frozen = (!admin || xcpc || scoreContest) && isScoreboardFrozen(exam, now);
   const first = new Map<string, number>();
   const candidateIds = new Set(candidates.map(candidate => candidate.id));
-  const ordered = [...records].filter(record => record.status !== IGNORED_SUBMISSION_STATUS && candidateIds.has(record.candidateId)
+  const ordered = records.filter(record => record.status !== IGNORED_SUBMISSION_STATUS && candidateIds.has(record.candidateId)
     && record.createdAt >= exam.startAt && record.createdAt < exam.endAt && record.createdAt <= now)
     // A server's locale must not select a different latest run at equal time.
     .sort(compareSubmissionOrder);
   const byCandidate = new Map<string, Map<string, ScoreRecord[]>>();
+  const counts = new Map<string, {submitted:number;accepted:number}>();
   for (const record of ordered) {
+    if (!frozen || record.createdAt <= exam.scoreboardFrozenAt!) {
+      const count = counts.get(record.problemId) || { submitted: 0, accepted: 0 };
+      count.submitted++; if (record.status === 1) count.accepted++;
+      counts.set(record.problemId, count);
+    }
     if (record.status === 1 && (!frozen || record.createdAt <= exam.scoreboardFrozenAt!) && !first.has(record.problemId)) first.set(record.problemId, +record.createdAt);
     let byProblem = byCandidate.get(record.candidateId);
     if (!byProblem) { byProblem = new Map(); byCandidate.set(record.candidateId, byProblem); }
@@ -141,7 +148,7 @@ export function scoreRows(exam: Timing & { scoreboardFrozenAt?: Date | null },
     const cells = problems.map(problem => {
       const all = byCandidate.get(candidate.id)?.get(problem.id) || [];
       let chosen: ScoreRecord | undefined, wrong = 0, pending = 0, lastSubmitMillis = 0;
-      const realScore = (record: ScoreRecord) => record.manualScore ?? scaledSubmissionScore(exam.contestRule, record.score, problem.score, problem.hydroScore);
+      const realScore = (record: ScoreRecord) => exam.contestRule === 'LANQIAO' && [0, 7, 20, 21, 22].includes(record.status) ? 0 : record.manualScore ?? scaledSubmissionScore(exam.contestRule, record.score, problem.score, problem.hydroScore);
       for (const record of all) {
         if (xcpc && chosen?.status === 1) break;
         lastSubmitMillis = Math.max(lastSubmitMillis, +record.createdAt - +exam.startAt);
@@ -150,22 +157,22 @@ export function scoreRows(exam: Timing & { scoreboardFrozenAt?: Date | null },
           pending++;
           // KS always uses the latest non-cancelled submission. A latest run
           // that is still pending must not fall back to an older score.
-          if (exam.contestRule === 'KS') chosen = record;
+          if (['KS', 'OI', 'LANQIAO'].includes(exam.contestRule)) chosen = record;
           continue;
         }
         if (xcpc) {
           if (record.status === 1) chosen = record;
           else if (record.status !== 7) { wrong++; chosen = record; }
         } else if (scoreContest) {
-          if (record.status === 7) continue;
-          if (!chosen || realScore(record) > realScore(chosen) || (realScore(record) === realScore(chosen) && record.createdAt < chosen.createdAt)) chosen = record;
-        } else if (exam.contestRule === 'OI' || exam.contestRule === 'KS' || !chosen || record.score > chosen.score) chosen = record;
+          if (exam.contestRule === 'LANQIAO') chosen = record;
+          else if (record.status !== 7 && (!chosen || realScore(record) > realScore(chosen) || (realScore(record) === realScore(chosen) && record.createdAt < chosen.createdAt))) chosen = record;
+        } else if (exam.contestRule === 'OI' || exam.contestRule === 'KS' || !chosen || realScore(record) > realScore(chosen)) chosen = record;
       }
       const accepted = chosen?.status === 1;
       const millis = chosen ? Math.max(0, +chosen.createdAt - +exam.startAt) : 0;
       const seconds = Math.floor((xcpc ? lastSubmitMillis : millis) / 1000);
       const score = chosen ? realScore(chosen) : null;
-      return { score, accepted, wrong, pending, seconds,
+      return { score, accepted, wrong, pending, seconds, maxScore: problem.score,
         // ICPC/DOMjudge rounds each solved problem down to whole minutes before
         // adding 20 minutes for each penalty-bearing rejection before the AC.
         penalty: xcpc && accepted ? Math.floor(seconds / 60) * 60 + wrong * 1200 : scoreContest && score && score > 0 ? seconds : 0,
@@ -174,24 +181,43 @@ export function scoreRows(exam: Timing & { scoreboardFrozenAt?: Date | null },
     });
     return {
       rank: 0,
+      hasSubmission: byCandidate.has(candidate.id),
       username: candidate.examNumber,
       displayName: exam.contestRule === 'GPLT' ? candidate.name || candidate.examNumber : candidate.teamName || candidate.name || candidate.examNumber,
       groupName: normalizeParticipationGroup(exam.contestRule, candidate.groupName) || '未分组',
       isStar: candidate.ranked === false || normalizeParticipationGroup(exam.contestRule, candidate.groupName) === 'star',
       isGirl: normalizeParticipationGroup(exam.contestRule, candidate.groupName) === 'girl' || isFemale(candidate.gender),
       members: candidate.teamMembers || undefined,
+      advisor: candidate.advisor,
       teamName: candidate.teamName,
       institution: candidate.college || candidate.school || '',
-      penaltyMillis: scoreContest ? Math.max(0, ...cells.map(cell => cell.penaltyMillis)) : cells.reduce((sum, cell) => sum + cell.penaltyMillis, 0),
+      penaltyMillis: scoreContest ? cells.reduce((max, cell) => Math.max(max, cell.penaltyMillis), 0) : cells.reduce((sum, cell) => sum + cell.penaltyMillis, 0),
       score: cells.reduce((sum, cell) => sum + (cell.score || 0), 0),
       solved: cells.filter(cell => cell.accepted).length,
-      penalty: scoreContest ? Math.max(0, ...cells.map(cell => cell.penalty)) : cells.reduce((sum, cell) => sum + cell.penalty, 0),
+      penalty: scoreContest ? cells.reduce((max, cell) => Math.max(max, cell.penalty), 0) : cells.reduce((sum, cell) => sum + cell.penalty, 0),
       problemScores: cells.map(cell => xcpc ? (cell.accepted ? 1 : cell.wrong || cell.pending ? 0 : null) : cell.score),
       cells,
     };
   });
   assignRanks(rows, xcpc, scoreContest);
-  return { available, frozen, rows };
+  // Use all participants, before group/search filters, as on the reference board.
+  const problemStats = problems.map((problem, index) => {
+    let attempted = 0, scored = 0, total = 0, maximum = -Infinity, minimum = Infinity, firstSolved = Infinity, lastSolved = -1;
+    for (const row of rows) {
+      const cell = row.cells[index];
+      if (cell.score !== null) { scored++; total += cell.score; maximum = Math.max(maximum, cell.score); minimum = Math.min(minimum, cell.score); }
+      if (cell.accepted) {
+        attempted += cell.wrong + 1;
+        const time = Math.floor(cell.seconds / 60);
+        firstSolved = Math.min(firstSolved, time); lastSolved = Math.max(lastSolved, time);
+      }
+    }
+    return { submitted: counts.get(problem.id)?.submitted || 0, accepted: counts.get(problem.id)?.accepted || 0,
+      attempted: xcpc ? attempted : scored, firstSolved: firstSolved === Infinity ? -1 : firstSolved, lastSolved,
+      avgScore: scored ? Math.round(total / scored * 100) / 100 : 0,
+      maxScore: scored ? maximum : 0, minScore: scored ? minimum : 0 };
+  });
+  return { available, frozen, rows, problemStats };
 }
 
 export function gpltTeamRows(personalRows: ScoreRow[]) {
@@ -204,10 +230,11 @@ export function gpltTeamRows(personalRows: ScoreRow[]) {
     const existing = teams.get(key);
     if (!existing) {
       teams.set(key, { ...row, rank: 0, username: teamName, displayName: teamName,
-        members: row.displayName, problemScores: [...row.problemScores], cells: [...row.cells] });
+        members: row.displayName, problemScores: [...row.problemScores], cells: row.cells.map(cell => ({ ...cell, firstBlood: false })) });
       continue;
     }
     existing.score += row.score;
+    existing.hasSubmission ||= row.hasSubmission;
     existing.members = [existing.members, row.displayName].filter(Boolean).join(', ');
     existing.isStar ||= row.isStar;
     existing.isGirl &&= row.isGirl;
@@ -218,6 +245,9 @@ export function gpltTeamRows(personalRows: ScoreRow[]) {
       const added = row.problemScores[index];
       return score === null && added === null ? null : (score || 0) + (added || 0);
     });
+    existing.cells = existing.cells.map((cell, index) => ({ ...cell, score: existing.problemScores[index],
+      maxScore: cell.maxScore + row.cells[index].maxScore, accepted: cell.accepted && row.cells[index].accepted,
+      wrong: cell.wrong + row.cells[index].wrong, pending: cell.pending + row.cells[index].pending }));
   }
   const rows = [...teams.values()];
   const identity = (row: ScoreRow, name = row.username) => JSON.stringify([row.groupName, name]);

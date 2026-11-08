@@ -1,24 +1,33 @@
-/* Palette values are the sRGB equivalents of NovaJudge's Tailwind theme.
-   Match NovaJudge's Navbar, contest board, ProblemInfoCard and light code editor.
-   Scope the theme to the exam workspace so camera and candidate entry screens keep their own styles. */
+/* NovaJudge contest workspace, entry and camera interface. */
+.brand-header {
+  height: 57px;
+  background: var(--nova-surface);
+  box-shadow: var(--nova-shadow);
+}
+.brand-header strong, .step-heading h2, .material-card h2 { color: var(--nova-text); }
+.server-pill { border-radius: 6px; color: var(--nova-muted); }
+.page-shell { min-height: calc(100dvh - 57px); }
+.intro-panel h1, .materials-title h1 { color: var(--nova-text); font-family: var(--nova-serif); }
+.intro-panel p, .materials-title p, .feature-list span, .field > span { color: var(--nova-body); }
+.candidate-app :is(.field input, .field select):focus { box-shadow: var(--nova-focus-ring); }
+.candidate-app .primary { background: var(--nova-blue); color: #fff; }
+.candidate-app .primary:hover:not(:disabled) { background: var(--nova-blue-hover); transform: none; }
+.candidate-app :is(.secondary, .login-reconnect-button) {
+  border-color: var(--nova-control-border);
+  border-radius: 6px;
+  background: var(--nova-surface);
+  color: var(--nova-body);
+}
+.candidate-app :is(.secondary, .login-reconnect-button):hover:not(:disabled) {
+  border-color: var(--nova-blue-border);
+  background: var(--nova-blue-soft);
+  color: var(--nova-blue-hover);
+}
+.candidate-app .capture-dialog { border-radius: 8px; box-shadow: var(--nova-dialog-shadow); }
+.monitor-landscape, .monitor-video-frame > video { background: var(--nova-slate-deep); }
+.monitor-empty-state { background: radial-gradient(ellipse at 50% 38%, var(--nova-slate), var(--nova-slate-deep) 75%); }
+
 .exam-portal {
-  --nova-bg: #f4f4f5;
-  --nova-surface: #fff;
-  --nova-subtle: #f9fafb;
-  --nova-border: #e5e7eb;
-  --nova-line: #f3f4f6;
-  --nova-text: #101828;
-  --nova-body: #4a5565;
-  --nova-muted: #6a7282;
-  --nova-blue: #155dfc;
-  --nova-blue-hover: #1447e6;
-  --nova-blue-soft: #eff6ff;
-  --nova-green: #00a63e;
-  --nova-red: #e7000b;
-  --nova-serif: "Times New Roman", "PingFang SC", "Microsoft YaHei", serif;
-  --nova-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
-  --nova-mono: Consolas, "Courier New", monospace;
-  --nova-shadow: 0 1px 2px rgba(0, 0, 0, .05);
   --candidate-radius-xs: 2px;
   --candidate-radius-sm: 2px;
   --candidate-radius-md: 4px;
@@ -128,9 +137,6 @@
 .exam-portal .exam-page-heading { min-height: 0; align-items: start; padding: 24px 24px 20px; border: 0; }
 .exam-portal .exam-page-heading h1 { margin: 0; color: #1e2939; font-size: 24px; font-weight: 700; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
 .exam-portal .exam-page-heading :is(p, small) { margin: 8px 0 0; color: var(--nova-muted); font-size: 13px; }
-.exam-portal .candidate-page-back-row { min-height: 0; padding: 0 0 16px; border: 0; background: transparent; }
-.exam-portal :is(.back-link, .modal-back-button) { position: static; min-height: 28px; padding: 0; border: 0; border-radius: 0; color: var(--nova-blue); background: transparent; box-shadow: none; font-size: 14px; }
-.exam-portal :is(.back-link, .modal-back-button):hover { color: var(--nova-blue-hover); background: transparent; text-decoration: underline; }
 
 /* White overview cards, serif headings and the original blue/green badges. */
 .exam-portal .candidate-contest-overview { display: grid; min-height: 0; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; padding: 0; background: transparent; }
@@ -480,10 +486,57 @@
 }
 
 @media print {
-  .exam-portal :is(.exam-portal-sidebar, .nova-contest-heading, .nova-contest-footer, .candidate-page-back-row, .candidate-problem-subnav, .nova-submit-sidebar) { display: none !important; }
+  .exam-portal :is(.exam-portal-sidebar, .nova-contest-heading, .nova-contest-footer, .candidate-problem-subnav, .nova-submit-sidebar) { display: none !important; }
   .exam-portal { display: block; color: #000; background: #fff; }
   .exam-portal .exam-portal-main { max-width: none; margin: 0; padding: 0; }
   .exam-portal .candidate-problem-detail { display: block; }
   .exam-portal :is(.exam-page-card, .candidate-problem-card) { border: 0; box-shadow: none; }
   .exam-portal :is(.exam-table-wrap, .candidate-submission-table-wrap) { overflow: visible; }
 }
+
+/* NovaJudge form and dialog chrome shared by the login and contest views. */
+:is(.candidate-app, .exam-portal) :is(input:not([type="hidden"], [type="checkbox"], [type="radio"], [type="range"], [type="color"]), select, textarea) {
+  border-color: var(--nova-control-border);
+  border-radius: var(--nova-control-radius);
+}
+:is(.candidate-app, .exam-portal) :is(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]), select, textarea):focus {
+  border-color: var(--nova-blue);
+  outline: none;
+  box-shadow: var(--nova-focus-ring);
+}
+.exam-portal .highlight-code-editor textarea:focus { box-shadow: none; }
+
+.exam-portal .contest-modal-backdrop, .capture-backdrop {
+  background: var(--nova-dialog-backdrop);
+  backdrop-filter: blur(4px);
+}
+.exam-portal :is(.contest-confirm-modal, .contest-leaderboard-modal, .qa-announcement-popup), .candidate-app .capture-dialog {
+  border-radius: var(--nova-dialog-radius);
+  box-shadow: var(--nova-dialog-shadow);
+}
+.exam-portal :is(.contest-confirm-modal, .contest-leaderboard-modal, .qa-announcement-popup) > header,
+.candidate-app .capture-dialog > header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--nova-line);
+  background: var(--nova-subtle);
+}
+.exam-portal :is(.contest-confirm-modal, .contest-leaderboard-modal, .qa-announcement-popup) > header h2 {
+  margin: 0;
+  font: 700 16px/1.5 var(--nova-sans);
+}
+:is(.contest-modal-backdrop, .capture-dialog) .icon-button:is([aria-label^="关闭"], [title^="关闭"]) {
+  border: 0;
+  color: #99a1af;
+  background: transparent;
+  box-shadow: none;
+}
+:is(.contest-modal-backdrop, .capture-dialog) .icon-button:is([aria-label^="关闭"], [title^="关闭"]):hover:not(:disabled) {
+  color: var(--nova-body);
+  background: transparent;
+}
+.exam-portal .candidate-confirm-dialog { width: min(640px, calc(100% - 32px)); }
+.exam-portal .candidate-confirm-dialog .nova-dialog-header h2 { font-family: var(--nova-sans); }
+.candidate-confirm-dialog .confirm-language { margin: 12px 0; }
+.candidate-confirm-dialog .confirm-code-preview { margin: 0; }
+.exam-portal .candidate-confirm-dialog .nova-dialog-footer .contest-button { min-height: 36px; padding: 8px 16px; border-radius: 8px; }
+.exam-portal .candidate-confirm-dialog .nova-dialog-footer .secondary { border: 1px solid var(--nova-control-border); }

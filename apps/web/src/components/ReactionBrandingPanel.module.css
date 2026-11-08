@@ -1,6 +1,4 @@
 .panel { display: grid; gap: 16px; min-width: 0; }
-.introduction { display: grid; gap: 6px; }
-.introduction p, .settingCard p, .editor p { margin: 0; }
 .fields { border: 0; padding: 0; margin: 0; min-width: 0; }
 .heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .heading h3, .settingCard h3 { margin: 0; }

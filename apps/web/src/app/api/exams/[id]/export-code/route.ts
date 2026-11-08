@@ -16,8 +16,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     if (!(await canManageExam(user, id))) return fail('无权导出该考试代码', 403);
     release = await acquireCodeExport(request.signal);
     signal = AbortSignal.any([request.signal, AbortSignal.timeout(10 * 60_000)]);
-    const exam = await prisma.exam.findUnique({ where: { id }, select: { examCode: true, name: true } });
+    const exam = await prisma.exam.findUnique({ where: { id }, select: { examCode: true, name: true, endAt: true } });
     if (!exam) return fail('考试不存在', 404);
+    if (+exam.endAt > Date.now()) return fail('考试结束后才可导出代码', 403);
     if (request.method === 'HEAD') return new Response(null, { headers: {
       'content-type': 'application/zip', 'content-disposition': `attachment; filename="exam-${exam.examCode}-codes.zip"`,
       'cache-control': 'no-store', 'x-content-type-options': 'nosniff',

@@ -30,6 +30,8 @@ hlsAlwaysRemux: false
 webrtc: true
 webrtcAddress: :8889
 webrtcAllowOrigins: ['*']
+# Desktop/mobile capture may start after signaling and device permission setup.
+webrtcTrackGatherTimeout: 15s
 webrtcLocalUDPAddress: :8189
 webrtcLocalTCPAddress: :8189
 
@@ -40,6 +42,10 @@ pathDefaults:
   record: false
 
 paths:
+  '~^relay/[A-Za-z0-9_-]{1,64}$':
+    overridePublisher: false
+    record: false
+    maxReaders: 16
   '~^voice/[A-Za-z0-9_-]+_(ADMIN|DESKTOP)$':
     record: false
     overridePublisher: false

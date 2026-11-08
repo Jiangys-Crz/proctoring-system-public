@@ -1,5 +1,6 @@
 import type { Candidate, ClientSession, Exam, ExamProblem } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
+import { browserExamPlatformName, isBrowserExam } from '@cwnupaa/proctor-shared';
 import { requireClientSession } from '@/lib/client-auth';
 import { effectiveEnd } from './contest-rules';
 import { canViewTeamSubmissions } from './contest-format';
@@ -13,7 +14,7 @@ export async function requireContestSession<T extends boolean = false>(request: 
   const authorized = await requireClientSession(request, sessionId, 'DESKTOP', summaryOnly ? 'contest-summary' : true);
   if (!authorized.ok) return authorized;
   const session = authorized.session as T extends true ? ContestSummarySession : ContestSession;
-  if (session.exam.platform === 'NOVAJUDGE' && !allowExternal) return { ok: false as const, status: 403, message: '本场考试请在 NovaJudge 中答题，监考客户端需要支持 NovaJudge 的版本' };
+  if (isBrowserExam(session.exam.platform) && !allowExternal) return { ok: false as const, status: 403, message: `本场考试请在监考客户端的 ${browserExamPlatformName(session.exam.platform)} 浏览器中答题` };
   if (!session.approvedAt || !['APPROVED', 'IN_EXAM', 'LOCKED', 'FINISHED'].includes(session.status)) return { ok: false as const, status: 403, message: '当前会话不可访问考试' };
   if (session.exam.platformContestId === 'local' && !session.exam.published) return { ok: false as const, status: 403, message: '考试尚未发布' };
   session.startedAt = session.candidate.startedAt || session.startedAt;

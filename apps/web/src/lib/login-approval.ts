@@ -1,4 +1,5 @@
 import type { Candidate, Exam } from '@prisma/client';
+import { isBrowserExam } from '@cwnupaa/proctor-shared';
 import { prisma } from './db';
 import { requestOjLogin } from './oj';
 import { toErrorMessage } from './http';
@@ -13,7 +14,7 @@ export const acquireOjLoginSlot = state.ojLoginAdmission ??= createRequestAdmiss
 export async function issueApprovedSessionOjTicket({ exam, candidate, sessionId }: {
   exam: Exam; candidate: Candidate; sessionId: string;
 }) {
-  if (exam.platform === 'NOVAJUDGE' || await isPublicTestExam(exam.id)) return;
+  if (isBrowserExam(exam.platform) || await isPublicTestExam(exam.id)) return;
   let release: (() => void) | undefined;
   try {
     release = await acquireOjLoginSlot();

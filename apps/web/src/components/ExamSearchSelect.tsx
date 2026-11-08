@@ -48,6 +48,5 @@ export function ExamSearchSelect({ label, placeholder, value, onChange, search }
     {open ? <div className="exam-select-dropdown" id={`${id}-results`} role="listbox" aria-label={label}>
       {loading ? <div className="exam-select-message"><LoaderCircle className="spin" size={16} /> 正在搜索…</div> : error ? <div className="exam-select-message exam-error" role="alert">{error}</div> : options.length ? options.map((item, index) => <button type="button" role="option" aria-selected={index === active} id={`${id}-${index}`} className={index === active ? 'is-active' : ''} key={item.id} onMouseDown={event => event.preventDefault()} onClick={() => select(item)}><strong>{item.label}</strong>{item.description ? <small>{item.description}</small> : null}</button>) : <div className="exam-select-message">没有匹配结果，请尝试其他关键词</div>}
     </div> : null}
-    <small className="exam-field-help">已选择 {value.length} 项，可继续搜索添加</small>
   </div>;
 }

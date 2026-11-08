@@ -30,21 +30,6 @@
         <view>比赛类型：{{exams[examIndex].contestType === 'TEAM' ? '团队赛' : '个人赛'}}</view>
         <view>第二机位：{{exams[examIndex].requireMiniProgram ? '需要' : '不需要'}}</view>
       </view>
-      <label class="field">学校
-        <input value="{{school}}" bindinput="onInput" data-key="school" placeholder="请输入学校" />
-      </label>
-      <label class="field" wx:if="{{!(exams[examIndex] && exams[examIndex].contestType === 'TEAM' && exams[examIndex].teamAccountMode === 'TEAM_ACCOUNT')}}">学院
-        <input value="{{college}}" bindinput="onInput" data-key="college" placeholder="请输入学院" />
-      </label>
-      <label class="field">姓名
-        <input value="{{name}}" bindinput="onInput" data-key="name" placeholder="请输入姓名" />
-      </label>
-      <label class="field" wx:if="{{exams[examIndex] && exams[examIndex].contestType === 'TEAM'}}">队伍名称
-        <input value="{{teamName}}" bindinput="onInput" data-key="teamName" placeholder="请输入队伍名称" />
-      </label>
-      <label class="field">学号
-        <input value="{{studentId}}" bindinput="onInput" data-key="studentId" placeholder="{{exams[examIndex] && exams[examIndex].contestType === 'TEAM' ? '请输入队员学号' : '请输入学号'}}" />
-      </label>
       <label class="field">考号
         <input value="{{examNumber}}" bindinput="onInput" data-key="examNumber" placeholder="请输入考号" />
       </label>

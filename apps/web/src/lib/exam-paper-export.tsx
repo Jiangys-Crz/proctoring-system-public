@@ -1,3 +1,4 @@
+import { formatScore } from '@cwnupaa/proctor-shared';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +18,7 @@ import { requestHydroProblemAnswerKey, requestHydroProblemFile } from '@/lib/hyd
 
 type ExportProblem = {
   id: string;
-  order: number;
+  order: number; label?: string | null;
   hydroProblemId: string;
   title: string;
   content: string;
@@ -60,11 +61,6 @@ const ICPC_PENALTY_STATUSES = new Set([2, 3, 4, 5, 6]);
 
 function safeName(value: string, fallback = '未命名') {
   return value.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 120) || fallback;
-}
-
-function number(value: number | null | undefined) {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '0';
-  return Number(value.toFixed(2)).toString();
 }
 
 function dateTime(value: Date | null | undefined) {
@@ -375,7 +371,7 @@ function objectiveAnswer(question: ObjectiveQuestion, answer: string | string[] 
       const text = option.replace(/^\s*(?:[（(]?[A-Za-z][.、)）．]\s*)/, '');
       return `<div class="objective-option"><span>${letter}.</span>${markdownContent(text, assets)}</div>`;
     }).join('')}</div>`;
-  return `<section class="objective-question">${control}<div class="answer-score"><span>考生答案：<strong>${escapeHtml(values.length ? values.join('、') : submitted ? '未作答' : '未提交')}</strong></span><span class="correct-answer">正确答案：<strong>${escapeHtml(correctAnswer)}</strong></span><span>得分：<b>${number(score)} 分</b></span></div></section>`;
+  return `<section class="objective-question">${control}<div class="answer-score"><span>考生答案：<strong>${escapeHtml(values.length ? values.join('、') : submitted ? '未作答' : '未提交')}</strong></span><span class="correct-answer">正确答案：<strong>${escapeHtml(correctAnswer)}</strong></span><span>得分：<b>${formatScore(score)} 分</b></span></div></section>`;
 }
 
 function objectiveStatement({ parsed, problem, submission, answers, assets }: {
@@ -412,13 +408,13 @@ function problemPaper(problem: ExportProblem, submission: ExportSubmission | und
   const answers = submission ? parseObjectiveAnswers(submission.code) : {};
   const statement = problem.html ? `<div class="statement-html">${sanitizeStatementHtml(content, assets)}</div>` : objective && parsed
     ? objectiveStatement({ parsed, problem, submission, answers, assets }) : markdownContent(content, assets);
-  const toolbar = submission && !objective ? `<strong class="verdict">评测结果：${escapeHtml(verdict(submission))}</strong><span>${escapeHtml(languageLabel(submission.lang))}</span><b>得分：${number(finalScore)} 分</b>` : '';
+  const toolbar = submission && !objective ? `<strong class="verdict">评测结果：${escapeHtml(verdict(submission))}</strong><span>${escapeHtml(languageLabel(submission.lang))}</span><b>得分：${formatScore(finalScore)} 分</b>` : '';
   const submittedCode = submission && !objective ? `<section class="submission-code">${codeBlock(submission.code, submission.lang, toolbar)}</section>` : '';
-  const fallback = submission && objective && parsed && !parsed.questions.length ? `<div class="objective-fallback"><span>考生答案：<strong>${escapeHtml(submission.code || '未作答')}</strong></span><span></span><span>得分：<b>${number(finalScore)} 分</b></span></div>` : '';
+  const fallback = submission && objective && parsed && !parsed.questions.length ? `<div class="objective-fallback"><span>考生答案：<strong>${escapeHtml(submission.code || '未作答')}</strong></span><span></span><span>得分：<b>${formatScore(finalScore)} 分</b></span></div>` : '';
   const unsubmittedProgramming = !submission && !objective
     ? `<div class="not-submitted"><strong>未提交</strong><b>得分：0 分</b></div>`
     : '';
-  return `<section class="problem"><header class="problem-heading"><h2>${problemLabel(problem.order)} - ${escapeHtml(problem.title)}</h2><strong>${number(finalScore)} / ${number(problem.score)} 分</strong></header><div class="statement">${statement}</div>${submittedCode}${fallback}${unsubmittedProgramming}</section>`;
+  return `<section class="problem"><header class="problem-heading"><h2>${escapeHtml(problem.label || problemLabel(problem.order))} - ${escapeHtml(problem.title)}</h2><strong>${formatScore(finalScore)} / ${formatScore(problem.score)} 分</strong></header><div class="statement">${statement}</div>${submittedCode}${fallback}${unsubmittedProgramming}</section>`;
 }
 
 const PAPER_CSS = String.raw`
@@ -497,7 +493,7 @@ function paperHtml({ examName, candidate, startAt, endAt, totalScore, totalMaxim
     <h1 class="paper-title">${escapeHtml(examName)}</h1>
     <table class="candidate-table"><tbody>
       <tr><th>姓名</th><td>${value(candidate.name)}</td><th>学号</th><td>${value(candidate.studentId || candidate.examNumber)}</td><th>学院</th><td>${value(candidate.college)}</td></tr>
-      <tr><th>专业</th><td>${value(candidate.major)}</td><th>班级</th><td>${value(candidate.className)}</td><th>得分/总分</th><td><strong class="score-emphasis">${number(totalScore)} 分/${number(totalMaximum)} 分</strong></td></tr>
+      <tr><th>专业</th><td>${value(candidate.major)}</td><th>班级</th><td>${value(candidate.className)}</td><th>得分/总分</th><td><strong class="score-emphasis">${formatScore(totalScore)} 分/${formatScore(totalMaximum)} 分</strong></td></tr>
       <tr><th>开始考试时间</th><td colspan="2">${dateTime(startAt)}</td><th>结束考试时间</th><td colspan="2">${dateTime(endAt)}</td></tr>
     </tbody></table>
     ${problemMarkup}
@@ -551,7 +547,7 @@ async function problemAssets(exam: { platformBaseUrl: string }, problem: ExportP
 
 async function workbookBytes(examName: string, problems: ExportProblem[], candidates: ExportCandidate[], rows: ReturnType<typeof scoreRows>['rows']) {
   const byExamNumber = new Map(candidates.map(candidate => [candidate.examNumber, candidate]));
-  const header = ['排名', '姓名', '学号', '学院', '专业', '班级', '总得分', ...problems.map(problem => `${problemLabel(problem.order)}-${problem.title}`)];
+  const header = ['排名', '姓名', '学号', '学院', '专业', '班级', '总得分', ...problems.map(problem => `${(problem.label || problemLabel(problem.order))}-${problem.title}`)];
   const values: Array<Array<string | number>> = [header];
   for (const row of rows) {
     const candidate = byExamNumber.get(row.username);
@@ -593,7 +589,7 @@ async function workbookBytes(examName: string, problems: ExportProblem[], candid
     <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
     <xf numFmtId="0" fontId="1" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
     <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
-    <xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="center"/></xf>
+    <xf numFmtId="2" fontId="2" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="center"/></xf>
     <xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>
   </cellXfs>
   <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleMedium4"/>

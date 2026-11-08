@@ -1,4 +1,8 @@
+import { clearRoomAssignmentPending } from '@/lib/platform-sync-room';
+import { assertCandidateCanDelete } from '@/lib/platform-sync-candidate-delete';
+import { FederationError } from '@/lib/exam-federation-protocol';
 import { assertFederationDefinitionMutable } from '@/lib/exam-federation-contract';
+import { mergeTeamCandidateRows } from '@/lib/candidate-import';
 import { z } from 'zod';
 import { normalizeParticipationGroup, participationOptions, isXcpcLeaderboard, isFemale } from '@cwnupaa/proctor-shared/leaderboard';
 import { CandidateImportRowSchema } from '@cwnupaa/proctor-shared';
@@ -19,12 +23,15 @@ function clean(value?: string) { return value?.trim() || null; }
 function normalizeRow(row: CandidateImportRow, contestRule: string, contestType: string) {
   let groupName = normalizeParticipationGroup(contestRule, row.groupName);
   if (isXcpcLeaderboard(contestRule) && contestType === 'INDIVIDUAL' && groupName === 'official' && isFemale(row.gender)) groupName = 'girl';
+  const roster = row.teamRoster?.map(member => Number(member.memberOrder || 1) === 1 ? { ...member, name: row.name, studentId: row.studentId, school: row.school, college: row.college, gradeYear: row.gradeYear, seatNo: row.seatNo, examNumber: row.examNumber, password: row.password } : member).sort((a,b) => Number(a.memberOrder || 1) - Number(b.memberOrder || 1));
   return {
     name: clean(row.name), studentId: clean(row.studentId), school: clean(row.school), college: clean(row.college), major: clean(row.major),
     gender: clean(row.gender), gradeYear: clean(row.gradeYear), className: clean(row.className), advisor: clean(row.advisor), groupName: groupName || null,
-    teamName: clean(row.teamName), teamMembers: clean(row.teamMembers), teamMemberStudentIds: clean(row.teamMemberStudentIds), hydroAccount: null,
+    teamName: clean(row.teamName), teamMembers: roster?.length ? roster.map(m => String(m.name || '')).join('、') : clean(row.teamMembers), teamMemberStudentIds: roster?.length ? roster.map(m => String(m.studentId || '')).join('、') : clean(row.teamMemberStudentIds), hydroAccount: null,
     examNumber: row.examNumber.trim(), password: row.password.trim(), seatNo: row.seatNo.trim(),
-    isTeamLeader: Boolean(row.isTeamLeader), ranked: row.ranked !== false && !(isXcpcLeaderboard(contestRule) && groupName === 'star')
+    memberOrder: row.memberOrder || (row.isTeamLeader ? 1 : 2),
+    ...(row.teamRoster ? { teamRoster: roster as Prisma.InputJsonValue } : {}),
+    isTeamLeader: contestType === 'TEAM' && (row.memberOrder ? row.memberOrder === 1 : Boolean(row.isTeamLeader)), ranked: row.ranked !== false && !(isXcpcLeaderboard(contestRule) && groupName === 'star')
   };
 }
 
@@ -43,6 +50,8 @@ function validateRows(contestRule: string, contestType: 'INDIVIDUAL' | 'TEAM', t
   const identities = new Set<string>();
   rows.forEach((row, index) => {
     const rowNo = index + 1;
+    if (!row.examNumber || !row.password) errors.push(`第 ${rowNo} 行须填写考号和密码`);
+    if (!row.seatNo) errors.push(`第 ${rowNo} 行缺少座位号`);
     const singleTeamAccount = contestType === 'TEAM' && teamAccountMode === 'TEAM_ACCOUNT';
     if (!singleTeamAccount && !row.name) errors.push(`第 ${rowNo} 行缺少姓名`);
     if (!singleTeamAccount && !row.studentId) errors.push(`第 ${rowNo} 行缺少学号`);
@@ -61,6 +70,10 @@ function validateRows(contestRule: string, contestType: 'INDIVIDUAL' | 'TEAM', t
         const names = memberNames(row);
         if (!names.length) errors.push(`第 ${rowNo} 行缺少队伍成员姓名`);
         if (!ids.length) errors.push(`第 ${rowNo} 行缺少队伍成员学号`);
+        if (row.teamRoster && Array.isArray(row.teamRoster) && new Set((row.teamRoster as Record<string, unknown>[]).map(m => Number(m.memberOrder))).size !== row.teamRoster.length) errors.push(`队伍 ${row.teamName} 成员次序不能重复`);
+        if (row.teamRoster && Array.isArray(row.teamRoster)) for (const member of row.teamRoster as Record<string, unknown>[]) {
+          if (!member.name || !member.studentId || !member.school) errors.push(`队伍 ${row.teamName} 每名成员须填写姓名、学号和学校`);
+        }
         if (names.length !== ids.length) errors.push(`第 ${rowNo} 行的成员姓名与学号数量不一致`);
       }
     }
@@ -105,6 +118,7 @@ async function assertUniqueness(tx: Prisma.TransactionClient, examId: string, co
     const teamOwner = await tx.candidate.findFirst({ where: { examId, teamName: row.teamName, ...(exceptId ? { id: { not: exceptId } } : {}) } });
     if (teamAccountMode === 'TEAM_ACCOUNT' && teamOwner) throw new RequestParseError(`队伍名称 ${row.teamName} 在本场考试中已被使用`);
     if (teamOwner && row.teamName !== previousTeamName && ((teamOwner.groupName || '') !== (row.groupName || '') || teamOwner.ranked !== row.ranked || (teamOwner.advisor || '') !== (row.advisor || ''))) throw new RequestParseError(`队伍 ${row.teamName} 的组别、指导老师和是否排名必须一致`);
+    if (teamAccountMode === 'MEMBER_ACCOUNTS' && await tx.candidate.findFirst({ where: { examId, teamName: row.teamName, memberOrder: row.memberOrder, ...(exceptId ? { id: { not: exceptId } } : {}) } })) throw new RequestParseError(`队伍 ${row.teamName} 的成员次序 ${row.memberOrder} 已被使用`);
     if (teamAccountMode === 'MEMBER_ACCOUNTS' && row.isTeamLeader) {
       const leader = await tx.candidate.findFirst({ where: { examId, teamName: row.teamName, isTeamLeader: true, ...(exceptId ? { id: { not: exceptId } } : {}) } });
       if (leader) throw new RequestParseError(`队伍 ${row.teamName} 已设置队长，每个队伍只能有一名队长`);
@@ -117,9 +131,9 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     const user = await requireUser(); const { id } = await context.params;
     if (!(await canManageExam(user, id))) return fail('无权管理该考试的考生', 403);
-    return ok(await prisma.candidate.findMany({ where: { examId: id }, orderBy: [{ seatNo: 'asc' }, { examNumber: 'asc' }] }));
+    return ok(await prisma.candidate.findMany({ where: { examId: id }, orderBy: [{ teamName: 'asc' }, { memberOrder: 'asc' }, { seatNo: 'asc' }] }));
   } catch (error) {
-    if (error instanceof AuthError) return fail(error.message, error.status);
+    if (error instanceof AuthError || error instanceof FederationError) return fail(error.message, error.status);
     return fail(toErrorMessage(error), 500);
   }
 }
@@ -131,12 +145,29 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const input = await parseBody(request, ImportSchema);
     const exam = await prisma.exam.findUnique({ where: { id } });
     if (!exam) return fail('考试不存在', 404);
-    const rows = input.rows.map(row => normalizeRow(row, exam.contestRule, exam.contestType));
+    let importRows = input.rows;
+    if (exam.contestType === 'TEAM' && exam.teamAccountMode === 'TEAM_ACCOUNT') {
+      try {
+        const expanded: CandidateImportRow[] = [];
+        for (const teamName of new Set(input.rows.map(r => r.teamName).filter(Boolean))) {
+          const incoming = input.rows.filter(r => r.teamName === teamName);
+          const existing = await prisma.candidate.findFirst({ where: { examId: id, teamName } });
+          const roster = existing?.teamRoster;
+          const names = (existing?.teamMembers || existing?.name || '').split(/[、,，;；\s]+/).filter(Boolean), ids = (existing?.teamMemberStudentIds || existing?.studentId || '').split(/[、,，;；\s]+/).filter(Boolean);
+          const previous = Array.isArray(roster) && roster.length ? roster.map(r => CandidateImportRowSchema.parse(r)) : existing ? names.map((name, index) => CandidateImportRowSchema.parse({ ...existing, teamRoster: undefined, teamMembers: undefined, teamMemberStudentIds: undefined, name, studentId: ids[index], memberOrder: index + 1, examNumber: index ? '' : existing.examNumber, password: index ? '' : existing.password, isTeamLeader: index === 0 })) : [];
+          const orders = new Set(incoming.map(r => r.memberOrder || 1));
+          expanded.push(...previous.filter(r => !orders.has(r.memberOrder || 1)), ...incoming);
+        }
+        if (input.rows.some(r => !r.teamName)) return fail('团队赛必须填写队伍名称', 400);
+        importRows = mergeTeamCandidateRows(expanded as unknown as Parameters<typeof mergeTeamCandidateRows>[0]).map(row => CandidateImportRowSchema.parse(row));
+      } catch (error) { return fail(error instanceof Error ? error.message : '队伍成员信息不正确', 400); }
+    }
+    const rows = importRows.map(row => normalizeRow(row, exam.contestRule, exam.contestType));
     const errors = validateRows(exam.contestRule, exam.contestType, exam.teamAccountMode, rows);
     if (errors.length) return fail(errors.join('；'), 400, errors);
     const result = await prisma.$transaction(async tx => {
       await assertFederationDefinitionMutable(tx, id);
-      const roomNames = [...new Set(input.rows.map(row => clean(row.roomName)).filter((name): name is string => Boolean(name)))];
+      const roomNames = [...new Set(importRows.map(row => clean(row.roomName)).filter((name): name is string => Boolean(name)))];
       const rooms = roomNames.length ? await tx.examRoom.findMany({ where: { examId: id, name: { in: roomNames } } }) : [];
       const roomIds = new Map(rooms.map(room => [room.name, room.id]));
       const missing = roomNames.filter(name => !roomIds.has(name));
@@ -144,7 +175,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const teamRooms = new Map<string, string>();
       if (exam.contestType === 'TEAM') {
         rows.forEach((row, index) => {
-          const roomName = clean(input.rows[index].roomName);
+          const roomName = clean(importRows[index].roomName);
           if (!row.teamName || !roomName) return;
           if (teamRooms.has(row.teamName) && teamRooms.get(row.teamName) !== roomName) throw new RequestParseError(`队伍 ${row.teamName} 的考室必须一致`);
           teamRooms.set(row.teamName, roomName);
@@ -161,7 +192,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       // Resolve team members after all upserts, including members already imported.
       const assignments = new Map<string, string>();
       saved.forEach((candidate, index) => {
-        const roomName = clean(input.rows[index].roomName);
+        const roomName = clean(importRows[index].roomName);
         if (roomName) assignments.set(candidate.id, roomIds.get(roomName)!);
       });
       for (const [teamName, roomName] of teamRooms) {
@@ -169,6 +200,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         for (const member of members) assignments.set(member.id, roomIds.get(roomName)!);
       }
       if (assignments.size) {
+        const assigned = await tx.candidate.findMany({ where: { examId: id, id: { in: [...assignments.keys()] } }, select: { syncKey: true } });
+        await clearRoomAssignmentPending(tx, assigned.map(row => row.syncKey));
         await tx.examRoomCandidate.deleteMany({ where: { candidateId: { in: [...assignments.keys()] }, room: { examId: id } } });
         await tx.examRoomCandidate.createMany({ data: [...assignments].map(([candidateId, roomId]) => ({ candidateId, roomId })) });
       }
@@ -176,7 +209,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }, { timeout: 60_000 });
     return ok({ imported: result.length, candidates: result });
   } catch (error) {
-    if (error instanceof AuthError) return fail(error.message, error.status);
+    if (error instanceof AuthError || error instanceof FederationError) return fail(error.message, error.status);
     if (error instanceof RequestParseError) return fail(error.message, 400, error.details);
     return fail(toErrorMessage(error), 500);
   }
@@ -204,7 +237,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     });
     return ok(updated);
   } catch (error) {
-    if (error instanceof AuthError) return fail(error.message, error.status);
+    if (error instanceof AuthError || error instanceof FederationError) return fail(error.message, error.status);
     if (error instanceof RequestParseError) return fail(error.message, 400, error.details);
     return fail(toErrorMessage(error), 500);
   }
@@ -217,11 +250,12 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const input = await parseBody(request, CandidateDeleteSchema);
     const result = await prisma.$transaction(async tx => {
       await assertFederationDefinitionMutable(tx, id);
+      await assertCandidateCanDelete(tx, id, input.ids);
       return tx.candidate.deleteMany({ where: { examId: id, id: { in: input.ids } } });
     });
     return ok({ deleted: result.count });
   } catch (error) {
-    if (error instanceof AuthError) return fail(error.message, error.status);
+    if (error instanceof AuthError || error instanceof FederationError) return fail(error.message, error.status);
     if (error instanceof RequestParseError) return fail(error.message, 400, error.details);
     return fail(toErrorMessage(error), 500);
   }

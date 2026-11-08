@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import 'katex/dist/katex.min.css';
+import '@cwnupaa/proctor-shared/nova-theme.css';
 import './globals.css';
 import './hydro-theme.css';
 import './novajudge-theme.css';
@@ -15,7 +16,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   viewportFit: 'cover',
-  themeColor: '#edf0f2'
+  themeColor: '#f4f4f5'
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

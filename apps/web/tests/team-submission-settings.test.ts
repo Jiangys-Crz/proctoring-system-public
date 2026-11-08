@@ -68,7 +68,7 @@ test('the ordinary exam-save transaction persists explicit on/off without resett
   const saved: Array<Record<string, unknown>> = [];
   replace(prisma.systemSetting, 'findUnique', async () => ({ value: { baseUrl: 'https://judge.invalid', apiKey: 'test', problemDomainId: 'Problems' } }));
   replace(prisma.examProblem, 'findMany', async () => []);
-  replace(prisma, '$transaction', async (operation: (client: unknown) => Promise<unknown>) => operation({ exam: {
+  replace(prisma, '$transaction', async (operation: (client: unknown) => Promise<unknown>) => operation({ $queryRaw: async () => [], examFederation: { findUnique: async () => null }, exam: {
     update: async ({ data }: { data: Record<string, unknown> }) => { saved.push(data); return { id: 'exam', ...data }; }
   } }));
   const enabled = CreateExamSchema.parse({ ...base, contestRule: 'XCPC', allowTeamSubmissionView: true });

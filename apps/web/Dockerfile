@@ -52,12 +52,14 @@ COPY packages/shared packages/shared
 COPY hydro-plugin/cwnupaa-proctor-auth/judge-language.ts hydro-plugin/cwnupaa-proctor-auth/judge-language.ts
 COPY hydro-plugin/cwnupaa-proctor-auth/judge-language-list.ts hydro-plugin/cwnupaa-proctor-auth/judge-language-list.ts
 COPY hydro-plugin/cwnupaa-proctor-auth/problem-score.ts hydro-plugin/cwnupaa-proctor-auth/problem-score.ts
+COPY hydro-plugin/cwnupaa-proctor-auth/problem-authoring.ts hydro-plugin/cwnupaa-proctor-auth/problem-authoring.ts
 COPY apps/web apps/web
 # NovaJudge regression checks share the desktop's request policy.
 COPY apps/desktop/src/main/novajudge-policy.ts apps/desktop/src/main/novajudge-policy.ts
 
 ARG NEXT_PUBLIC_MEDIA_HLS_BASE
 ARG PROCTOR_CLIENT_WEB_INTERNAL_BASE=http://client-web:4032
+ARG WEB_BUILD_HEAP_MB=1024
 ENV NEXT_PUBLIC_MEDIA_HLS_BASE=$NEXT_PUBLIC_MEDIA_HLS_BASE
 ENV PROCTOR_CLIENT_WEB_INTERNAL_BASE=$PROCTOR_CLIENT_WEB_INTERNAL_BASE
 ENV NODE_ENV=production
@@ -65,7 +67,7 @@ ENV NODE_ENV=production
 # Webpack avoids Turbopack's additional native-memory demand on small servers.
 RUN --mount=type=cache,id=proctor-web-prisma,target=/root/.cache/prisma,sharing=locked \
     pnpm --filter @cwnupaa/proctor-web db:generate \
-    && NODE_OPTIONS="--max-old-space-size=1024" pnpm --filter @cwnupaa/proctor-web exec next build --webpack
+    && NODE_OPTIONS="--max-old-space-size=${WEB_BUILD_HEAP_MB}" pnpm --filter @cwnupaa/proctor-web exec next build --webpack
 
 ENV CHROME_PATH=/usr/bin/chromium
 ENV FFPROBE_PATH=/usr/bin/ffprobe

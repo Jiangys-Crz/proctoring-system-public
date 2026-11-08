@@ -50,7 +50,7 @@ export function novaBoardSubmission(row: Record<string, unknown>, problems: Retu
   if (matches.length !== 1) throw new Error('NovaJudge 提交记录题目无法唯一匹配，请检查比赛中是否有重名题目');
   const submit_time = novaBoardSubmitTime(text(row.submittedAt || row.submit_time), exam.novaJudgeTimezone);
   return { rid: `novajudge:${exam.id}:${rid}`, username, problem: matches[0].display_id,
-    status: text(row.status), score: Math.round(Math.min(100, nonnegative(row.score))),
+    status: text(row.status), score: Math.min(100, nonnegative(row.score)),
     language: text(row.language), code: text(row.code), runtime: String(nonnegative(row.runtime)),
     memory: String(nonnegative(row.memory)), submit_time };
 }

@@ -20,6 +20,7 @@ enum UserStatus {
 enum ExamPlatform {
   HYDRO
   NOVAJUDGE
+  HYDRO_BROWSER
 }
 
 enum ContestType {
@@ -284,6 +285,9 @@ model ExamProblem {
   order          Int
   hydroDomain    String              @default("system")
   hydroProblemId String
+  label          String?             @db.VarChar(6)
+  syncKey        String?             @unique @db.VarChar(191)
+  sourceDeleted  Boolean             @default(false)
   title          String
   content        String              @db.LongText
   html           Boolean             @default(false)
@@ -340,6 +344,8 @@ model ContestSubmission {
   syncImported         Boolean     @default(false)
   syncOriginNodeId     String?     @db.VarChar(36)
   federationDirty      Boolean     @default(true)
+  federationAttemptAt  DateTime?
+  federationError      String?     @db.VarChar(500)
   federationRevision   Int         @default(0)
   federationWriteToken String      @default("") @db.VarChar(36)
   judgeForced          Boolean     @default(false)
@@ -357,12 +363,14 @@ model ContestSubmission {
   @@index([judgeAt, createdAt])
   @@index([examId, updatedAt, id])
   @@index([examId, federationDirty, updatedAt, id])
+  @@index([examId, federationDirty, federationAttemptAt, updatedAt, id], map: "ContestSubmission_federation_retry_idx")
 }
 
 // One durable, independently configured stream per exam and installation.
 model ExamFederation {
   examId              String   @id
   exam                Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  managedGlobally     Boolean  @default(false)
   role                String   @db.VarChar(8)
   enabled             Boolean  @default(false)
   generation          Int      @default(0)
@@ -454,7 +462,7 @@ model ExamRoom {
   requireSecondCamera Boolean             @default(true)
   requireFrontCamera  Boolean             @default(true)
   loginMode           RoomLoginMode       @default(CREDENTIALS)
-  loginReviewMode     LoginReviewMode     @default(MANUAL)
+  loginReviewMode     LoginReviewMode     @default(AUTO)
   exam                Exam                @relation(fields: [examId], references: [id], onDelete: Cascade)
   proctors            ExamRoomProctor[]
   candidates          ExamRoomCandidate[]
@@ -501,6 +509,9 @@ model Candidate {
   examNumber           String
   password             String
   seatNo               String
+  syncKey              String?             @unique @db.VarChar(191)
+  memberOrder          Int                 @default(1)
+  teamRoster           Json?
   isTeamLeader         Boolean             @default(false)
   ranked               Boolean             @default(true)
   status               CandidateStatus     @default(NOT_REQUESTED)
@@ -626,6 +637,7 @@ model PairingSession {
 }
 
 model LoginRequest {
+  syncMaterialsVerified Boolean             @default(false)
   id                  String             @id @default(cuid())
   examId              String
   candidateId         String
@@ -651,6 +663,7 @@ model LoginRequest {
 }
 
 model ClientSession {
+  syncImported                   Boolean          @default(false)
   id                             String           @id @default(cuid())
   examId                         String
   candidateId                    String
@@ -1206,6 +1219,7 @@ model ScreenControlDisplay {
 // A report owns immutable source snapshots, so deleting or rejudging submissions
 // never changes the evidence used for an earlier comparison.
 model CodeCheckJob {
+  syncImported    Boolean  @default(false)
   id              String   @id @default(cuid())
   examId          String
   activeExamId    String?  @unique
@@ -1323,13 +1337,15 @@ model LiveRelayStream {
   @@index([archived, createdAt])
 }
 
-// Dedicated relay sessions; resourceSecret is NOT the MediaMTX control API id.
+// External relay sessions in shared media; retained table name also holds RTMP.
+// resourceSecret is NOT the MediaMTX control API id.
 // Pending reservations expire so abandoned offers cannot retain capacity.
 model LiveRelayWebRtcConnection {
   id             String   @id @db.VarChar(36)
   streamId       String   @db.VarChar(64)
   keyId          String
   mode           String   @db.VarChar(8)
+  protocol       String   @default("webrtc") @db.VarChar(8)
   ownerHash      String   @db.VarChar(64)
   adminId        String?
   mediaId        String?  @db.VarChar(36)
@@ -1340,6 +1356,7 @@ model LiveRelayWebRtcConnection {
   @@index([streamId, expiresAt])
   @@index([keyId])
   @@index([expiresAt])
+  @@index([protocol, mediaId])
 }
 
 
@@ -1373,4 +1390,48 @@ model ExamFederationAsset {
   exam Exam @relation(fields: [examId], references: [id], onDelete: Cascade)
   @@unique([examId, sourceObjectKey])
   @@index([examId, sha256])
+}
+
+// Shared platform settings select one peer; durable revisions and tombstones survive outages.
+model PlatformSyncState {
+  id            String   @id @default("peer")
+  sequence      BigInt   @default(0)
+  pushCursor    BigInt   @default(0)
+  pullCursor    BigInt   @default(0)
+  leaseToken    String?  @db.VarChar(36)
+  leaseUntil    DateTime?
+  lastSuccessAt DateTime?
+  lastError     String?  @db.Text
+  updatedAt     DateTime @updatedAt
+}
+
+model PlatformSyncItem {
+  id          String   @id @db.VarChar(191)
+  scope       String   @db.VarChar(64)
+  kind        String   @db.VarChar(32)
+  localId     String?  @db.VarChar(191)
+  revision    Int
+  writer      String   @db.VarChar(36)
+  sequence    BigInt
+  hash        String   @db.VarChar(64)
+  appliedHash String?  @db.VarChar(64)
+  deleted     Boolean  @default(false)
+  payload     Json
+  updatedAt   DateTime @updatedAt
+
+  @@unique([scope, kind, localId])
+  @@index([sequence])
+  @@index([scope, kind])
+}
+
+// Acknowledged incoming definitions remain durable even when their exam is paused
+// or a submission/announcement dependency has not arrived yet.
+model PlatformSyncInbox {
+  id            String   @id @db.VarChar(191)
+  snapshot      Json
+  lastAttemptAt DateTime @default(now())
+  lastError     String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  @@index([lastAttemptAt])
 }

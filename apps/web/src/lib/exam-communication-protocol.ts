@@ -8,7 +8,7 @@ const date = z.string().datetime({ offset: true });
 const clock = CursorSchema.refine(value => BigInt(value) > 0n && BigInt(value) <= BigInt(Date.now() + 300_000), '答疑消息时钟超出允许范围');
 const base = { id: identifier, originNodeId: z.string().uuid(), writerNodeId: z.string().uuid(), revision: z.number().int().min(1).max(2147483647) };
 export const QuestionSnapshotSchema = z.object({ ...base, kind: z.literal('question'),
-  initialMessageId: identifier, initialMessageCreatedAt: date, initialThreadOrder: clock, messageClock: clock, examNumber: z.string().min(1).max(191), problemPid: z.string().max(191).nullable(), problemIndex: z.string().max(20).nullable(),
+  initialMessageId: identifier, initialMessageCreatedAt: date, initialThreadOrder: clock, messageClock: clock, candidateKey: z.string().min(1).max(191).optional(), examNumber: z.string().min(1).max(191), problemPid: z.string().max(191).nullable(), problemIndex: z.string().max(20).nullable(),
   problemTitle: z.string().max(200).nullable(), content: z.string().max(20000), createdAt: date,
   isPublished: z.boolean(), publicationId: z.string().uuid().nullable(),
 }).strict().refine(value => value.isPublished === Boolean(value.publicationId) && BigInt(value.messageClock) >= BigInt(value.initialThreadOrder), '公开提问版本或消息时钟无效');
@@ -16,7 +16,7 @@ const MessageSchema = z.object({ ...base, kind: z.literal('message'), question: 
   threadOrder: clock, sender: z.enum(['ADMIN', 'CANDIDATE']), content: z.string().min(1).max(20000), creatorLabel: z.string().max(200).nullable(), createdAt: date,
 }).strict().refine(value => value.id !== value.question.initialMessageId || (value.sender === 'CANDIDATE' && value.originNodeId === value.question.originNodeId
     && value.content === value.question.content && value.createdAt === value.question.initialMessageCreatedAt && value.threadOrder === value.question.initialThreadOrder), '初始提问消息或顺序不一致');
-const AnnouncementSchema = z.object({ ...base, kind: z.literal('announcement'), examNumber: z.string().min(1).max(191).nullable(),
+const AnnouncementSchema = z.object({ ...base, kind: z.literal('announcement'), candidateKey: z.string().min(1).max(191).optional(), examNumber: z.string().min(1).max(191).nullable(),
   content: z.string().min(1).max(20000), creatorLabel: z.string().max(200).nullable(), createdAt: date,
   question: QuestionSnapshotSchema.nullable(), sourcePublicationId: z.string().uuid().nullable(),
 }).strict().refine(value => Boolean(value.question) === Boolean(value.sourcePublicationId), '公开公告版本无效');

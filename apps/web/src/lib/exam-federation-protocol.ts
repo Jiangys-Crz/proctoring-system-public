@@ -62,6 +62,7 @@ const nullableDate = date.nullable();
 const integer = z.number().int().min(0).max(2147483647);
 export const SnapshotSchema = z.object({
   id: z.string().min(1).max(191).regex(/^[A-Za-z0-9_-]+$/), originNodeId: z.string().uuid(), writerNodeId: z.string().uuid(), revision: integer.min(1),
+  candidateKey: z.string().min(1).max(191).optional(),
   examNumber: z.string().min(1).max(191), problemOrder: integer, problemNumber: z.string().min(1).max(191),
   lang: z.string().min(1).max(64), code: z.string().max(512 * 1024),
   status: integer, statusText: z.string().max(1000).nullable(), score: z.number().finite(), manualScore: z.number().finite().min(0).nullable(),

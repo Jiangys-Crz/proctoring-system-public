@@ -2,7 +2,7 @@ import type { Candidate, ContestSubmission, ExamProblem } from '@prisma/client';
 import { problemLabel } from './contest-rules';
 import { hydroStatusText } from './hydro-status';
 
-type Problem = Pick<ExamProblem, 'id' | 'order' | 'title' | 'score' | 'hydroScore' | 'timeLimitMs' | 'memoryLimitMb'>;
+type Problem = Pick<ExamProblem, 'id' | 'order' | 'title' | 'score' | 'hydroScore' | 'timeLimitMs' | 'memoryLimitMb'> & { label?: string | null };
 type Submission = Pick<ContestSubmission, 'id' | 'status' | 'statusText' | 'judgeAt' | 'score' | 'manualScore' | 'lang' | 'code' | 'time' | 'memory' | 'createdAt'>;
 
 export class ExternalBoardCredentialError extends Error {}
@@ -21,13 +21,13 @@ export function externalBoardFallbackKey(apiBase: string, settings: { apiBase: s
 
 export function externalBoardProblem(problem: Problem) {
   return {
-    display_id: problemLabel(problem.order), title: problem.title, score: problem.score,
+    display_id: (problem.label || problemLabel(problem.order)), title: problem.title, score: problem.score,
     time_limit: problem.timeLimitMs, memory_limit: problem.memoryLimitMb,
   };
 }
 
 /** The receiver parses a China-local datetime, integer percentages and KB. */
-export function externalBoardSubmission(submission: Submission, problem: Problem, candidate: Pick<Candidate, 'examNumber'>) {
+export function externalBoardSubmission(submission: Submission, problem: Problem, candidate: Pick<Candidate, 'examNumber'>, rule?: string) {
   const ignored = submission.status === 30;
   const percentage = submission.manualScore !== null
     ? submission.manualScore * 100 / (problem.score || 100)
@@ -35,11 +35,12 @@ export function externalBoardSubmission(submission: Submission, problem: Problem
   return {
     rid: `proctor:${submission.id}`,
     username: candidate.examNumber,
-    problem: problemLabel(problem.order),
+    problem: (problem.label || problemLabel(problem.order)),
     // The existing receiver has no deletion endpoint. CE with zero score is
-    // its neutral verdict: it retracts an earlier AC without adding penalties.
-    status: ignored ? 'Compile Error' : hydroStatusText(submission.statusText, submission.status),
-    score: ignored ? 0 : Math.round(Math.max(0, Math.min(100, percentage))),
+    // its neutral verdict for best-score/XCPC boards. LANQIAO must distinguish
+    // cancellations from a real latest CE, which earns zero points.
+    status: ignored ? rule === 'LANQIAO' ? 'Cancelled' : 'Compile Error' : hydroStatusText(submission.statusText, submission.status),
+    score: ignored || (rule === 'LANQIAO' && [0, 7, 20, 21, 22].includes(submission.status)) ? 0 : Math.round(Math.max(0, Math.min(100, percentage))),
     language: submission.lang, code: submission.code,
     runtime: String(submission.time), memory: String(submission.memory),
     submit_time: new Date(+submission.createdAt + 8 * 3600_000).toISOString().replace('T', ' ').replace('Z', ''),

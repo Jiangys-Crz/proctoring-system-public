@@ -1,5 +1,5 @@
 import { admittedQaRead, admittedQaWrite } from '@/lib/qa-admission';
-import { appendQuestionMessage, ensureQuestionMessages, nextPublicationId, qaAnnouncementVisibility, qaAuthorLabel, qaContentDto, qaMessagesForRead, qaQuestionTransaction, refreshQuestionSummary, requireQuestionExam } from '@/lib/qa-thread';
+import { appendQuestionMessage, ensureQuestionMessages, nextPublicationId, qaAnnouncementVisibility, qaAuthorLabel, qaContentDto, qaMessagesForRead, qaQuestionTransaction, refreshQuestionSummary, requireQuestionExam, reconcileQuestionPublication } from '@/lib/qa-thread';
 import { publicQuestionAnnouncement } from '@/lib/public-question-announcement';
 import { CommunicationSnapshotSchema, QuestionSnapshotSchema } from '@/lib/exam-communication-protocol';
 import { contentIdentity } from '@/lib/exam-communication-entry';
@@ -92,7 +92,7 @@ async function postQa(request: Request, context: { params: Promise<{ id: string 
           const publicationId = nextPublicationId(input.published);
           const fresh = await tx.examQuestion.update({ where: { id: question.id }, data: { isPublished: input.published, publicationId,
             federationDirty: true, federationRevision: { increment: 1 } } });
-          await tx.examAnnouncement.updateMany({ where: { sourceQuestionId: question.id, ...(publicationId ? { sourcePublicationId: { not: publicationId } } : {}) }, data: { withdrawn: true } });
+          await reconcileQuestionPublication(tx, question.id, input.published, publicationId);
           if (input.published) {
             const stored = await tx.examFederationContent.findUnique({ where: contentIdentity(id, 'question', question.id), select: { snapshot: true } });
             let content = fresh.content, answer = fresh.answer;

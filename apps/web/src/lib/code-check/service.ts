@@ -32,11 +32,11 @@ export async function recoverCodeCheckJobs(examId: string) {
   // partially written report completed. Queued work can be claimed after restart.
   const stale = new Date(Date.now() - 120_000);
   await prisma.codeCheckJob.updateMany({
-    where: { examId, status: 'cancelling', leaseAt: { lt: stale } },
+    where: { syncImported: false, examId, status: 'cancelling', leaseAt: { lt: stale } },
     data: { status: 'cancelled', phase: '已停止查重；保留已完成的结果', activeExamId: null, finishedAt: new Date() },
   });
   await prisma.codeCheckJob.updateMany({
-    where: { examId, status: 'running', leaseAt: { lt: stale } },
+    where: { syncImported: false, examId, status: 'running', leaseAt: { lt: stale } },
     data: { status: 'failed', phase: '分析服务已中断，请重新查重；已有结果仅覆盖已完成的比较。', activeExamId: null, finishedAt: new Date() },
   });
 }
@@ -249,7 +249,7 @@ export async function runCodeCheckJob(jobId: string) {
     const lease = await prisma.codeCheckEngineLease.updateMany({ where: { id: 'syntax', OR: [{ ownerId: null }, { leaseAt: { lt: new Date(Date.now() - 120_000) } }] }, data: { ownerId: leaseId, leaseAt: new Date() } });
     if (!lease.count) return;
     engineClaimed = true;
-    const claimed = await prisma.codeCheckJob.updateMany({ where: { id: jobId, status: 'queued' }, data: { status: 'running', phase: '准备读取比赛提交', leaseId, leaseAt: new Date(), startedAt: new Date() } });
+    const claimed = await prisma.codeCheckJob.updateMany({ where: { syncImported: false, id: jobId, status: 'queued' }, data: { status: 'running', phase: '准备读取比赛提交', leaseId, leaseAt: new Date(), startedAt: new Date() } });
     if (claimed.count) {
       const job = await prisma.codeCheckJob.findUniqueOrThrow({ where: { id: jobId } });
       await analyzeJob(job, leaseId, controller);
@@ -259,7 +259,7 @@ export async function runCodeCheckJob(jobId: string) {
     if (engineClaimed) await prisma.codeCheckEngineLease.updateMany({ where: { id: 'syntax', ownerId: leaseId }, data: { ownerId: null, leaseAt: null } });
   }
   if (engineClaimed) {
-    const next = await prisma.codeCheckJob.findFirst({ where: { status: 'queued' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+    const next = await prisma.codeCheckJob.findFirst({ where: { syncImported: false, status: 'queued' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
     if (next) await runCodeCheckJob(next.id);
   }
 }

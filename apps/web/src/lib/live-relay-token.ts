@@ -11,7 +11,7 @@ export const relayReadKeyPattern = /^relay_read_[A-Za-z0-9_-]{43}$/;
 export const relayHash = (value: string) => createHash('sha256').update(value).digest('hex');
 export const newRelayKey = (read = false) => (read ? 'relay_read_' : 'relay_') + randomBytes(32).toString('base64url');
 export function relayEnabled() { return process.env.LIVE_RELAY_ENABLED === '1'; }
-export function requireRelayEnabled() { if (!relayEnabled()) throw new AuthError('直播转发服务尚未启用，请先按文档完成独立媒体服务配置', 503); }
+export function requireRelayEnabled() { if (!relayEnabled()) throw new AuthError('直播转发尚未启用，请先启用直播配置', 503); }
 function secret() {
   const value = process.env.LIVE_RELAY_AUTH_SECRET || '';
   if (!/^[A-Za-z0-9_-]{32,128}$/.test(value) || /CHANGE_ME/i.test(value)) throw new AuthError('直播转发内部鉴权尚未配置', 503);

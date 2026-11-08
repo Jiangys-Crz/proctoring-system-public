@@ -17,28 +17,33 @@ async function loadOverview(request: Request, context: { params: Promise<{ id: s
     const manageable = await canManageExam(user, id);
     const candidateScope = manageable ? {} : { rooms: { some: { room: { proctors: { some: { userId: user.id } } } } } };
 
-    const exam = await prisma.exam.findUnique({
-      where: { id },
-      include: {
-        problems: {
-          orderBy: { order: 'asc' },
-          select: { id: true, order: true, hydroProblemId: true, title: true, problemType: true, hydroScore: true, scorePercent: true, score: true }
-        },
-        candidates: {
-          where: candidateScope,
-          orderBy: [{ seatNo: 'asc' }, { examNumber: 'asc' }],
-          select: { id: true, examNumber: true, name: true, teamName: true, groupName: true, ranked: true, school: true, college: true, gender: true, teamMembers: true }
-        },
-        _count: { select: { candidates: { where: candidateScope }, submissions: { where: { candidate: candidateScope } }, problems: true } }
-      }
-    });
-    if (!exam) return fail('考试不存在', 404);
+    const data = await prisma.$transaction(async tx => {
+      const exam = await tx.exam.findUnique({
+        where: { id },
+        include: {
+          problems: {
+            orderBy: { order: 'asc' },
+            select: { id: true, order: true, label: true, sourceDeleted: true, hydroProblemId: true, title: true, problemType: true, hydroScore: true, scorePercent: true, score: true }
+          },
+          candidates: {
+            where: candidateScope,
+            orderBy: [{ seatNo: 'asc' }, { examNumber: 'asc' }],
+            select: { id: true, examNumber: true, name: true, teamName: true, groupName: true, ranked: true, school: true, college: true, advisor: true, gender: true, teamMembers: true, memberOrder: true, isTeamLeader: true }
+          },
+          _count: { select: { candidates: { where: candidateScope }, submissions: { where: { candidate: candidateScope } }, problems: true } }
+        }
+      });
+      if (!exam) return null;
 
-    const submissions = await prisma.contestSubmission.findMany({
-      where: { examId: id, candidate: candidateScope, status: { not: IGNORED_SUBMISSION_STATUS } },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true, candidateId: true, problemId: true, status: true, score: true, manualScore: true, createdAt: true }
-    });
+      const submissions = await tx.contestSubmission.findMany({
+        where: { examId: id, candidate: candidateScope, status: { not: IGNORED_SUBMISSION_STATUS } },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: { id: true, candidateId: true, problemId: true, status: true, score: true, manualScore: true, createdAt: true }
+      });
+      return { exam, submissions };
+    }, { isolationLevel: 'RepeatableRead', maxWait: 3000, timeout: 15_000 });
+    if (!data) return fail('考试不存在', 404);
+    const { exam, submissions } = data;
 
     const leaderboard = calculateLeaderboards(
       exam,

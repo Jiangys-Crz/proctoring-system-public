@@ -3,13 +3,30 @@ import { requireUser, AuthError } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { judgeStatistics, requestHydroProblem, submitHydroJudge } from '@/lib/hydro-contest';
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
-import { canAccessHydroProblem } from '@/lib/permissions';
+import { canAccessExam, canAccessHydroProblem } from '@/lib/permissions';
 import { z } from 'zod';
 import { createRequestAdmission, isRequestAdmissionError } from '@/lib/request-admission';
 const shared = globalThis as typeof globalThis & { problemSubmitAdmission?: ReturnType<typeof createRequestAdmission> };
 const acquire = shared.problemSubmitAdmission ??= createRequestAdmission(2, 64, 5000);
 const Submit = z.object({ lang: z.string().trim().min(1).max(64), code: z.string().min(1).max(512 * 1024) });
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) { try { const user = await requireUser(); const { id } = await context.params; if (!await canAccessHydroProblem(user, id)) return fail('无权查看该题目', 403); return ok(await requestHydroProblem({ platformBaseUrl: process.env.HYDRO_PROCTOR_BASE_URL || 'http://localhost' }, id)); } catch (error) { if (error instanceof AuthError) return fail(error.message, error.status); return fail(toErrorMessage(error), 502); } }
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const user = await requireUser(); const { id } = await context.params;
+    const examId = new URL(request.url).searchParams.get('examId');
+    if (examId) {
+      if (!await canAccessExam(user, examId)) return fail('无权查看该考试', 403);
+      const problem = await prisma.examProblem.findFirst({ where: { examId, hydroProblemId: id } });
+      if (!problem) return fail('考试中不存在该题目', 404);
+      const config = problem.config && typeof problem.config === 'object' && !Array.isArray(problem.config) ? { ...problem.config } : {};
+      delete (config as Record<string, unknown>).answers;
+      return ok({ id: problem.hydroProblemId, docId: problem.hydroProblemId, pid: problem.label || (await import('@/lib/contest-rules')).problemLabel(problem.order), title: problem.title,
+        content: problem.content, html: problem.html, config, score: problem.score, files: problem.files, tags: [], difficulty: 0, sourceDeleted: problem.sourceDeleted });
+    }
+    if (!await canAccessHydroProblem(user, id)) return fail('无权查看该题目', 403);
+    return ok(await requestHydroProblem({ platformBaseUrl: process.env.HYDRO_PROCTOR_BASE_URL || 'http://localhost' }, id));
+  } catch (error) { if (error instanceof AuthError) return fail(error.message, error.status); return fail(toErrorMessage(error), 502); }
+}
+
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   let release: (() => void) | undefined;
   try {

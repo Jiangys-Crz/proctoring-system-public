@@ -73,7 +73,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     }
 
     const pairing = loginRequest.pairingSessions[0];
-    if (!pairing) return fail('该登录请求没有绑定电脑客户端，请重新扫码提交', 400);
+    if (!pairing && !boundSession.syncImported) return fail('该登录请求没有绑定电脑客户端，请重新扫码提交', 400);
 
     const storage = await getStorageSettings();
     const verifiedFiles = await assertReviewMaterials(prisma, id, loginRequest.candidateId, loginRequest.examId, storage);

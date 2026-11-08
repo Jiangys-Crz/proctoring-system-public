@@ -111,13 +111,21 @@ test('event formats enforce their account models and preserve LANQIAO', () => {
   const gplt = normalizeExamSettings({ ...base, contestRule: 'GPLT', contestType: 'INDIVIDUAL', teamAccountMode: 'TEAM_ACCOUNT', allowTeamSubmissionView: true, leaderOnlySubmission: true });
   assert.deepEqual([gplt.contestType, gplt.teamAccountMode, gplt.allowTeamSubmissionView, gplt.leaderOnlySubmission], ['TEAM', 'MEMBER_ACCOUNTS', true, false]);
   const lanqiao = normalizeExamSettings({ ...base, contestRule: 'LANQIAO', contestType: 'TEAM', teamAccountMode: 'TEAM_ACCOUNT', allowTeamSubmissionView: true });
-  assert.deepEqual([lanqiao.contestRule, lanqiao.contestType, lanqiao.teamAccountMode, lanqiao.allowTeamSubmissionView], ['LANQIAO', 'TEAM', 'TEAM_ACCOUNT', true]);
+  assert.deepEqual([lanqiao.contestRule, lanqiao.contestType, lanqiao.teamAccountMode, lanqiao.allowTeamSubmissionView], ['LANQIAO', 'INDIVIDUAL', 'MEMBER_ACCOUNTS', false]);
   const xcpc = normalizeExamSettings({ ...base, contestRule: 'XCPC', contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS' });
   assert.deepEqual([xcpc.contestType, xcpc.teamAccountMode, xcpc.allowTeamSubmissionView, xcpc.leaderOnlySubmission], ['TEAM', 'MEMBER_ACCOUNTS', false, true]);
   assert.equal(canCandidateSubmit({ contestRule: 'XCPC', contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS', leaderOnlySubmission: false }, { isTeamLeader: false }), false);
   assert.equal(canCandidateSubmit({ contestRule: 'XCPC', contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS', leaderOnlySubmission: false }, { isTeamLeader: true }), true);
   assert.equal(canViewTeamSubmissions({ contestRule: 'GPLT', contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS', allowTeamSubmissionView: true }), true);
   assert.equal(canViewTeamSubmissions({ contestRule: 'XCPC', contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS', allowTeamSubmissionView: true }), true);
+});
+test('only six public rules are exposed and solo formats cannot become team exams', () => {
+  for (const contestRule of ['KS', 'OI', 'IOI', 'LANQIAO'] as const) {
+    const result = normalizeExamSettings({ ...base, contestRule, contestType: 'TEAM', teamAccountMode: 'TEAM_ACCOUNT', allowTeamSubmissionView: true, leaderOnlySubmission: true });
+    assert.deepEqual([result.contestType, result.teamAccountMode, result.allowTeamSubmissionView, result.leaderOnlySubmission], ['INDIVIDUAL', 'MEMBER_ACCOUNTS', false, false]);
+  }
+  assert.equal(CreateExamSchema.parse({ ...base, contestRule: 'ACM' }).contestRule, 'XCPC');
+  assert.equal(CreateExamSchema.safeParse({ ...base, contestRule: 'OTHER' }).success, false);
 });
 test('GPLT publishes grouped personal and team boards without sharing submission ownership', () => {
   const settings = normalizeExamSettings({ ...base, contestRule: 'GPLT', contestType: 'TEAM' });
@@ -140,7 +148,7 @@ test('GPLT publishes grouped personal and team boards without sharing submission
   assert.equal(result.boards[1].rows.find(row => row.username === '一队')?.score, 67);
   assert.equal(result.boards[0].rows.find(row => row.username === 'B1')?.rank, 1);
 });
-test('LANQIAO keeps separate groups, rounded best scores and private submission results', () => {
+test('LANQIAO keeps separate groups, rounded latest scores and private submission results', () => {
   const settings = normalizeExamSettings({ ...base, contestRule: 'LANQIAO' });
   assert.equal(settings.contestRule, 'LANQIAO');
   const exam = { ...base, ...settings, contestRule: 'LANQIAO' as const };

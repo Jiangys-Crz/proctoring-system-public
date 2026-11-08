@@ -5,6 +5,13 @@ import { RequestParseError } from './http';
 import { effectiveEnd } from './contest-rules';
 
 export const initialQuestionMessageId = (id: string) => `qm_${createHash('sha256').update(id + ':initial').digest('hex')}`;
+export const legacyQuestionAnswerId = (id: string, origin: string | null, content: string) => `qm_${createHash('sha256').update(id + ':legacy-answer:' + (origin || '') + ':' + content).digest('hex')}`;
+export const legacyMessageAliasKey = (examId: string, messageId: string) => `qa-message-alias:${createHash('sha256').update(JSON.stringify([examId, messageId])).digest('hex')}`;
+export async function resolveQaMessageId(tx: Prisma.TransactionClient, examId: string, messageId: string) {
+  const entry = await tx.systemSetting.findUnique({ where: { key: legacyMessageAliasKey(examId, messageId) } });
+  const alias = entry?.value as {examId?:string;from?:string;to?:string} | undefined;
+  return alias?.examId === examId && alias.from === messageId && typeof alias.to === 'string' ? alias.to : messageId;
+}
 export function qaAuthorLabel(user: { realName?: string | null; nickname?: string | null; username?: string | null } | null | undefined) {
   return (user?.realName || user?.nickname || user?.username || '监考老师').slice(0, 200);
 }
@@ -56,6 +63,9 @@ export async function qaQuestionTransaction<T>(id: string, work: (tx: Prisma.Tra
 }
 export async function ensureQuestionMessages(tx: Prisma.TransactionClient, id: string) {
   const question = await tx.examQuestion.findUniqueOrThrow({ where: { id }, include: { answeredBy: { select: { realName: true, nickname: true, username: true } } } });
+  const config = await tx.examFederation.findUnique({ where: { examId: question.examId }, select: { nodeId: true } });
+  const imported = Boolean(question.syncOriginNodeId && question.syncOriginNodeId !== config?.nodeId);
+  if (question.initialMessageId && question.syncOriginNodeId) await tx.examQuestionMessage.updateMany({ where: { id: question.initialMessageId, questionId: id, syncOriginNodeId: null }, data: { syncOriginNodeId: question.syncOriginNodeId, federationDirty: !imported } });
   if (question.initialMessageId && question.messageClock > 0n) {
     // An older server can append zero-order rows after the thread itself was
     // upgraded. A healthy parent does not imply every child was initialized.
@@ -76,8 +86,6 @@ export async function ensureQuestionMessages(tx: Prisma.TransactionClient, id: s
     SELECT id FROM ExamQuestionMessage WHERE questionId = ${id} AND sender = 'CANDIDATE' AND BINARY content = BINARY ${question.content}
     ORDER BY createdAt ASC, BINARY id ASC LIMIT 1`;
   const initialId = question.initialMessageId || matching[0]?.id || initialQuestionMessageId(id);
-  const config = question.syncOriginNodeId ? await tx.examFederation.findUnique({ where: { examId: question.examId }, select: { nodeId: true } }) : null;
-  const imported = Boolean(question.syncOriginNodeId && question.syncOriginNodeId !== config?.nodeId);
   const initialClock = BigInt(Math.max(1, +question.createdAt));
   if (!question.initialMessageId && !matching.length) await tx.examQuestionMessage.createMany({ data: [{
     id: initialId, threadOrder: initialClock, questionId: id, sender: 'CANDIDATE', content: question.content, createdAt: question.createdAt,
@@ -98,11 +106,15 @@ export async function ensureQuestionMessages(tx: Prisma.TransactionClient, id: s
   if (question.answer) {
     const answered = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM ExamQuestionMessage
       WHERE questionId = ${id} AND sender = 'ADMIN' AND BINARY content = BINARY ${question.answer} LIMIT 1`;
+    const answerOrigin = question.answeredById && config ? config.nodeId : question.syncOriginNodeId;
+    const answerImported = Boolean(answerOrigin && answerOrigin !== config?.nodeId);
     if (!answered.length) await tx.examQuestionMessage.createMany({ data: [{
-      id: `qm_${createHash('sha256').update(id + ':legacy-answer:' + question.answer).digest('hex')}`, questionId: id,
+      id: legacyQuestionAnswerId(id, answerOrigin, question.answer), questionId: id,
       sender: 'ADMIN' as const, threadOrder: answerClock, content: question.answer, createdById: question.answeredById,
-      creatorLabel: question.answeredByLabel || qaAuthorLabel(question.answeredBy), acknowledgedAt: question.answeredAt,
-      createdAt: question.answeredAt || question.createdAt, syncOriginNodeId: question.syncOriginNodeId, federationDirty: !imported,
+      // answeredAt is the teacher's reply time, not proof that the student
+      // acknowledged it. Backfill must not invent a read receipt.
+      creatorLabel: question.answeredByLabel || qaAuthorLabel(question.answeredBy), acknowledgedAt: null,
+      createdAt: question.answeredAt || question.createdAt, syncOriginNodeId: answerOrigin, federationDirty: !answerImported,
     }], skipDuplicates: true });
   }
   // Normalize every existing legacy row too, including an admin reply that
@@ -133,6 +145,13 @@ export async function refreshQuestionSummary(tx: Prisma.TransactionClient, id: s
 }
 export function qaAnnouncementVisibility() {
   return { withdrawn: false, OR: [{ sourceQuestionId: null }, { sourceQuestion: { isPublished: true } }] } satisfies Prisma.ExamAnnouncementWhereInput;
+}
+/** A publication generation selects its notices, including legacy rows without a generation. */
+export async function reconcileQuestionPublication(tx: Prisma.TransactionClient, id: string, published: boolean, publicationId: string | null) {
+  const active = published ? publicationId : null;
+  await tx.examAnnouncement.updateMany({ where: { sourceQuestionId: id, withdrawn: false,
+    ...(active ? { OR: [{ sourcePublicationId: null }, { sourcePublicationId: { not: active } }] } : {}) }, data: { withdrawn: true } });
+  if (active) await tx.examAnnouncement.updateMany({ where: { sourceQuestionId: id, sourcePublicationId: active, withdrawn: true }, data: { withdrawn: false } });
 }
 /** Content URLs are kept independent of installation domains in the sync stream. */
 export function localQaContent(content: string) {

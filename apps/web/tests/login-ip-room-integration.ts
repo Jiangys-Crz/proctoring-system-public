@@ -37,7 +37,31 @@ try{
  assert.equal((await req(limitPath,'POST',{action:'toggle',enabled:true})).status,200);const after=await pair('192.0.2.98');assert.equal((await login('192.0.2.98',after.p.pairCode)).status,403);
  const list=await req(limitPath);assert.equal(list.status,200);assert.equal((await list.json()).data.candidates[0].loginIp,'192.0.2.99');const scoped=await req(limitPath,'GET',undefined,proctor);assert.equal(scoped.status,200);assert.equal((await scoped.json()).data.canManage,false);
  browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});const page=await browser.newPage();page.setDefaultTimeout(90000);page.setDefaultNavigationTimeout(90000);await page.context().addCookies([{name:'cwnupaa_proctor_session',value:createSessionToken(admin),url:base}]);
- await page.goto(`${base}/dashboard/exams/${exam.id}/status`);await page.getByRole('button',{name:'登录限制',exact:true}).click();await page.getByRole('heading',{name:'登录限制',exact:true}).waitFor();await page.getByText('192.0.2.99',{exact:true}).waitFor();await page.screenshot({path:'../../tmp/release-1.0.4/login-restrictions.png',fullPage:true});
- await page.goto(`${base}/dashboard/exams/${exam.id}/settings/rooms`);await page.getByRole('button',{name:'添加考室',exact:true}).click();await page.getByRole('heading',{name:'添加考室',exact:true}).waitFor();await page.waitForTimeout(6200);assert(await page.getByRole('heading',{name:'添加考室',exact:true}).isVisible(),'refresh must preserve new-room draft');
- console.log('PASS: distinct rooms, unique names, shared proctor, default IP binding, scoped one-time release, concurrent rebind, exam clock preserved, old session revoked, polling authorization, immediate switches, navigation and room draft surviving refresh.');
+ await page.goto(`${base}/dashboard/exams/${exam.id}/status`);await page.getByRole('button',{name:'登录限制',exact:true}).click();await page.getByRole('region',{name:'登录限制',exact:true}).waitFor();await page.getByText('192.0.2.99',{exact:true}).waitFor();await page.screenshot({path:'../../tmp/release-1.0.4/login-restrictions.png',fullPage:true});
+ const roster = Array.from({ length: 18 }, (_, i) => ({ examId: exam.id, examNumber: `ROOM${i + 1}`, name: `考生 ${i + 1}`, password: prefix, seatNo: String(i + 2) }));
+ await prisma.candidate.createMany({ data: roster });
+ const rosterCandidates = await prisma.candidate.findMany({ where: { examId: exam.id, examNumber: { startsWith: 'ROOM' } }, select: { id: true } });
+ await prisma.examRoomCandidate.createMany({ data: rosterCandidates.map(({ id }) => ({ roomId: a.id, candidateId: id })) });
+ await page.setViewportSize({ width: 800, height: 500 });
+ await page.goto(`${base}/dashboard/exams/${exam.id}/settings/rooms`);
+ const viewRoom = page.locator('.room-card').filter({ hasText: '第一考室' }).getByRole('button', { name: '查看详情', exact: true });
+ const details = page.getByRole('dialog', { name: '第一考室' });
+ await viewRoom.click();
+ await details.waitFor();
+ const scrollBody = details.locator('.room-detail-content');
+ assert(await scrollBody.evaluate(element => {
+  element.scrollTop = element.scrollHeight;
+  return element.scrollTop > 0;
+ }), 'long rosters must scroll inside the dialog');
+ await details.getByRole('button', { name: '关闭考室详情', exact: true }).click();
+ await details.waitFor({ state: 'hidden' });
+ await viewRoom.click();
+ await details.waitFor();
+ await page.keyboard.press('Escape');
+ await details.waitFor({ state: 'hidden' });
+ await viewRoom.click();
+ await details.getByRole('button', { name: '关闭', exact: true }).click();
+ await details.waitFor({ state: 'hidden' });
+ await page.getByRole('button',{name:'添加考室',exact:true}).click();await page.getByRole('heading',{name:'添加考室',exact:true}).waitFor();await page.waitForTimeout(6200);assert(await page.getByRole('heading',{name:'添加考室',exact:true}).isVisible(),'refresh must preserve new-room draft');
+ console.log('PASS: distinct rooms, unique names, shared proctor, default IP binding, scoped one-time release, concurrent rebind, exam clock preserved, old session revoked, polling authorization, immediate switches, navigation, room detail dismissal and room draft surviving refresh.');
 }finally{if(browser)await browser.close();if(exams.length)await prisma.exam.deleteMany({where:{id:{in:exams}}});if(pairs.length)await prisma.pairingSession.deleteMany({where:{id:{in:pairs}}});if(users.length)await prisma.user.deleteMany({where:{id:{in:users}}});await prisma.$disconnect();}

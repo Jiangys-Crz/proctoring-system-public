@@ -31,13 +31,13 @@ export function ExamLoginRestrictionsPanel({ examId }: { examId: string }) {
     if (window.confirm(`为 ${ids.length} 位考生解除一次 IP 绑定？下次成功登录后会绑定新的 IP。`)) void action({ action: 'release', candidateIds: ids });
   }
   const selectable = data?.candidates.filter(candidate => candidate.loginIp).map(candidate => candidate.id) || [];
-  return <section className="card grid">
-    <div className="topbar"><h2 style={{ margin: 0 }}>登录限制</h2><button className="button secondary" onClick={() => void load()} disabled={busy}><RefreshCw size={16} />刷新</button></div>
-    <p className="muted">默认启用。考生成功登录后绑定电脑端 IP，更换 IP 登录需要监考解除一次绑定。第二机位可以使用不同网络。</p>
+  return <section className="card grid" aria-label="登录限制">
+    <div className="topbar topbar-actions"><button className="button secondary" onClick={() => void load()} disabled={busy}><RefreshCw size={16} />刷新</button></div>
     {data ? <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
       <strong>{data.enabled ? <><LockKeyhole size={17} /> IP 登录限制已启用</> : <><LockOpen size={17} /> IP 登录限制已关闭</>}</strong>
       {data.canManage ? <button className="button secondary" disabled={busy} onClick={() => void action({ action: 'toggle', enabled: !data.enabled })}>{data.enabled ? '关闭本场考试限制' : '启用本场考试限制'}</button> : null}
     </div> : <p>正在加载…</p>}
+    <p className="muted" style={{ margin: 0 }}>开关和考生 IP 绑定仅在当前服务器生效。同步考试时，请在公网和内网后台分别设置。</p>
     {error ? <p role="alert" style={{ color: 'var(--danger)' }}>{error}</p> : null}
     {message ? <p role="status">{message}</p> : null}
     <form style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }} onSubmit={event => { event.preventDefault(); setPage(1); setSearch(query); setSelected([]); }}>

@@ -2,15 +2,17 @@ import { randomBytes } from 'node:crypto';
 import { AuthError } from './auth';
 import { prisma } from './db';
 import { admittedRelaySignal, relayHeaders } from './live-relay-http';
+import { readRelayPaths } from './live-relay-media';
+import { browserIceAnswer } from './browser-ice';
 import { authorizeRelayTicket, relayStreamForKey } from './live-relay';
 import { closeRelayConnection, relayConnectionAllowed, reserveRelayConnection, type RelayOwner } from './live-relay-connections';
 import { createRelayTicket, relayHash, relayIdPattern, relayPlaybackUrl, relaySignalToken, relayUuid, requireRelayEnabled } from './live-relay-token';
 
 const headers = { ...relayHeaders, 'Access-Control-Allow-Origin': '*',
-  'Access-Control-Expose-Headers': 'Location,ETag,Accept-Patch', 'Access-Control-Allow-Methods': 'GET,HEAD,POST,PATCH,DELETE,OPTIONS',
+  'Access-Control-Expose-Headers': 'Location,ETag,Accept-Patch,Link', 'Access-Control-Allow-Methods': 'GET,HEAD,POST,PATCH,DELETE,OPTIONS',
   'Access-Control-Allow-Headers': 'Authorization,Content-Type,If-Match', 'Access-Control-Max-Age': '600' };
 function mediaBase() {
-  const url = new URL(process.env.LIVE_RELAY_WHIP_INTERNAL_BASE || 'http://relay-media:8889');
+  const url = new URL(process.env.MEDIA_WHIP_INTERNAL_BASE || 'http://127.0.0.1:8889');
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new AuthError('WebRTC 内部服务配置无效', 503);
   return url.origin;
 }
@@ -80,29 +82,44 @@ export async function serveRelayWebRtc(request: Request, id: string, mode: 'publ
       if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/sdp')) throw new AuthError('协商需要 application/sdp', 415);
       const body = await boundedSdp(request.body, request.signal);
       if (!body.trim().startsWith('v=0')) throw new AuthError('SDP offer 无效', 400);
+      if (mode === 'read') {
+        const paths = await readRelayPaths();
+        if (!paths.some(p => p.name === `relay/${id}` && (p.available ?? p.ready ?? p.online))) throw new AuthError('尚未收到此直播的音视频，请先启动推流', 404);
+      }
       const row = await reserveRelayConnection(id, mode, owner);
       try {
         const signal = AbortSignal.any([request.signal, AbortSignal.timeout(15_000)]);
         const upstream = await fetch(base + path, { method: 'POST', redirect: 'error', cache: 'no-store', signal,
           headers: { authorization: `Bearer ${relaySignalToken(row.id, id, mode)}`, 'content-type': 'application/sdp' }, body });
         if (upstream.status !== 201) { await upstream.body?.cancel(); throw new AuthError('直播尚未推流、连接已占用或媒体服务暂不可用', upstream.status === 404 ? 404 : 502); }
-        const secret = resourceSecret(upstream.headers.get('location') || '', base, path), mediaId = upstream.headers.get('id') || '';
-        if (!relayUuid.test(mediaId)) throw new AuthError('媒体服务未返回连接编号', 502);
+        const secret = resourceSecret(upstream.headers.get('location') || '', base, path), reportedId = upstream.headers.get('id') || '';
+        if (reportedId && !relayUuid.test(reportedId)) throw new AuthError('媒体服务返回无效连接编号', 502);
         const answer = await boundedSdp(upstream.body, signal);
         if (!answer.trim().startsWith('v=0')) throw new AuthError('SDP answer 无效', 502);
         const fresh = await prisma.liveRelayWebRtcConnection.findUnique({ where: { id: row.id } });
-        if (!fresh || fresh.mediaId !== mediaId || !await relayConnectionAllowed(fresh) || request.signal.aborted) throw new AuthError('直播授权已失效', 401);
+        // The signed auth callback is authoritative; some supported MediaMTX
+        // versions omit the optional ID response header.
+        const mediaId = fresh?.mediaId || '';
+        if (!fresh || !relayUuid.test(mediaId) || reportedId && reportedId !== mediaId || !await relayConnectionAllowed(fresh) || request.signal.aborted) throw new AuthError('直播授权已失效', 401);
         const updated = await prisma.liveRelayWebRtcConnection.updateMany({ where: { id: row.id, mediaId, expiresAt: { gt: new Date() } }, data: { resourceSecret: secret, expiresAt: owner.expiresAt } });
         if (!updated.count) throw new AuthError('直播连接已回收', 409);
         url.searchParams.set('resource', row.id);
-        return new Response(answer, { status: 201, headers: { 'Content-Type': 'application/sdp', Location: url.pathname + url.search, ETag: '*' } });
+        const responseHeaders = new Headers({ 'Content-Type': 'application/sdp', Location: url.pathname + url.search, ETag: '*' });
+        const link = upstream.headers.get('link');
+        if (link) responseHeaders.set('link', link);
+        return new Response(browserIceAnswer(answer), { status: 201, headers: responseHeaders });
       } catch (error) { await closeRelayConnection(row.id).catch(() => {}); throw error; }
     }
     const resource = url.searchParams.get('resource') || '';
     if (!relayUuid.test(resource)) throw new AuthError('缺少或无效的直播连接资源', 400);
     const row = await prisma.liveRelayWebRtcConnection.findUnique({ where: { id: resource } });
-    if (!row || row.streamId !== id || row.mode !== mode || row.keyId !== owner.keyId || row.ownerHash !== relayHash(owner.credential) || !row.resourceSecret || !await relayConnectionAllowed(row)) throw new AuthError('无权访问该直播连接', 403);
-    if (request.method === 'DELETE') { await closeRelayConnection(row.id); return new Response(null, { status: 204 }); }
+    // OBS expects 200 for WHIP DELETE. A successful cleanup may already have
+    // removed the row, so authorized retries must also succeed without touching
+    // any other connection. Existing rows still require exact ownership.
+    if (!row && request.method === 'DELETE') return new Response(null, { status: 200 });
+    if (!row || row.protocol !== 'webrtc' || row.streamId !== id || row.mode !== mode || row.keyId !== owner.keyId || row.ownerHash !== relayHash(owner.credential)) throw new AuthError('无权访问该直播连接', 403);
+    if (request.method === 'DELETE') { await closeRelayConnection(row.id); return new Response(null, { status: 200 }); }
+    if (!row.resourceSecret || !await relayConnectionAllowed(row)) throw new AuthError('直播连接已失效', 403);
     if (request.method !== 'PATCH') throw new AuthError('请求方法不支持', 405);
     if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/trickle-ice-sdpfrag')) throw new AuthError('候选地址需要 application/trickle-ice-sdpfrag', 415);
     const body = await boundedSdp(request.body, request.signal);

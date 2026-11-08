@@ -96,6 +96,12 @@ test('ignored records retract earlier accepted scores using the receiver neutral
   assert.equal(payload.score, 0);
   assert.equal(payload.rid, externalBoardSubmission(submission, problem, { examNumber: '1' }).rid);
 });
+test('LANQIAO separates cancelled runs from latest CE and pending zero-point runs', () => {
+  assert.equal(externalBoardSubmission({ ...submission, status: 30 }, problem, { examNumber: '1' }, 'LANQIAO').status, 'Cancelled');
+  for (const status of [0, 7, 20, 21, 22]) {
+    assert.equal(externalBoardSubmission({ ...submission, status, score: 100 }, problem, { examNumber: '1' }, 'LANQIAO').score, 0);
+  }
+});
 
 test('endpoint honors the external-login API base without redirecting or adding another /api', () => {
   assert.equal(externalBoardEndpoint('https://www.example.org/api///', '123', 'problems'), 'https://www.example.org/api/external/board/123/problems');

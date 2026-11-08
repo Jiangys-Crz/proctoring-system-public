@@ -10,14 +10,14 @@ const now = new Date();
 const token = createClientSessionToken();
 const problem = { id: 'problem', order: 0, title: 'A', problemType: 'default', scorePercent: 100, score: 100,
   hydroScore: 100, hydroProblemId: '1', content: 'Statement', config: {}, files: [], updatedAt: now };
-const exam: any = { id: 'exam', examCode: '1234567890', name: 'Exam', published: true, platformContestId: 'local',
+const exam: any = { id: 'exam', examCode: '1234567890', name: 'Exam', platform: 'HYDRO', published: true, platformContestId: 'local',
   contestRule: 'XCPC', contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS', allowTeamSubmissionView: true,
   startAt: new Date(+now - 600_000), latestStartAt: new Date(+now - 600_000), endAt: new Date(+now + 600_000),
   scoreboardFrozenAt: new Date(+now - 60_000), showObjectiveScore: true, showTestCaseCount: true,
   flexible: false, allowedLanguages: ['cpp'], problems: [problem], durationMinutes: 20, updatedAt: now };
 const candidate: any = { id: 'owner', examId: 'exam', examNumber: '001', name: 'Owner', teamName: 'Team A',
   startedAt: exam.startAt, isTeamLeader: true, updatedAt: now };
-const session: any = { id: 'session', examId: exam.id, candidateId: candidate.id, status: 'IN_EXAM',
+const session: any = { id: 'session', examId: exam.id, candidateId: candidate.id, status: 'IN_EXAM', approvedAt: now,
   desktopTokenHash: token.tokenHash, revokedAt: null, exam, candidate, startedAt: exam.startAt };
 const record = (candidateId: string) => ({ id: `submission-${candidateId}`, examId: exam.id, candidateId, actorKey: `actor-${candidateId}`,
   problemId: 'problem', candidateExamNumber: candidateId, candidateName: candidateId, teamName: 'Untrusted historical team',
@@ -172,6 +172,10 @@ test('submit response and persisted attribution always belong to the authenticat
     assert.equal(row.actorKey, `${exam.examCode}:${candidate.examNumber}`);
     return { ...record('owner'), ...row };
   });
+  const objective = { ...problem, problemType: 'objective' };
+  const bound = { ...session, exam: { ...exam, contestRule: 'OI', problems: [objective] } };
+  replace(t, prisma.examProblem, 'findMany', async () => [objective]);
+  replace(t, prisma, '$transaction', async (work: any) => work({ $queryRaw: async () => [], clientSession: { findUnique: async () => bound }, examProblem: { findFirst: async () => objective }, contestSubmission: { create: prisma.contestSubmission.create } }));
   const response = await submit(request({ pid: 1, lang: '_', code: '{"answer":"A"}', candidateId: 'mate', actorKey: 'mate' }));
   assert.equal(response.status, 201, await response.clone().text());
   const row = (await response.json()).data;

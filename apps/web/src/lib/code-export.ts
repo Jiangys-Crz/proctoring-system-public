@@ -10,9 +10,13 @@ const shared = globalThis as typeof globalThis & { codeExportAdmission?: ReturnT
 export const acquireCodeExport = shared.codeExportAdmission ??= createRequestAdmission(1, 2, 5000);
 const PAGE_SIZE = 128;
 const CODE_CHARACTERS = 32768;
-function safeName(value: string) {
-  return value.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 80) || '未命名';
+function safeName(value: string, maxBytes = 180) {
+  const clean = value.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
+  let result = '', bytes = 0;
+  for (const char of clean) { const size = Buffer.byteLength(char); if (bytes + size > maxBytes) break; result += char; bytes += size; }
+  return result || '未命名';
 }
+
 function codeExtension(lang: string) {
   const value = lang.toLowerCase();
   if (value === 'c' || value.startsWith('c.')) return 'c';
@@ -37,18 +41,17 @@ export async function prepareCodeExport(examId: string, signal: AbortSignal): Pr
         ...(after ? { OR: [{ createdAt: { gt: after.createdAt } }, { createdAt: after.createdAt, id: { gt: after.id } }] } : {}),
       },
       select: { id: true, lang: true, status: true, statusText: true, score: true, createdAt: true,
-        candidate: { select: { examNumber: true, name: true, teamName: true } },
-        problem: { select: { order: true, title: true } },
+        candidate: { select: { examNumber: true, name: true, studentId: true, teamName: true } },
+        problem: { select: { order: true, label: true, title: true } },
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: PAGE_SIZE,
     });
     signal.throwIfAborted();
     for (const row of rows) {
-      const owner = row.candidate.teamName || row.candidate.name || row.candidate.examNumber;
-      const problem = `${problemLabel(row.problem.order)}-${row.problem.title}`;
-      const stamp = row.createdAt.toISOString().replace(/[:.]/g, '-');
-      // An ordinal prevents path collisions; the CSV keeps the complete ID.
-      const path = `${safeName(`${row.candidate.examNumber}-${owner}`)}/${safeName(problem)}/${stamp}-${prepared.entries.length + 1}-${safeName(row.id.slice(-32))}.${codeExtension(row.lang)}`;
+      const owner = row.candidate.name || row.candidate.teamName || row.candidate.examNumber;
+      const problem = `${row.problem.label || problemLabel(row.problem.order)}-${row.problem.title}`;
+      const suffix = `-${safeName(row.id, 191)}.${codeExtension(row.lang)}`;
+      const path = `${safeName(`${row.candidate.studentId || row.candidate.examNumber}-${owner}`)}/${safeName(problem, 240 - Buffer.byteLength(suffix))}${suffix}`;
       prepared.entries.push({ id: row.id, path, createdAt: row.createdAt });
       prepared.manifest.push([row.id, row.candidate.examNumber, owner, problem, row.lang,
         row.statusText || row.status, row.score, row.createdAt.toISOString(), path].map(csvCell).join(','));

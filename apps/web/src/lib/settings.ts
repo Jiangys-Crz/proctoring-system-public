@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { prisma } from './db';
+import { FederationError } from './exam-federation-protocol';
 import type { HydroConnectionSettings } from './hydro-settings-contract';
 import type { Prisma } from '@prisma/client';
 import { createSettingCache } from './setting-cache';
@@ -127,11 +128,14 @@ export async function getHydroSettings() {
 
 export async function saveHydroSettings(input: HydroConnectionSettings) {
   const value = HydroSettingsSchema.parse({ ...await getHydroSettings(), ...input });
-  await prisma.systemSetting.upsert({
-    where: { key: 'hydro' },
-    update: { value },
-    create: { key: 'hydro', value }
-  });
+  await prisma.$transaction(async tx => {
+    await tx.platformSyncState.upsert({ where: { id: 'peer' }, create: { id: 'peer' }, update: {} });
+    await tx.$queryRaw`SELECT id FROM PlatformSyncState WHERE id = 'peer' FOR UPDATE`;
+    const binding = await tx.systemSetting.findUnique({ where: { key: 'platform-bank-binding' } });
+    const bank = binding?.value as { baseUrl: string; domain: string } | undefined;
+    if (bank && (bank.baseUrl !== value.baseUrl || bank.domain !== value.problemDomainId)) throw new FederationError('已有题库同步映射，不能直接更换评测服务或题库域', 409);
+    await tx.systemSetting.upsert({ where: { key: 'hydro' }, update: { value }, create: { key: 'hydro', value } });
+  }, { isolationLevel: 'ReadCommitted' });
   hydroCache.invalidate();
   return value;
 }

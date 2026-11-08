@@ -1,6 +1,7 @@
 import { acquireOjLoginSlot } from '@/lib/login-approval';
 import { isRequestAdmissionError } from '@/lib/request-admission';
 import { z } from 'zod';
+import { browserExamPlatformName, isBrowserExam } from '@cwnupaa/proctor-shared';
 import { prisma } from '@/lib/db';
 import { requestOjLogin } from '@/lib/oj';
 import { verifyClientTokenForSession } from '@/lib/client-auth';
@@ -10,6 +11,8 @@ import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
 import { isPublicTestExam } from '@/lib/public-test';
 import { loginNovaJudge, NovaJudgeConnectionError } from '@/lib/novajudge';
 import { effectiveEnd } from '@/lib/contest-rules';
+import { HydroBrowserConnectionError, loginHydroBrowser } from '@/lib/hydro-browser';
+import { getHydroSettings } from '@/lib/settings';
 
 const TicketRequestSchema = z.object({
   sessionId: z.string().min(1)
@@ -51,22 +54,30 @@ export async function POST(request: Request) {
           sessionId: current.id, type: 'OJ_LOGIN_FAILED', severity: 4, message: toErrorMessage(error) });
       }, { signal: request.signal });
     };
-    if (session.exam.platform === 'NOVAJUDGE') {
-      if (session.status !== 'IN_EXAM' || !session.startedAt) return fail('请先确认开始考试，再登录 NovaJudge', 403);
+    if (isBrowserExam(session.exam.platform)) {
+      const platformName = browserExamPlatformName(session.exam.platform);
+      if (session.status !== 'IN_EXAM' || !session.startedAt || new Date() < session.exam.startAt) {
+        return fail(`请先确认开始考试，再登录 ${platformName}`, 403);
+      }
       try {
-        const login = await loginNovaJudge(session.exam, session.candidate);
+        const login = session.exam.platform === 'HYDRO_BROWSER'
+          ? await loginHydroBrowser(session.exam, session.candidate, await getHydroSettings())
+          : await loginNovaJudge(session.exam, session.candidate);
         // Remote login is slow: recheck authority before releasing a cookie.
         const current = await prisma.clientSession.findUnique({ where: { id: session.id }, include: { candidate: true, exam: true } });
-        if (!current || current.status !== 'IN_EXAM' || current.lockdown || !verifyClientTokenForSession(request, current, 'DESKTOP')
+        if (!current || !current.approvedAt || current.status !== 'IN_EXAM' || current.lockdown || current.candidate.status === 'FINISHED'
+          || !verifyClientTokenForSession(request, current, 'DESKTOP')
           || new Date() >= effectiveEnd(current.exam, current.candidate.startedAt || current.startedAt)
           || current.exam.platformBaseUrl !== session.exam.platformBaseUrl || current.exam.platformContestId !== session.exam.platformContestId) {
-          return fail('会话状态已变化，无法登录 NovaJudge', 403);
+          return fail(`会话状态已变化，无法登录 ${platformName}`, 403);
         }
-        return ok(login, { headers: { 'Cache-Control': 'no-store' } });
+        return ok(login.platform === 'HYDRO_BROWSER' ? {
+          ...login, expiresAt: effectiveEnd(current.exam, current.candidate.startedAt || current.startedAt).toISOString(),
+        } : login, { headers: { 'Cache-Control': 'no-store' } });
       } catch (error) {
         if (error instanceof SessionWriteQueueError) return fail(error.message, error.status);
-        await recordFailure(error, false).catch(auditError => console.error('Failed to record NovaJudge login failure', auditError));
-        return Response.json({ ok: false, code: error instanceof NovaJudgeConnectionError ? 'OJ_LOGIN_TEMPORARY' : 'OJ_LOGIN_REJECTED', message: toErrorMessage(error) }, {
+        await recordFailure(error, false).catch(auditError => console.error('Failed to record browser exam login failure', auditError));
+        return Response.json({ ok: false, code: error instanceof NovaJudgeConnectionError || error instanceof HydroBrowserConnectionError ? 'OJ_LOGIN_TEMPORARY' : 'OJ_LOGIN_REJECTED', message: toErrorMessage(error) }, {
           status: 502, headers: { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }
         });
       }

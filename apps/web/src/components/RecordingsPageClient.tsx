@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Download, RefreshCw, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Download, RefreshCw, Trash2 } from 'lucide-react';
 import { FileCleanupStatus } from './FileCleanupStatus';
 import { api } from './api';
 import { AlertEvidencePlayer, evidenceStatus, type AlertEvidence } from './AlertEvidencePlayer';
@@ -67,9 +67,11 @@ function fileExt(url: string) {
   return match?.[0] || '.webm';
 }
 
-export function RecordingsPageClient() {
+export function RecordingsPageClient({ examId }: { examId: string }) {
   const [exams, setExams] = useState<RecordingExam[]>([]);
-  const [selectedExamId, setSelectedExamId] = useState('');
+  const selectedExamId = examId;
+  const listRequest = useRef<AbortController | null>(null);
+  const [loading, setLoading] = useState(true);
   const [selectedRoomId, setSelectedRoomId] = useState('');
   const [selectedCandidateId, setSelectedCandidateId] = useState('');
   const [selectedExportKeys, setSelectedExportKeys] = useState<string[]>([]);
@@ -83,23 +85,31 @@ export function RecordingsPageClient() {
   const [error, setError] = useState('');
 
   async function load() {
+    listRequest.current?.abort();
+    const controller = new AbortController();
+    listRequest.current = controller;
+    setLoading(true);
     setError('');
     try {
-      setExams(await api<RecordingExam[]>('/api/recordings'));
+      const items = await api<RecordingExam[]>(`/api/recordings?examId=${encodeURIComponent(examId)}`, { signal: controller.signal });
+      if (!controller.signal.aborted) setExams(items);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载失败');
+      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : '加载失败');
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
     }
   }
 
   useEffect(() => {
     void load();
-  }, []);
+    return () => listRequest.current?.abort();
+  }, [examId]);
 
   useEffect(() => {
     if (!exams.some(exam => exam.cleanupPending > 0)) return;
     const timer = window.setInterval(() => void load(), 5000);
     return () => clearInterval(timer);
-  }, [exams.some(exam => exam.cleanupPending > 0)]);
+  }, [examId, exams.some(exam => exam.cleanupPending > 0)]);
 
   const selectedExam = useMemo(() => exams.find((exam) => exam.id === selectedExamId) || null, [exams, selectedExamId]);
   const selectedRoom = useMemo(() => selectedExam?.rooms.find((room) => room.id === selectedRoomId) || null, [selectedExam, selectedRoomId]);
@@ -119,15 +129,10 @@ export function RecordingsPageClient() {
         .finally(() => { busy = false; });
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [selectedCandidateId, recordingPage, selectedCandidate?.recordings.some((item) => item.evidence?.pending)]);
-
-  function enterExam(id: string) {
-    setSelectedExportKeys([]);
-    setLoadedVideoIds([]);
-    setSelectedExamId(id);
-  }
+  }, [examId, selectedCandidateId, recordingPage, selectedCandidate?.recordings.some((item) => item.evidence?.pending)]);
 
   function enterRoom(id: string) {
+    pushSelection(id);
     setSelectedExportKeys([]);
     setLoadedVideoIds([]);
     setSelectedRoomId(id);
@@ -139,7 +144,7 @@ export function RecordingsPageClient() {
     setLoadingCandidateId(candidateId);
     try {
       const suffix = loadAll ? '&all=1' : `&page=${page}&pageSize=${RECORDING_PAGE_SIZE}`;
-      const result = await api<RecordingPage>(`/api/recordings?candidateId=${encodeURIComponent(candidateId)}${suffix}`);
+      const result = await api<RecordingPage>(`/api/recordings?examId=${encodeURIComponent(examId)}&candidateId=${encodeURIComponent(candidateId)}${suffix}`);
       if (!loadAll) {
         setExams((items) => items.map((exam) => ({
           ...exam,
@@ -156,26 +161,30 @@ export function RecordingsPageClient() {
   }
 
   function enterCandidate(id: string) {
+    pushSelection(selectedRoomId,id);
     setSelectedExportKeys([]);
     setLoadedVideoIds([]);
     setRecordingPage(1);
     setSelectedCandidateId(id);
-    void loadCandidateRecordings(id, { page: 1 });
+    void loadCandidateRecordings(id, { page: 1 }).catch(err => setError(err instanceof Error ? err.message : '录像加载失败'));
   }
 
-  function goBack() {
-    setSelectedExportKeys([]);
-    setLoadedVideoIds([]);
-    if (selectedCandidateId) {
-      setSelectedCandidateId('');
-      return;
-    }
-    if (selectedRoomId) {
-      setSelectedRoomId('');
-      return;
-    }
-    setSelectedExamId('');
+  function pushSelection(roomId = '', candidateId = '', replace = false) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('examId');
+    for (const [key,value] of [['roomId',roomId],['candidateId',candidateId]]) { if (value) url.searchParams.set(key,value); else url.searchParams.delete(key); }
+    if (replace) window.history.replaceState(null,'',url);
+    else window.history.pushState(null,'',url);
   }
+  useEffect(() => {
+    const restore = () => {
+      const q = new URLSearchParams(window.location.search); const candidateId = q.get('candidateId') || '';
+      setSelectedRoomId(q.get('roomId') || ''); setSelectedCandidateId(candidateId);
+      setSelectedExportKeys([]); setLoadedVideoIds([]); setRecordingPage(1);
+      if (candidateId) void loadCandidateRecordings(candidateId, { page: 1 }).catch(err => setError(err instanceof Error ? err.message : '录像加载失败'));
+    };
+    restore(); window.addEventListener('popstate',restore); return () => window.removeEventListener('popstate',restore);
+  }, [examId]);
 
   function toggleExportKey(key: string, checked: boolean) {
     setSelectedExportKeys((keys) => (checked ? Array.from(new Set([...keys, key])) : keys.filter((item) => item !== key)));
@@ -211,7 +220,7 @@ export function RecordingsPageClient() {
     if (selectedExam) {
       return entriesForContexts(contextsForExam(selectedExam).filter(({ room }) => selectedExportKeys.includes(`room:${room.id}`)));
     }
-    return entriesForContexts(exams.filter((exam) => selectedExportKeys.includes(`exam:${exam.id}`)).flatMap(contextsForExam));
+    return [];
   }
 
   async function exportEntries(entries?: Array<{ exam: RecordingExam; room: RecordingRoom; candidate: RecordingCandidate; recording: RecordingItem }>) {
@@ -266,14 +275,13 @@ export function RecordingsPageClient() {
     try {
       await api('/api/recordings', { method: 'DELETE', body: JSON.stringify(input) });
       setSelectedExportKeys([]); setLoadedVideoIds([]); setRevision(r => r + 1);
-      if ('examIds' in input) { setSelectedCandidateId(''); setSelectedRoomId(''); setSelectedExamId(''); }
+      if ('examIds' in input) { setSelectedCandidateId(''); setSelectedRoomId(''); pushSelection('', '', true); }
       await load();
       if ('alertIds' in input && selectedCandidateId) { setRecordingPage(1); await loadCandidateRecordings(selectedCandidateId, { page: 1 }); }
       setMessage('录像记录已删除，文件正在后台清理。');
     } catch (error) { setError(error instanceof Error ? error.message : '删除失败'); }
     finally { setDeleting(false); }
   }
-  const selectedDeletionExams = exams.filter(e => e.canDelete && selectedExportKeys.includes(`exam:${e.id}`));
   const selectedDeletionAlerts = selectedCandidate?.recordings.filter(r => selectedExportKeys.includes(`recording:${r.id}`)) || [];
 
   async function changeRecordingPage(page: number) {
@@ -285,18 +293,9 @@ export function RecordingsPageClient() {
 
   return (
     <div className="grid">
-      {selectedExam ? (
-        <div className="return-only-row"><button className="button secondary recording-back-button" onClick={goBack}>
-          <ArrowLeft size={18} />
-          返回上一级
-        </button></div>
-      ) : null}
-      <div className="topbar">
-        <div>
-          <h1 style={{ margin: 0 }}>历史录像</h1>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {selectedDeletionExams.length > 0 && <button className="button secondary" disabled={deleting || exporting || selectedDeletionExams.length > 20} onClick={() => void removeRecordings({ examIds: selectedDeletionExams.map(e => e.id) }, `所选 ${selectedDeletionExams.length} 场考试的全部录像`)}><Trash2 size={18} />删除所选考试录像</button>}
+      <div className="topbar topbar-actions">
+        <div className="management-actions">
+          {selectedExam && !selectedRoom ? <button className="button secondary" disabled={!selectedExam.recordingCount || exporting || deleting} onClick={() => void exportContexts(contextsForExam(selectedExam))}><Download size={18} />导出本场</button> : null}
           {selectedExam?.canDelete && selectedDeletionAlerts.length > 0 && <button className="button secondary" disabled={deleting || exporting} onClick={() => void removeRecordings({ alertIds: selectedDeletionAlerts.map(r => r.id) }, `所选 ${selectedDeletionAlerts.length} 条异常录像`)}>删除所选录像</button>}
           <button className="button" onClick={() => void exportEntries()} disabled={!selectedExportKeys.length || exporting || deleting}>
             <Download size={18} />
@@ -310,42 +309,17 @@ export function RecordingsPageClient() {
           </button>
         </div>
       </div>
-      <p className="muted" style={{ margin: 0 }}>比赛管理员可删除已结束考试的录像，单次最多选择 20 场考试。整场删除包含完整录像与异常片段，身份照片和环境审核视频会保留。</p>
+      <p className="muted" style={{ margin: 0 }}>考试管理员可删除本场已结束考试的录像。整场删除包含完整录像与异常片段，身份照片和环境审核视频会保留。</p>
+      {selectedExam ? <div className="muted">{selectedExam.recordingCount} 条异常记录 · {selectedExam.mediaCount} 个视频片段 · {(selectedExam.bytes / 1024 ** 3).toFixed(2)} GiB</div> : null}
       {message && <div className="card" role="status">{message}</div>}
-      <FileCleanupStatus kind="MEDIA" revision={revision} />
+      <FileCleanupStatus kind="MEDIA" examId={examId} revision={revision} />
       {error ? <div className="card" style={{ color: 'var(--danger)' }}>{error}</div> : null}
 
-      {!selectedExam ? (
-        <section className="recording-list-grid">
-          {exams.map((exam) => (
-            <article className="card recording-nav-card" key={exam.id}>
-              <label className="recording-select">
-                <input
-                  type="checkbox"
-                  checked={selectedExportKeys.includes(`exam:${exam.id}`)}
-                  onChange={(event) => toggleExportKey(`exam:${exam.id}`, event.target.checked)}
-                />
-                选择
-              </label>
-              <button className="recording-card-main" onClick={() => enterExam(exam.id)}>
-                <strong>{exam.name}</strong>
-                <span>{new Date(exam.startAt).toLocaleString()} - {new Date(exam.endAt).toLocaleString()}</span>
-                <b>{exam.recordingCount} 条异常记录 · {exam.mediaCount} 个视频片段</b><span>{(exam.bytes / 1024 ** 3).toFixed(2)} GiB</span>
-              </button>
-              <button className="button secondary compact-button" onClick={() => void exportContexts(contextsForExam(exam))} disabled={!exam.recordingCount || exporting}>
-                导出考试
-              </button>
-              {exam.canDelete && <button className="button secondary compact-button" disabled={deleting || exporting || !exam.mediaCount && !exam.recordingCount} onClick={() => void removeRecordings({ examIds: [exam.id] }, `“${exam.name}”的全部录像`)}><Trash2 size={15} />删除整场录像</button>}
-              {exam.cleanupPending > 0 && <span className="muted">{exam.cleanupPending} 个文件待清理{exam.cleanupFailed ? `，${exam.cleanupFailed} 个将重试` : ''}</span>}
-            </article>
-          ))}
-          {!exams.length ? <div className="card muted">暂无历史录像</div> : null}
-        </section>
-      ) : null}
+      {!selectedExam && !error ? <div className="card muted">{loading ? '正在加载本场考试录像…' : '本场考试暂无历史录像'}</div> : null}
 
       {selectedExam && !selectedRoom ? (
         <section className="recording-list-grid">
-          {selectedExam.canDelete && <div className="card"><button className="button secondary" disabled={deleting || exporting} onClick={() => void removeRecordings({ examIds: [selectedExam.id] }, `“${selectedExam.name}”的全部录像`)}>删除本场全部录像</button><span className="muted"> 包含 {selectedExam.mediaCount} 个视频片段</span></div>}
+          {selectedExam.canDelete && <div className="card"><button className="button secondary" disabled={deleting || exporting || !selectedExam.mediaCount && !selectedExam.recordingCount} onClick={() => void removeRecordings({ examIds: [selectedExam.id] }, `“${selectedExam.name}”的全部录像`)}><Trash2 size={16} />删除本场全部录像</button><span className="muted"> 包含 {selectedExam.mediaCount} 个视频片段</span></div>}
           {selectedExam.rooms.map((room) => (
             <article className="card recording-nav-card" key={room.id}>
               <label className="recording-select">

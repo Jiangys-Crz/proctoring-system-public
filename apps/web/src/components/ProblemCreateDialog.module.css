@@ -1,0 +1,25 @@
+.backdrop:global(.modal-backdrop) { z-index: 180; padding: 24px; }
+.dialog:global(.modal-panel) { width: min(1180px, 96vw); max-height: 94dvh; overflow: auto; padding: 0; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--nova-line); background: var(--nova-subtle); }
+.header h2 { margin: 0; font-size: 16px; }
+.field small, .note { color: var(--muted, #64748b); font-size: 13px; line-height: 1.7; }
+.types { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 36px 28px; }
+.types button { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; text-align: left; cursor: pointer; padding: 24px; color: var(--nova-text); background: var(--nova-surface); box-shadow: var(--nova-shadow); }
+.types button:hover { border-color: var(--nova-blue-border); background: var(--nova-blue-soft); }
+.types button svg { color: var(--nova-blue); }
+.types strong { font-size: 18px; }.types span { color: var(--muted, #64748b); font-size: 13px; }
+.form { display: grid; gap: 22px; border: 0; padding: 24px 28px; margin: 0; min-width: 0; }
+.field { display: grid; gap: 8px; font-weight: 500; min-width: 0; }
+.field > label { display: grid; gap: 8px; }.field input, .field select, .field textarea { width: 100%; }
+.summary { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 15px 18px; background: #f1f5f9; border-radius: 10px; font-size: 14px; }
+.summary span { color: #64748b; }.note { margin: 0; }.item { display: grid; gap: 18px; padding: 22px; min-width: 0; }
+.itemHeader, .optionHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }.itemHeader h3 { margin: 0; font-size: 16px; }
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }.score { display: flex; align-items: center; gap: 12px; font-size: 14px; }.score input { width: 105px; }
+.options { display: grid; gap: 16px; }.option { display: grid; gap: 10px; border-top: 1px solid #e2e8f0; padding-top: 16px; }.optionHeader label, .emptyConfirm { display: flex; align-items: center; gap: 8px; font-size: 13px; }.optionHeader input, .emptyConfirm input, .previewOption input { width: auto; }
+.addMenu { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 10px; }.singlePreview summary { cursor: pointer; font-size: 13px; color: #475569; }.preview { padding: 16px 0; overflow-wrap: anywhere; }.previewControl { padding: 12px 0; }.previewOption { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; }.previewOption > input { margin-top: 5px; flex-shrink: 0; }.previewOption > div { min-width: 0; }.previewOption :global(p) { margin-top: 0; }
+.parameters { display: flex; gap: 20px; flex-wrap: wrap; }.parameters label { display: grid; gap: 8px; font-size: 14px; }.tests { display: grid; gap: 15px; }.testRow { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 14px; border: 1px solid #e2e8f0; border-radius: 10px; font-size: 13px; }.testRow > span { color: #64748b; }.testRow > :nth-child(4) { margin-left: auto; }
+.fieldError, .error { color: #b42318 !important; font-size: 13px; font-weight: 400; }.error { padding: 0 28px; }.previewActions { padding: 0 28px 20px; }.fullPreview { margin: 0 28px 24px; padding: 24px; }
+.footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 20px 28px; border-top: 1px solid var(--nova-line); background: var(--nova-subtle); }.footer > span { margin-right: auto; font-size: 12px; color: #64748b; }
+.success { display: flex; flex-wrap: wrap; flex-direction: column; align-items: center; gap: 14px; padding: 48px 28px; }.success h3, .success p { margin: 0; }.success > svg { color: #16a34a; }
+.testBackdrop { position: fixed; inset: 0; z-index: 190; background: var(--nova-dialog-backdrop); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 24px; }.testDialog { display: grid; gap: 18px; width: min(820px, 96vw); max-height: 90dvh; overflow: auto; padding: 24px; border-radius: var(--nova-dialog-radius); box-shadow: var(--nova-dialog-shadow); }.testDialog textarea { font-family: ui-monospace, monospace; white-space: pre; tab-size: 4; }.testDialog .emptyConfirm { display: flex; }
+@media (max-width: 700px) { .backdrop:global(.modal-backdrop) { padding: 8px; }.dialog:global(.modal-panel) { width: 100%; max-height: 98dvh; }.header, .form, .footer { padding: 18px; }.types { grid-template-columns: 1fr; padding: 18px; }.item { padding: 14px; }.footer { flex-wrap: wrap; }.footer > span { flex-basis: 100%; }.fullPreview { margin: 0 18px 18px; }.previewActions { padding-left: 18px; }.testBackdrop { padding: 10px; }.testDialog { padding: 18px; } }

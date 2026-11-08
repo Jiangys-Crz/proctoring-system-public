@@ -1,11 +1,14 @@
 'use client';
-import { ExamFederationSettings } from './ExamFederationSettings';
+
+import { formatScore } from '@cwnupaa/proctor-shared';
+
+import { browserExamPlatformName, isBrowserExam, type ExamPlatform } from '@cwnupaa/proctor-shared';
+import { HydroBrowserFields } from './HydroBrowserFields';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { parentRoutePath } from '@cwnupaa/proctor-shared';
-import { ArrowLeft, Bell, Check, ChevronLeft, ChevronRight, Download, FileText, LockOpen, Maximize2, Mic, Minimize2, Phone, Play, Printer, RefreshCw, Save, Search, Square, Trash2, Upload, UserPlus, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Download, FileText, LockOpen, Maximize2, Mic, Minimize2, Phone, Play, Printer, RefreshCw, Save, Search, Square, Trash2, Upload, UserPlus, X } from 'lucide-react';
 import { api } from './api';
 import { createProctorWebRtcReader, isProctorWebRtcPlaying } from '../../public/live-webrtc.js';
 import { ExamLoginRestrictionsPanel } from './ExamLoginRestrictionsPanel';
@@ -15,11 +18,11 @@ import { ExamScreenControlPanel } from './ExamScreenControlPanel';
 import { ExternalBoardSettings } from './ExternalBoardSettings';
 import { VoiceCallPanel } from './VoiceCallPanel';
 import { AlertEvidencePlayer, type AlertEvidence } from './AlertEvidencePlayer';
-import { parseCandidateCsv, parseCsvLine, mergeTeamCandidateRows } from '@/lib/candidate-import';
+import { parseCandidateCsv, mergeTeamCandidateRows } from '@/lib/candidate-import';
 import { participationOptions, normalizeParticipationGroup, participationGroupLabel, isXcpcLeaderboard } from '@cwnupaa/proctor-shared/leaderboard';
 import { readCandidateImportFile } from '@/lib/candidate-import-file';
 import { datetimeLocalToIso, toDatetimeLocalValue } from '@/lib/datetime-local';
-import { candidateStartDeadline, effectiveEnd } from '@/lib/contest-rules';
+import { candidateStartDeadline, effectiveEnd, problemLabel } from '@/lib/contest-rules';
 import { monitorCandidates, monitorCandidatePage, type MonitorSearchField } from './monitor-candidates';
 import { normalizeContestFormat } from '@/lib/contest-format';
 import { TeamSubmissionViewSetting } from './TeamSubmissionViewSetting';
@@ -29,7 +32,7 @@ import { resolveRoomCandidateInput, type RoomCandidateInputType } from '@/lib/ro
 
 type Role = 'ADMIN' | 'SUPER_ADMIN';
 type DetailRoute = 'status' | 'login' | 'login-restrictions' | 'qa' | 'print' | 'monitor' | 'screen' | 'settings';
-type SettingsRoute = 'base' | 'problems' | 'candidates' | 'rooms' | 'external-board' | 'federation';
+type SettingsRoute = 'base' | 'problems' | 'candidates' | 'rooms' | 'external-board';
 type CandidateStatus =
   | 'NOT_REQUESTED'
   | 'REQUESTING'
@@ -47,7 +50,7 @@ interface Exam {
   latestStartAt: string;
   endAt: string;
   durationMinutes: number;
-  platform: 'HYDRO' | 'NOVAJUDGE';
+  platform: ExamPlatform;
   novaJudgeApiKey?: string;
   novaJudgeTimezone: string;
   platformBaseUrl: string;
@@ -64,7 +67,7 @@ interface Exam {
   allowTeamSubmissionView: boolean;
   leaderOnlySubmission: boolean;
   scoreboardFrozenAt: string | null;
-  problems?: Array<{ id: string; order: number; hydroProblemId: string; title: string; problemType: string; hydroScore: number; scorePercent: number; score: number }>;
+  problems?: Array<{ id: string; order: number; label?: string | null; hydroProblemId: string; title: string; problemType: string; hydroScore: number; scorePercent: number; score: number }>;
   rules: string;
   requireMiniProgram: boolean;
   requireFrontCamera: boolean;
@@ -91,6 +94,8 @@ interface Candidate {
   examNumber: string;
   password: string;
   seatNo: string;
+  teamRoster?: Record<string, unknown>[] | null;
+  memberOrder?: number;
   isTeamLeader: boolean;
   ranked: boolean;
   status: CandidateStatus;
@@ -235,6 +240,8 @@ type CandidateDraft = {
   examNumber: string;
   password: string;
   seatNo: string;
+  teamRoster?: Record<string, unknown>[] | null;
+  memberOrder?: number;
   isTeamLeader: boolean;
   ranked: boolean;
 };
@@ -428,19 +435,14 @@ function splitMemberText(value?: string | null) {
 }
 
 function teamMemberRows(candidate: Candidate, roomNames: string[] = []) {
-  const names = splitMemberText(candidate.teamMembers);
-  const ids = splitMemberText(candidate.teamMemberStudentIds);
-  const count = Math.max(names.length, ids.length, 1);
-  return Array.from({ length: count }, (_, index) => ({
-    teamName: candidate.teamName || '-',
-    memberName: names[index] || '-',
-    studentId: ids[index] || '-',
-    school: candidate.school || '-',
-    college: candidate.college || '-',
-    examNumber: candidate.examNumber,
-    seatNo: candidate.seatNo,
-    roomName: roomNames.join('、') || '未分配'
-  }));
+  const names = splitMemberText(candidate.teamMembers), ids = splitMemberText(candidate.teamMemberStudentIds);
+  const roster = (candidate.teamRoster || []).slice().sort((a,b) => Number(a.memberOrder || 1) - Number(b.memberOrder || 1));
+  return Array.from({ length: Math.max(roster.length, names.length, ids.length, 1) }, (_, index) => {
+    const member = roster[index];
+    return { teamName: candidate.teamName || '-', memberName: String(member?.name || names[index] || '-'), studentId: String(member?.studentId || ids[index] || '-'),
+      school: String(member?.school || candidate.school || '-'), college: String(member?.college || candidate.college || '-'),
+      examNumber: index === 0 ? candidate.examNumber : '', seatNo: String(member?.seatNo || candidate.seatNo || '-'), roomName: roomNames.join('、') || '未分配' };
+  });
 }
 
 function statusText(status: CandidateStatus) {
@@ -483,36 +485,28 @@ function alertTypeText(type: string) {
 }
 
 function splitProctorLines(value: string) {
-  return value.split(/[\n,，;；]+/).flatMap(line => /[+＋]/.test(line) ? [line.trim()] : splitLines(line)).filter(Boolean);
+  return value.split(/[\n,，、;；]+/).flatMap(line => /[+＋]/.test(line) ? [line.trim()] : splitLines(line)).filter(Boolean);
 }
 
 function splitLines(value: string) {
   return value
-    .split(/[\n,，;；\s]+/)
+    .split(/[\n,，、;；\s]+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
-function csvEscape(value: unknown) {
-  const text = String(value ?? '');
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function parseRoomCsv(text: string) {
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return [];
-  const headers = parseCsvLine(lines[0]);
-  return lines.slice(1).map((line) => {
-    const cells = parseCsvLine(line);
-    const row: Record<string, string> = {};
-    headers.forEach((header, index) => {
-      row[header] = cells[index] || '';
-    });
+function parseRoomRows(rows: string[][]) {
+  const [headers = [], ...values] = rows;
+  return values.flatMap(cells => {
+    const row = Object.fromEntries(headers.map((header, index) => [String(header).trim(), String(cells[index] ?? '').trim()]));
+    const name = row['考室名称'] || row.roomName || row.name;
+    if (!name) return [];
+    const review = row['登录请求审核方式'] || row.loginReviewMode || '';
     return {
-      name: row['考室名称'] || row.roomName || row.name,
+      name,
       proctorNumberIds: splitProctorLines(row['监考老师学号'] || row.proctorNumberIds || ''),
       candidateExamNumbers: splitLines(row['考生考号'] || row.candidateExamNumbers || ''),
-      loginReviewMode: /^(自动通过|自动|auto)$/i.test((row['登录请求审核方式'] || row.loginReviewMode || '').trim()) ? 'AUTO' as const : 'MANUAL' as const
+      loginReviewMode: !review || /^(自动通过|自动|auto)$/i.test(review) ? 'AUTO' as const : 'MANUAL' as const
     };
   });
 }
@@ -536,6 +530,8 @@ function candidateToDraft(candidate?: Candidate): CandidateDraft {
     examNumber: candidate?.examNumber || '',
     password: candidate?.password || '',
     seatNo: candidate?.seatNo || '',
+    teamRoster: candidate?.teamRoster || [],
+    memberOrder: candidate?.memberOrder || 1,
     isTeamLeader: candidate?.isTeamLeader || false,
     ranked: candidate?.ranked ?? true
   };
@@ -569,6 +565,7 @@ export function ExamDetailClient({
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [candidateRoomFilter, setCandidateRoomFilter] = useState('__all');
   const [candidateSearch, setCandidateSearch] = useState('');
+  const [candidateAddMode, setCandidateAddMode] = useState<'batch' | 'single'>('batch');
   const [candidateDraft, setCandidateDraft] = useState<CandidateDraft>(candidateToDraft());
   const [candidateEditorOpen, setCandidateEditorOpen] = useState(false);
   const [candidateDraftRoomId, setCandidateDraftRoomId] = useState('__none');
@@ -583,10 +580,13 @@ export function ExamDetailClient({
   const [roomRequireSecondCamera, setRoomRequireSecondCamera] = useState(true);
   const [roomRequireFrontCamera, setRoomRequireFrontCamera] = useState(true);
   const [roomLoginMode, setRoomLoginMode] = useState<'CREDENTIALS' | 'SECOND_CAMERA_QR'>('CREDENTIALS');
-  const [roomLoginReviewMode, setRoomLoginReviewMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
+  const [roomLoginReviewMode, setRoomLoginReviewMode] = useState<'MANUAL' | 'AUTO'>('AUTO');
   const [roomDetail, setRoomDetail] = useState<Room | null>(null);
+  const roomDetailDialog = useRef<HTMLDialogElement>(null);
+  const [problemLabels, setProblemLabels] = useState<Record<string, string>>({});
   const [problemPercents, setProblemPercents] = useState<Record<string, number>>({});
-  const [roomCsv, setRoomCsv] = useState('');
+  const [roomImportRows, setRoomImportRows] = useState<ReturnType<typeof parseRoomRows>>([]);
+  const [roomImportError, setRoomImportError] = useState('');
   const [roomEditorOpen, setRoomEditorOpen] = useState(false);
   const [roomImportOpen, setRoomImportOpen] = useState(false);
   const [roomProctorAddOpen, setRoomProctorAddOpen] = useState(false);
@@ -649,15 +649,14 @@ export function ExamDetailClient({
       setError('');
       if (data.liveStatusAvailable === true) setKnownLiveSessions(new Set(data.liveReadySessionIds || []));
       setState(data);
-      setProblemPercents(current => Object.keys(current).length ? current : Object.fromEntries((data.exam.problems || []).map(problem => [problem.id, problem.scorePercent])));
       if (!examFormDirtyRef.current) {
-        setExamForm({
+        setExamForm(normalizeContestFormat({
           ...data.exam,
           contestRule: data.exam.contestRule === 'ACM' ? 'XCPC' : data.exam.contestRule,
           startAt: toDatetimeLocalValue(data.exam.startAt),
           latestStartAt: toDatetimeLocalValue(data.exam.latestStartAt),
           endAt: toDatetimeLocalValue(data.exam.endAt)
-        });
+        }));
       }
       // The polling callback retains its initial render. Resolve initialization
       // against current selection so each media/status refresh keeps the page.
@@ -693,6 +692,11 @@ export function ExamDetailClient({
   }, [initialTab, initialSettingsTab]);
 
   useEffect(() => { setVoiceTarget(null); setVoiceBusy(false); }, [examId, tab]);
+
+  useEffect(() => {
+    const dialog = roomDetailDialog.current;
+    if (dialog && !dialog.open) dialog.showModal();
+  }, [roomDetail]);
 
   useEffect(() => {
     if (!canManage && (tab === 'settings' || tab === 'screen')) routeTo('login');
@@ -961,6 +965,7 @@ export function ExamDetailClient({
 
   function editCandidate(candidate?: Candidate) {
     setError('');
+    setCandidateAddMode(candidate ? 'single' : 'batch');
     setCandidateDraft(candidateToDraft(candidate));
     setCandidateDraftRoomId(candidate ? state?.rooms.find((room) => room.candidates.some(({ candidate: item }) => item.id === candidate.id))?.id || '__none' : '__none');
     if (!candidate) {
@@ -1001,7 +1006,7 @@ export function ExamDetailClient({
     setRoomRequireSecondCamera(true);
     setRoomRequireFrontCamera(true);
     setRoomLoginMode('CREDENTIALS');
-    setRoomLoginReviewMode('MANUAL');
+    setRoomLoginReviewMode('AUTO');
     setRoomCandidateSearch('');
     setRoomProctorAddOpen(false);
     setRoomCandidateAddOpen(false);
@@ -1227,10 +1232,7 @@ export function ExamDetailClient({
     setCandidateImportError('');
     await runBusy('importCandidates', async () => {
       try {
-        const parsedRows = parseCandidateCsv(candidateCsv);
-        const rows = state?.exam.contestType === 'TEAM' && state.exam.teamAccountMode === 'TEAM_ACCOUNT'
-          ? mergeTeamCandidateRows(parsedRows)
-          : parsedRows;
+        const rows = parseCandidateCsv(candidateCsv);
         await api(`/api/exams/${examId}/candidates`, {
           method: 'POST',
           body: JSON.stringify({ rows })
@@ -1269,7 +1271,10 @@ export function ExamDetailClient({
               examNumber: candidateDraft.examNumber,
               password: candidateDraft.password,
               seatNo: candidateDraft.seatNo,
-              isTeamLeader: candidateDraft.isTeamLeader,
+              roomName: state?.rooms.find(room => room.id === candidateDraftRoomId)?.name,
+              teamRoster: candidateDraft.teamRoster || undefined,
+              memberOrder: candidateDraft.memberOrder,
+              isTeamLeader: candidateDraft.memberOrder === 1,
               ranked: candidateDraft.ranked
             }
           ]
@@ -1279,7 +1284,7 @@ export function ExamDetailClient({
         method,
         body: JSON.stringify(body)
       });
-      await saveCandidateRoomAssignment(candidateDraft.examNumber, previousCandidateId, previousExamNumber);
+      if (candidateDraft.id) await saveCandidateRoomAssignment(candidateDraft.examNumber, previousCandidateId, previousExamNumber);
       setCandidateDraft(candidateToDraft());
       setCandidateEditorOpen(false);
       await load();
@@ -1370,18 +1375,17 @@ export function ExamDetailClient({
   }
 
   async function importRoomsBatch() {
-    const rooms = parseRoomCsv(roomCsv).filter((room) => room.name && room.proctorNumberIds.length);
-    if (!rooms.length) {
-      setError('请填写至少一个考室，且每个考室至少有一个监考老师学号');
+    if (!roomImportRows.length) {
+      setError('请填写至少一个考室名称');
       return;
     }
     await runBusy('importRoomsBatch', async () => {
       await api(`/api/exams/${examId}/rooms`, {
         method: 'POST',
-        body: JSON.stringify({ rooms })
+        body: JSON.stringify({ rooms: roomImportRows })
       });
       setRoomImportOpen(false);
-      setRoomCsv('');
+      setRoomImportRows([]);
       await load();
     });
   }
@@ -1407,7 +1411,7 @@ export function ExamDetailClient({
           endAt: datetimeLocalToIso(examForm.endAt),
           durationMinutes: examForm.durationMinutes,
           platform: examForm.platform,
-          ...(examForm.platform === 'NOVAJUDGE' ? { platformBaseUrl: examForm.platformBaseUrl, platformContestId: examForm.platformContestId, novaJudgeTimezone: examForm.novaJudgeTimezone, ...(examForm.novaJudgeApiKey?.trim() ? { novaJudgeApiKey: examForm.novaJudgeApiKey.trim() } : {}) } : {}),
+          ...(examForm.platform === 'NOVAJUDGE' ? { platformBaseUrl: examForm.platformBaseUrl, platformContestId: examForm.platformContestId, novaJudgeTimezone: examForm.novaJudgeTimezone, ...(examForm.novaJudgeApiKey?.trim() ? { novaJudgeApiKey: examForm.novaJudgeApiKey.trim() } : {}) } : examForm.platform === 'HYDRO_BROWSER' ? { platformBaseUrl: examForm.platformBaseUrl, platformContestId: examForm.platformContestId } : {}),
           contestType: examForm.contestType,
           teamAccountMode: examForm.teamAccountMode,
           contestRule: examForm.contestRule,
@@ -1437,8 +1441,9 @@ export function ExamDetailClient({
     await runBusy('saveProblemScores', async () => {
       await api(`/api/exams/${examId}/problems`, {
         method: 'PATCH',
-        body: JSON.stringify({ problems: problems.map(problem => ({ id: problem.id, scorePercent: problemPercents[problem.id] ?? 100 })) })
+        body: JSON.stringify({ problems: problems.map(problem => ({ id: problem.id, score: problemPercents[problem.id] ?? problem.score, label: problemLabels[problem.id] ?? problem.label ?? problemLabel(problem.order) })) })
       });
+      setProblemPercents({}); setProblemLabels({});
       await load();
     });
   }
@@ -1461,22 +1466,9 @@ export function ExamDetailClient({
 
   async function downloadTemplate() {
     const XLSX = await import('xlsx');
-    const headers =
-      state?.exam.contestType === 'TEAM'
-        ? state.exam.teamAccountMode === 'TEAM_ACCOUNT'
-          ? ['考号', '队伍名称', '队伍成员姓名', '密码', '学校', '队伍成员学号', '队伍类型', '指导老师', '座位号', '是否队长', '是否排名']
-          : ['考号', '队伍名称', '姓名', '密码', '学校', '学院', '专业', '学号', '性别', '年级', '行政班级', '队伍类型', '指导老师', '座位号', '是否队长', '是否排名']
-        : ['考号', '姓名', '密码', '学校', '学院', '专业', '学号', '性别', '年级', '行政班级', '参赛组别', '指导老师', '座位号', '是否排名'];
-    const sample =
-      state?.exam.contestType === 'TEAM'
-        ? state.exam.teamAccountMode === 'TEAM_ACCOUNT'
-          ? ['T1001', '一队', '张三、李四', 'pass001', '西华师范大学', '20240001、20240002', '正式队伍', '李老师', 'A01', '是', '是']
-          : ['T1001', '一队', '张三', 'pass001', '西华师范大学', '计算机学院', '计算机科学与技术', '20240001', '男', '2024', '计科2401', '正式队伍', '李老师', 'A01', '是', '是']
-        : ['1001', '张三', 'pass001', '西华师范大学', '计算机学院', '计算机科学与技术', '20240001', '男', '2024', '计科2401', '正式参赛', '李老师', 'A01', '是'];
-    const groupIndex = headers.findIndex(header => header === '参赛组别' || header === '队伍类型');
-    if (groupIndex >= 0) sample[groupIndex] = participationOptions(state?.exam.contestRule || '')[0]?.label || sample[groupIndex];
-    headers.push('考室');
-    sample.push('');
+    const headers = ['姓名', '考号', '密码', '考室', '座位号', '组别', '学校', '学院', '年级', '学号', '是否排名', '专业', '班级'];
+    const sample = ['张三', '1001', 'pass001', '', 'A01', participationOptions(state?.exam.contestRule || '')[0]?.label || '', '西华师范大学', '计算机学院', '2026', '20260001', '是', '', ''];
+    if (state?.exam.contestType === 'TEAM') { headers.push('队伍名称', '成员次序'); sample.push('一队', '1'); }
     const sheet = XLSX.utils.aoa_to_sheet([headers, sample]);
     const book = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(book, sheet, '考生导入模板');
@@ -1506,25 +1498,48 @@ export function ExamDetailClient({
 
   async function downloadRoomTemplate() {
     const XLSX = await import('xlsx');
-    const sheet = XLSX.utils.aoa_to_sheet([
-      ['考室名称', '监考老师学号', '考生考号', '登录请求审核方式'],
-      ['第一考室', '20240001、20240002', '1001、1002', '手动审核']
-    ]);
+    const fields = [
+      ['考室名称', '必填，每行填写一个考室的名称，同场考试不能重名。', '第一考室'],
+      ['监考老师学号', '可留空。填学号；学号重复时用“姓名＋学号”。多个值可用顿号、逗号、空格或换行分隔。', '20240001、20240002'],
+      ['考生考号', '可留空。填本场考试已导入的考号，多个值可用顿号、逗号、空格或换行分隔。', '1001、1002'],
+      ['登录请求审核方式', '填“自动通过”或“手动审核”。留空时默认自动通过。', '自动通过'],
+    ];
+    const sheet = XLSX.utils.aoa_to_sheet([fields.map(([label]) => label), ['', '', '', '']]);
+    sheet['!cols'] = [22, 26, 26, 24].map(wch => ({ wch }));
+    fields.forEach(([, description], column) => {
+      sheet[XLSX.utils.encode_cell({ r: 0, c: column })].c = [{ a: '填写说明', t: description }];
+    });
+    sheet.B2.z = sheet.C2.z = '@';
+    const guide = XLSX.utils.aoa_to_sheet([['字段', '填写说明', '示例'], ...fields,
+      ['表格填写', '请在第一张工作表填写数据并保留表头。带前导零的学号或考号请使用文本格式。', '']]);
+    guide['!cols'] = [24, 88, 28].map(wch => ({ wch }));
     const book = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(book, sheet, '考室导入模板');
+    XLSX.utils.book_append_sheet(book, guide, '填写说明');
     XLSX.writeFile(book, `${state?.exam.name || '考试'}-考室导入模板.xlsx`);
   }
 
   async function readRoomFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    const XLSX = await import('xlsx');
-    const buffer = await file.arrayBuffer();
-    const book = XLSX.read(buffer, { type: 'array' });
-    const sheet = book.Sheets[book.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json<Array<string | number>>(sheet, { header: 1, defval: '' });
-    setRoomCsv(rows.map((row) => row.map(csvEscape).join(',')).join('\n'));
-    event.target.value = '';
+    const input = event.target;
+    setRoomImportRows([]);
+    setRoomImportError('');
+    const current = () => input.isConnected && input.files?.[0] === file;
+    try {
+      const XLSX = await import('xlsx');
+      const buffer = await file.arrayBuffer();
+      const book = XLSX.read(buffer, { type: 'array', raw: true });
+      const sheet = book.Sheets[book.SheetNames[0]];
+      const rows = parseRoomRows(XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: '', raw: false }));
+      if (!current()) return;
+      setRoomImportRows(rows);
+      if (!rows.length) setRoomImportError('请在模板中填写至少一个考室名称');
+    } catch {
+      if (current()) setRoomImportError('无法读取考室表格，请使用下载的模板');
+    } finally {
+      if (current()) input.value = '';
+    }
   }
 
   if (!state) {
@@ -1554,7 +1569,6 @@ export function ExamDetailClient({
           </section>
         </div>
       ) : null}
-      {tab !== 'monitor' && tab !== 'print' ? <div className="return-only-row"><button type="button" className="exam-management-back" onClick={() => router.push(parentRoutePath(pathname || '/'))}><ArrowLeft size={16} /> 返回上级</button></div> : null}
       <div className="topbar exam-detail-topbar">
         <div>
           <h1>{state.exam.name}</h1>
@@ -1801,10 +1815,15 @@ export function ExamDetailClient({
             <button className={`button ${tab === 'status' ? '' : 'secondary'}`} onClick={() => routeTo('status')}>考生状态</button>
             <button className={`button ${tab === 'login' ? '' : 'secondary'}`} onClick={() => routeTo('login')}>登录请求{pendingLoginRequestCount ? <span className="nav-badge">{pendingLoginRequestCount}</span> : null}</button>
             <button className={`button ${tab === 'login-restrictions' ? '' : 'secondary'}`} onClick={() => routeTo('login-restrictions')}>登录限制</button>
-            <button className={`button ${tab === 'qa' ? '' : 'secondary'}`} onClick={() => routeTo('qa')}>赛时答疑</button>
-            <button className={`button ${tab === 'print' ? '' : 'secondary'}`} onClick={() => routeTo('print')}>打印{state.printJobs.some(job => job.status === 'PENDING') ? <span className="nav-badge">{state.printJobs.filter(job => job.status === 'PENDING').length}</span> : null}</button>
             <button className="button secondary" onClick={() => routeTo('monitor')}>视频监考</button>
+            <button type="button" className={`button ${notificationsOpen ? '' : 'secondary'}`} aria-expanded={notificationsOpen} aria-controls="exam-monitor-alerts" onClick={() => setNotificationsOpen(open => !open)}>
+              异常提醒{unreadAlertGroups.length ? <span className="nav-badge monitor-alert-count">{unreadAlertGroups.length}</span> : null}
+            </button>
+            <button className={`button ${tab === 'qa' ? '' : 'secondary'}`} onClick={() => routeTo('qa')}>赛时答疑</button>
             {canManage ? <button className={`button ${tab === 'screen' ? '' : 'secondary'}`} onClick={() => routeTo('screen')}>屏幕控制</button> : null}
+            <button className={`button ${tab === 'print' ? '' : 'secondary'}`} onClick={() => routeTo('print')}>打印{state.printJobs.some(job => job.status === 'PENDING') ? <span className="nav-badge">{state.printJobs.filter(job => job.status === 'PENDING').length}</span> : null}</button>
+            {currentUser?.role === 'SUPER_ADMIN' ? <button className="button secondary" onClick={() => router.push(`/dashboard/exams/${examId}/proctor-records`)}>监考记录</button> : null}
+            <button className="button secondary" onClick={() => router.push(`/dashboard/exams/${examId}/recordings`)}>历史录像</button>
           </nav>
         </div>
       ) : null}
@@ -1812,10 +1831,6 @@ export function ExamDetailClient({
       {tab === 'monitor' ? (
         <>
           <section className="monitor-fullscreen-head">
-            <div className="return-only-row"><button className="monitor-back-button" onClick={() => routeTo('status')}>
-              <ArrowLeft size={16} />
-              返回详情
-            </button></div>
             <div className="monitor-fullscreen-title-row"><div className="monitor-title">
               <strong>{state.exam.name}</strong>
               <span>{new Date(state.exam.startAt).toLocaleString()} - {new Date(state.exam.endAt).toLocaleString()}</span>
@@ -1833,12 +1848,6 @@ export function ExamDetailClient({
                     onChange={event => { setMonitorSearch(event.target.value); setMonitorPageIndex(0); }} />
                 </label>
               </div>
-              {canManage ? <button className="button secondary" onClick={() => routeTo('screen')}>屏幕控制</button> : null}
-              <button className="monitor-alert-button" onClick={() => setNotificationsOpen((open) => !open)} title="异常提醒">
-                <Bell size={18} />
-                <span>异常提醒</span>
-                {unreadAlertGroups.length ? <b>{unreadAlertGroups.length}</b> : null}
-              </button>
               <label className="monitor-layout-switch">
                 <span>显示</span>
                 <select value={layout} onChange={(event) => { setLayout(Number(event.target.value) as 1 | 4); setMonitorPageIndex(0); }}>
@@ -1965,7 +1974,7 @@ export function ExamDetailClient({
                           </button>
                         ) : null}
                         <button className="button secondary" onClick={() => void retryOj(session.id)}>
-                          {state.exam.platform === 'NOVAJUDGE' ? '重新登录 NovaJudge' : '重新连接评测服务'}
+                          {isBrowserExam(state.exam.platform) ? `重新登录 ${browserExamPlatformName(state.exam.platform)}` : '重新连接评测服务'}
                         </button>
                         {showResume ? (
                           <button className="button" onClick={() => void resumeCandidate(candidate)} disabled={!canResume || busyAction === `resume-${candidate.id}`} title={resumeTitle}>
@@ -2020,84 +2029,6 @@ export function ExamDetailClient({
 
           <div className="monitor-page-count" aria-live="polite">{monitorPageLabel}</div>
 
-          {notificationsOpen ? (
-            <section className="notification-panel monitor-alert-panel">
-              <div className="panel-head">
-                <div>
-                  <strong>异常提醒</strong>
-                  <div className="muted">
-                    待处理 {unreadAlertGroups.length} 组（{unreadAlerts.length} 条记录）{handledAlerts.length ? `，已处理 ${handledAlerts.length} 条` : ''}
-                    <div>最多显示 80 条，待处理优先。同一考生 5 分钟内的相同异常折叠显示，记录与录像均保留。</div>
-                  </div>
-                </div>
-                <div className="alert-filter-toggle">
-                  <button className={alertFilter === 'all' ? 'active' : ''} onClick={() => setAlertFilter('all')}>全部</button>
-                  <button className={alertFilter === 'pending' ? 'active' : ''} onClick={() => setAlertFilter('pending')}>待处理</button>
-                </div>
-                <button className="button secondary icon-button" onClick={() => setNotificationsOpen(false)} title="关闭">
-                  <X size={16} />
-                </button>
-              </div>
-              {panelAlertGroups.map((group) => (
-                <div className="monitor-alert-group" key={group.id}>
-                  {group.alerts.length > 1 ? <div className="monitor-alert-group-summary">
-                    <span>相同异常 {group.alerts.length} 次</span>
-                    {!group.alerts[0].acknowledgedAt ? <button className="button secondary compact-button" disabled={Boolean(busyAction)} onClick={() => void ackAlerts(group.alerts.map(alert => alert.id))}>本组全部标记已处理</button> : null}
-                    <button className="button secondary compact-button" aria-expanded={expandedAlertGroups.includes(group.id)} onClick={() => setExpandedAlertGroups(ids => ids.includes(group.id) ? ids.filter(id => id !== group.id) : [...ids, group.id])}>
-                      {expandedAlertGroups.includes(group.id) ? '收起重复记录' : `展开其余 ${group.alerts.length - 1} 条`}
-                    </button>
-                  </div> : null}
-                  {(expandedAlertGroups.includes(group.id) ? group.alerts : group.alerts.slice(0, 1)).map((alert) => (
-                <article
-                  key={alert.id}
-                  className={`notice-item alert-notice-item ${alert.acknowledgedAt ? 'handled' : ''}`}
-                  onClick={() => {
-                    if (alert.candidate) focusMonitorCandidate(alert.candidate.id);
-                  }}
-                >
-                  <div className="alert-notice-text">
-                    <strong>{alert.candidate ? `${displayName(alert.candidate)}同学` : '未绑定考生'}{alert.message || `${alert.type}异常`}</strong>
-                    <div className="muted">{new Date(alert.createdAt).toLocaleString()}</div>
-                    <div className="muted">类型：{alertTypeText(alert.type)} · 等级：{alert.severity}/5</div>
-                    {alert.acknowledgedAt ? (
-                      <div className="muted">已处理：{new Date(alert.acknowledgedAt).toLocaleString()}</div>
-                    ) : (
-                      <button className="button secondary compact-button" onClick={(event) => { event.stopPropagation(); void ackAlerts([alert.id]); }} disabled={Boolean(busyAction)}>
-                        {busyAction === `ackAlert-${alert.id}` ? '处理中' : '标记已处理'}
-                      </button>
-                    )}
-                  </div>
-                  {alertVideoSource(alert) ? (
-                    loadedAlertVideoIds.includes(alert.id) ? (
-                      <AlertEvidencePlayer
-                        key={alert.id}
-                        className="alert-notice-video"
-                        evidence={alert.evidence}
-                        fallback={alertVideoSource(alert)}
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        className="alert-video-empty alert-video-load-button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setLoadedAlertVideoIds((ids) => [...ids, alert.id]);
-                        }}
-                      >
-                        点击加载录像
-                      </button>
-                    )
-                  ) : (
-                    <div className="alert-video-empty">暂无视频</div>
-                  )}
-                </article>
-                  ))}
-                </div>
-              ))}
-              {!panelAlerts.length ? <div className="muted">{alertFilter === 'pending' ? '暂无待处理异常提醒' : '暂无异常提醒'}</div> : null}
-            </section>
-          ) : null}
-
           {voiceTarget ? <VoiceCallPanel key={voiceTarget.sessionId} sessionId={voiceTarget.sessionId}
             name={displayName(voiceTarget.candidate)} examNumber={voiceTarget.candidate.examNumber}
             onClose={() => { setVoiceTarget(null); setVoiceBusy(false); }} onBusyChange={setVoiceBusy} /> : null}
@@ -2105,31 +2036,104 @@ export function ExamDetailClient({
         </>
       ) : null}
 
+      {notificationsOpen ? (
+        <section id="exam-monitor-alerts" className="notification-panel monitor-alert-panel" aria-label="异常提醒">
+          <div className="panel-head">
+            <div>
+              <strong>异常提醒</strong>
+              <div className="muted">
+                待处理 {unreadAlertGroups.length} 组（{unreadAlerts.length} 条记录）{handledAlerts.length ? `，已处理 ${handledAlerts.length} 条` : ''}
+                <div>最多显示 80 条，待处理优先。同一考生 15 分钟内的同类异常合并提醒，记录与录像均保留。</div>
+              </div>
+            </div>
+            <div className="alert-filter-toggle">
+              <button className={alertFilter === 'all' ? 'active' : ''} onClick={() => setAlertFilter('all')}>全部</button>
+              <button className={alertFilter === 'pending' ? 'active' : ''} onClick={() => setAlertFilter('pending')}>待处理</button>
+            </div>
+            <button className="button secondary icon-button" onClick={() => setNotificationsOpen(false)} title="关闭">
+              <X size={16} />
+            </button>
+          </div>
+          {panelAlertGroups.map((group) => (
+            <div className="monitor-alert-group" key={group.id}>
+              {group.alerts.length > 1 ? <div className="monitor-alert-group-summary">
+                <span>同类异常 {group.alerts.length} 次</span>
+                {!group.alerts[0].acknowledgedAt ? <button className="button secondary compact-button" disabled={Boolean(busyAction)} onClick={() => void ackAlerts(group.alerts.map(alert => alert.id))}>本组全部标记已处理</button> : null}
+                <button className="button secondary compact-button" aria-expanded={expandedAlertGroups.includes(group.id)} onClick={() => setExpandedAlertGroups(ids => ids.includes(group.id) ? ids.filter(id => id !== group.id) : [...ids, group.id])}>
+                  {expandedAlertGroups.includes(group.id) ? '收起重复记录' : `展开其余 ${group.alerts.length - 1} 条`}
+                </button>
+              </div> : null}
+              {(expandedAlertGroups.includes(group.id) ? group.alerts : group.alerts.slice(0, 1)).map((alert) => (
+            <article
+              key={alert.id}
+              className={`notice-item alert-notice-item ${alert.acknowledgedAt ? 'handled' : ''}`}
+              onClick={() => {
+                if (alert.candidate) focusMonitorCandidate(alert.candidate.id);
+              }}
+            >
+              <div className="alert-notice-text">
+                <strong>{alert.candidate ? `${displayName(alert.candidate)}同学` : '未绑定考生'}{alert.message || `${alert.type}异常`}</strong>
+                <div className="muted">{new Date(alert.createdAt).toLocaleString()}</div>
+                <div className="muted">类型：{alertTypeText(alert.type)} · 等级：{alert.severity}/5</div>
+                {alert.acknowledgedAt ? (
+                  <div className="muted">已处理：{new Date(alert.acknowledgedAt).toLocaleString()}</div>
+                ) : (
+                  <button className="button secondary compact-button" onClick={(event) => { event.stopPropagation(); void ackAlerts([alert.id]); }} disabled={Boolean(busyAction)}>
+                    {busyAction === `ackAlert-${alert.id}` ? '处理中' : '标记已处理'}
+                  </button>
+                )}
+              </div>
+              {alertVideoSource(alert) ? (
+                loadedAlertVideoIds.includes(alert.id) ? (
+                  <AlertEvidencePlayer
+                    key={alert.id}
+                    className="alert-notice-video"
+                    evidence={alert.evidence}
+                    fallback={alertVideoSource(alert)}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="alert-video-empty alert-video-load-button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setLoadedAlertVideoIds((ids) => [...ids, alert.id]);
+                    }}
+                  >
+                    点击加载录像
+                  </button>
+                )
+              ) : (
+                <div className="alert-video-empty">暂无视频</div>
+              )}
+            </article>
+              ))}
+            </div>
+          ))}
+          {!panelAlerts.length ? <div className="muted">{alertFilter === 'pending' ? '暂无待处理异常提醒' : '暂无异常提醒'}</div> : null}
+        </section>
+      ) : null}
+
       {tab === 'settings' && canManage ? (
         <div className="grid exam-management-layout">
-          <div className="subnav exam-management-subnav card">
-            <h2>考试管理</h2>
+          <nav className="subnav exam-management-subnav card" aria-label="考试管理导航">
             <button className={`button ${settingsTab === 'problems' ? '' : 'secondary'}`} onClick={() => routeToSettings('problems')}>题目管理</button>
             <button className={`button ${settingsTab === 'rooms' ? '' : 'secondary'}`} onClick={() => routeToSettings('rooms')}>考室管理</button>
             <button className={`button ${settingsTab === 'candidates' ? '' : 'secondary'}`} onClick={() => routeToSettings('candidates')}>考生管理</button>
-            <button className={`button ${settingsTab === 'external-board' ? '' : 'secondary'}`} onClick={() => routeToSettings('external-board')}>外榜推送</button>
-            {state.exam.platform === 'HYDRO' && state.exam.platformContestId === 'local' ? <button className={`button ${settingsTab === 'federation' ? '' : 'secondary'}`} onClick={() => routeToSettings('federation')}>跨网同步</button> : null}
-            {state.exam.platform === 'NOVAJUDGE' ? <button className="button secondary" onClick={() => router.push(`/dashboard/exams/${examId}/reactions`)}>Reaction 录像</button> : null}
-            {state.exam.platform !== 'NOVAJUDGE' ? <button className="button secondary" onClick={() => router.push(`/dashboard/exams/${examId}/code-check`)}>代码查重</button> : null}
-          </div>
+            {state.exam.platform !== 'HYDRO_BROWSER' ? <button className={`button ${settingsTab === 'external-board' ? '' : 'secondary'}`} onClick={() => routeToSettings('external-board')}>外榜推送</button> : null}
+          </nav>
 
-          {settingsTab === 'federation' && state.exam.platform === 'HYDRO' && state.exam.platformContestId === 'local' ? <ExamFederationSettings key={examId} examId={examId} /> : null}
-          {settingsTab === 'external-board' ? <ExternalBoardSettings key={examId} examId={examId} /> : null}
+          {settingsTab === 'external-board' ? state.exam.platform === 'HYDRO_BROWSER' ? <p>本场考试的榜单由 HydroOJ 管理。</p> : <ExternalBoardSettings key={examId} examId={examId} /> : null}
 
-          {settingsTab === 'problems' && state.exam.platform === 'NOVAJUDGE' ? <section className="card"><h2>NovaJudge 题目管理</h2><p>本场考试的题目、提交、判题、排行榜、答疑和打印由 NovaJudge 管理。</p><a className="button secondary" href={`${state.exam.platformBaseUrl}/contest/${state.exam.platformContestId}`} target="_blank" rel="noreferrer">打开 NovaJudge 比赛</a></section> : null}
-          {settingsTab === 'problems' && state.exam.platform !== 'NOVAJUDGE' ? (
+          {settingsTab === 'problems' && isBrowserExam(state.exam.platform) ? <section className="card"><h2>{browserExamPlatformName(state.exam.platform)} 题目管理</h2><p>本场考试的题目、提交、判题、排行榜、答疑和打印由 {browserExamPlatformName(state.exam.platform)} 管理。</p><a className="button secondary" href={`${state.exam.platformBaseUrl}/contest/${state.exam.platformContestId}`} target="_blank" rel="noreferrer">打开 {browserExamPlatformName(state.exam.platform)} 比赛</a></section> : null}
+          {settingsTab === 'problems' && !isBrowserExam(state.exam.platform) ? (
             <section className="card grid exam-problem-management">
               <div className="table-toolbar">
-                <div><h2 style={{ margin: 0 }}>题目管理</h2><div className="muted">先将 Hydro 得分按实际满分换算为百分制，再乘本场得分比，统一用于递交记录、递交详情和成绩表。</div></div>
+                <div><h2 style={{ margin: 0 }}>题目管理</h2><div className="muted">考试分数即本场题目满分。实际得分按原题得分 ÷ 原题满分 × 考试分数计算。题号最多 6 个字符。</div></div>
                 <button className="button" onClick={() => void saveProblemScores()} disabled={busyAction === 'saveProblemScores'}><Save size={18} />{busyAction === 'saveProblemScores' ? '保存中' : '保存题目分值'}</button>
               </div>
-              <div className="table-scroll"><table className="table exam-problem-score-table"><thead><tr><th>题目编号</th><th>题目名称</th><th>题目分数</th><th>得分比 %</th><th>比赛分</th></tr></thead><tbody>
-                {(state.exam.problems || []).map(problem => { const percent = problemPercents[problem.id] ?? problem.scorePercent; return <tr key={problem.id}><td><strong>{String.fromCharCode(65 + problem.order)}</strong></td><td>{problem.title}</td><td>{problem.hydroScore}</td><td><input aria-label={`${problem.title} 得分比`} type="number" min={0} max={100} step={1} value={percent} onChange={event => setProblemPercents(current => ({ ...current, [problem.id]: Math.min(100, Math.max(0, Number(event.target.value))) }))} /></td><td><strong>{percent}</strong></td></tr>; })}
+              <div className="table-scroll"><table className="table exam-problem-score-table"><thead><tr><th>题目编号</th><th>题目名称</th><th>原题满分</th><th>考试分数</th><th>本场满分</th></tr></thead><tbody>
+                {(state.exam.problems || []).map(problem => { const percent = problemPercents[problem.id] ?? problem.score; return <tr key={problem.id}><td><input aria-label={`${problem.title} 题号`} maxLength={6} value={problemLabels[problem.id] ?? problem.label ?? problemLabel(problem.order)} onChange={event => setProblemLabels(current => ({ ...current, [problem.id]: event.target.value }))} /></td><td>{problem.title}</td><td>{formatScore(problem.hydroScore)}</td><td><input aria-label={`${problem.title} 考试分数`} type="number" min={0} max={100000} step={1} value={percent} onChange={event => setProblemPercents(current => ({ ...current, [problem.id]: Math.min(100000, Math.max(0, Number(event.target.value))) }))} /></td><td><strong>{percent}</strong></td></tr>; })}
                 {!(state.exam.problems || []).length ? <tr><td colSpan={5} className="muted">当前考试暂无题目，请先在编辑考试中选择题目。</td></tr> : null}
               </tbody></table></div>
             </section>
@@ -2149,29 +2153,30 @@ export function ExamDetailClient({
                   <label>NovaJudge 数据时区<input value={examForm.novaJudgeTimezone || 'Asia/Shanghai'} placeholder="Asia/Shanghai" onChange={event => updateExamForm({ ...examForm, novaJudgeTimezone: event.target.value })} /></label>
                   <p className="muted">监考、控屏和考生管理在本平台进行。答题设置由 NovaJudge 管理，请保持双方比赛时间及考生账号一致。</p>
                 </> : null}
+                {examForm.platform === 'HYDRO_BROWSER' ? <HydroBrowserFields baseUrl={examForm.platformBaseUrl} contestId={examForm.platformContestId} onBaseUrl={platformBaseUrl => updateExamForm({ ...examForm, platformBaseUrl })} onContestId={platformContestId => updateExamForm({ ...examForm, platformContestId })} /> : null}
                 <label>
                   考试名称
                   <input value={examForm.name} onChange={(event) => updateExamForm({ ...examForm, name: event.target.value })} />
                 </label>
                 <label>
                   比赛类型
-                  <select value={examForm.contestType} disabled={examForm.contestRule === 'GPLT'} onChange={(event) => updateExamForm({ ...examForm, contestType: event.target.value as 'INDIVIDUAL' | 'TEAM' })}>
-                    <option value="INDIVIDUAL">个人赛</option>
-                    <option value="TEAM">团队赛</option>
+                  <select value={examForm.contestType} disabled={examForm.platform !== 'NOVAJUDGE' && examForm.contestRule !== 'XCPC'} onChange={(event) => updateExamForm({ ...examForm, contestType: event.target.value as 'INDIVIDUAL' | 'TEAM' })}>
+                    {examForm.platform === 'NOVAJUDGE' || examForm.contestRule !== 'GPLT' ? <option value="INDIVIDUAL">个人赛</option> : null}
+                    {examForm.platform === 'NOVAJUDGE' || ['XCPC', 'GPLT'].includes(examForm.contestRule) ? <option value="TEAM">团队赛</option> : null}
                   </select>
                 </label>
                 <label>
                   赛制
                   <select value={examForm.contestRule} disabled={examForm.platform === 'NOVAJUDGE'} onChange={(event) => { const contestRule = event.target.value as Exam['contestRule']; updateExamForm({ ...examForm, contestRule, flexible: contestRule !== 'XCPC' && examForm.flexible, showTestCaseCount: contestRule === 'KS' || examForm.showTestCaseCount, showObjectiveScore: contestRule === 'KS' ? false : examForm.showObjectiveScore, ...(contestRule === 'GPLT' ? { contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS', leaderOnlySubmission: false } : {}) }); }}>
+                    <option value="LANQIAO">LANQIAO</option>
                     <option value="GPLT">GPLT</option>
                     <option value="XCPC">XCPC</option>
-                    <option value="LANQIAO">LANQIAO</option>
-                    <option value="OI">OI</option>
                     <option value="IOI">IOI</option>
+                    <option value="OI">OI</option>
                     <option value="KS">KS</option>
                   </select>
                 </label>
-                {examForm.contestType === 'TEAM' ? <label>团队账号方式<select value={examForm.teamAccountMode} disabled={examForm.contestRule === 'GPLT'} onChange={(event) => updateExamForm({ ...examForm, teamAccountMode: event.target.value as 'MEMBER_ACCOUNTS' | 'TEAM_ACCOUNT' })}><option value="MEMBER_ACCOUNTS">每名成员一个账号</option><option value="TEAM_ACCOUNT">全队共用一个账号</option></select></label> : null}
+                {examForm.contestType === 'TEAM' ? <label>团队账号方式<select value={examForm.teamAccountMode} disabled={examForm.platform !== 'NOVAJUDGE' && examForm.contestRule === 'GPLT'} onChange={(event) => updateExamForm({ ...examForm, teamAccountMode: event.target.value as 'MEMBER_ACCOUNTS' | 'TEAM_ACCOUNT' })}><option value="MEMBER_ACCOUNTS">每名成员一个账号</option>{examForm.platform === 'NOVAJUDGE' || examForm.contestRule !== 'GPLT' ? <option value="TEAM_ACCOUNT">全队共用一个账号</option> : null}</select></label> : null}
                 <label>
                   开始时间
                   <input type="datetime-local" value={examForm.startAt} onChange={(event) => updateExamForm({ ...examForm, startAt: event.target.value })} />
@@ -2189,31 +2194,21 @@ export function ExamDetailClient({
                   <input type="number" min={1} value={examForm.durationMinutes} onChange={(event) => updateExamForm({ ...examForm, durationMinutes: Number(event.target.value) })} />
                 </label>
                 <label>
-                  <span>灵活考试 <input type="checkbox" checked={examForm.flexible} disabled={examForm.contestRule === 'XCPC'} onChange={(event) => updateExamForm({ ...examForm, flexible: event.target.checked })} /></span>
+                  <span>灵活考试 <input type="checkbox" role="switch" className="settings-switch" checked={examForm.flexible} disabled={isBrowserExam(examForm.platform) || examForm.contestRule === 'XCPC'} onChange={(event) => updateExamForm({ ...examForm, flexible: event.target.checked })} /></span>
                   <small className="muted">关闭时所有考生统一结束，未开始的考生仅可在开考后 15 分钟内登录并确认开始；开启后按设置的最晚开始时间和个人开考时刻计时。</small>
                 </label>
               </div>
               <div className="settings-checks">
-                {examForm.platform !== 'NOVAJUDGE' ? <TeamSubmissionViewSetting contestType={examForm.contestType} teamAccountMode={examForm.teamAccountMode} enabled={examForm.allowTeamSubmissionView} onChange={enabled => updateExamForm({ ...examForm, allowTeamSubmissionView: enabled })} helpClassName="muted" /> : null}
-                <label><span>保存完整考试录像 <input type="checkbox" checked={examForm.saveFullRecording ?? false} onChange={(event) => updateExamForm({ ...examForm, saveFullRecording: event.target.checked })} /></span><small className="muted">勾选后保存完整监考过程。直播画质保持 1080p、30 帧。</small></label>
-                <label><span>保存异常前后各 20 秒录像 <input type="checkbox" checked={examForm.saveIncidentRecording ?? false} onChange={(event) => updateExamForm({ ...examForm, saveIncidentRecording: event.target.checked })} /></span><small className="muted">默认不勾选。仅勾选此项时保存异常对应机位前后各 20 秒；两项均未勾选时不保存监考录像。</small></label>
-                {examForm.platform !== 'NOVAJUDGE' ? <><label><span>展示通过测试点数目 <input type="checkbox" checked={examForm.contestRule === 'KS' || examForm.showTestCaseCount} disabled={examForm.contestRule === 'KS'} onChange={(event) => updateExamForm({ ...examForm, showTestCaseCount: event.target.checked })} />{examForm.contestRule === 'KS' ? '（KS 固定开启）' : ''}</span></label>
-                <label><span>展示客观题成绩 <input type="checkbox" checked={examForm.contestRule !== 'KS' && examForm.showObjectiveScore} disabled={examForm.contestRule === 'KS'} onChange={(event) => updateExamForm({ ...examForm, showObjectiveScore: event.target.checked })} />{examForm.contestRule === 'KS' ? '（KS 不显示得分）' : ''}</span></label>
+                {!isBrowserExam(examForm.platform) ? <TeamSubmissionViewSetting contestType={examForm.contestType} teamAccountMode={examForm.teamAccountMode} enabled={examForm.allowTeamSubmissionView} onChange={enabled => updateExamForm({ ...examForm, allowTeamSubmissionView: enabled })} helpClassName="muted" /> : null}
+                <label><span>保存完整考试录像 <input type="checkbox" role="switch" className="settings-switch" checked={examForm.saveFullRecording ?? false} onChange={(event) => updateExamForm({ ...examForm, saveFullRecording: event.target.checked })} /></span></label>
+                <label><span>保存异常前后各 20 秒录像 <input type="checkbox" role="switch" className="settings-switch" checked={examForm.saveIncidentRecording ?? false} onChange={(event) => updateExamForm({ ...examForm, saveIncidentRecording: event.target.checked })} /></span></label>
+                {!isBrowserExam(examForm.platform) ? <><label><span>展示通过测试点数目 <input type="checkbox" role="switch" className="settings-switch" checked={examForm.contestRule === 'KS' || examForm.showTestCaseCount} disabled={examForm.contestRule === 'KS'} onChange={(event) => updateExamForm({ ...examForm, showTestCaseCount: event.target.checked })} />{examForm.contestRule === 'KS' ? '（KS 固定开启）' : ''}</span></label>
+                <label><span>展示客观题成绩 <input type="checkbox" role="switch" className="settings-switch" checked={examForm.contestRule !== 'KS' && examForm.showObjectiveScore} disabled={examForm.contestRule === 'KS'} onChange={(event) => updateExamForm({ ...examForm, showObjectiveScore: event.target.checked })} />{examForm.contestRule === 'KS' ? '（KS 不显示得分）' : ''}</span></label>
                 <label><span>打印方式 <select value={examForm.printMode} onChange={(event) => updateExamForm({ ...examForm, printMode: event.target.value as Exam['printMode'], allowPrint: event.target.value !== 'DISABLED' })}><option value="DISABLED">不允许打印</option><option value="VIRTUAL">虚拟打印</option><option value="PHYSICAL">真实打印</option></select></span></label>
                 {examForm.contestType === 'TEAM' ? <>
-                  <label><span>只有队长可以提交 <input type="checkbox" checked={examForm.leaderOnlySubmission} onChange={(event) => updateExamForm({ ...examForm, leaderOnlySubmission: event.target.checked })} /></span></label>
+                  <label><span>只有队长可以提交 <input type="checkbox" role="switch" className="settings-switch" checked={examForm.leaderOnlySubmission} disabled={examForm.contestRule === 'GPLT'} onChange={(event) => updateExamForm({ ...examForm, leaderOnlySubmission: event.target.checked })} /></span></label>
                 </> : null}
                 </> : null}
-                <label>
-                  <span>
-                    需要小程序第二机位 <input type="checkbox" checked={examForm.requireMiniProgram} onChange={(event) => updateExamForm({ ...examForm, requireMiniProgram: event.target.checked })} />
-                  </span>
-                </label>
-                <label>
-                  <span>
-                    需要电脑前置摄像头 <input type="checkbox" checked={examForm.requireFrontCamera} onChange={(event) => updateExamForm({ ...examForm, requireFrontCamera: event.target.checked })} />
-                  </span>
-                </label>
               </div>
               <label>
                 考试说明（Markdown）
@@ -2285,7 +2280,7 @@ export function ExamDetailClient({
                         <th>{state.exam.contestType === 'TEAM' && state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? '队伍成员学号' : '学号'}</th>
                         <th>考室</th>
                         <th>座位号</th>
-                        {state.exam.contestType === 'TEAM' ? <th>是否队长</th> : null}
+                        {state.exam.contestType === 'TEAM' ? <th>成员次序</th> : null}
                         <th>是否排名</th>
                         <th>操作</th>
                       </tr>
@@ -2306,7 +2301,7 @@ export function ExamDetailClient({
                           <td>{state.exam.contestType === 'TEAM' && state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? splitMemberText(candidate.teamMemberStudentIds).join('、') || '-' : candidate.studentId || '-'}</td>
                           <td>{roomNamesByCandidateId.get(candidate.id)?.join('、') || <span className="muted">未分配</span>}</td>
                           <td>{candidate.seatNo}</td>
-                          {state.exam.contestType === 'TEAM' ? <td>{candidate.isTeamLeader ? '是' : '否'}</td> : null}
+                          {state.exam.contestType === 'TEAM' ? <td>{candidate.memberOrder || (candidate.isTeamLeader ? 1 : 2)}</td> : null}
                           <td>{candidate.ranked ? '是' : '否'}</td>
                           <td>
                             <div className="row-actions">
@@ -2335,29 +2330,24 @@ export function ExamDetailClient({
                       </button>
                     </div>
                     {error ? <div className="exam-editor-error" role="alert">{error}</div> : null}
+                    {!candidateDraft.id ? <label>添加方式<select value={candidateAddMode} onChange={event => setCandidateAddMode(event.target.value as 'batch' | 'single')}><option value="batch">批量导入</option><option value="single">单独添加</option></select></label> : null}
+                    <div hidden={!candidateDraft.id && candidateAddMode !== 'single'}>
                     <div className="grid two">
                       {state.exam.contestType === 'TEAM' ? (
                         <label>队伍名称<input value={candidateDraft.teamName} onChange={(event) => setCandidateDraft({ ...candidateDraft, teamName: event.target.value })} /></label>
                       ) : null}
                       <label>参赛组别{participationOptions(state.exam.contestRule).length ? <select aria-label="参赛组别" value={normalizeParticipationGroup(state.exam.contestRule, candidateDraft.groupName)} onChange={event => setCandidateDraft({ ...candidateDraft, groupName: event.target.value, ...(isXcpcLeaderboard(state.exam.contestRule) ? { ranked: event.target.value !== 'star' } : {}) })}><option value="" disabled>请选择参赛组别</option>{participationOptions(state.exam.contestRule).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select> : <input value={candidateDraft.groupName} onChange={event => setCandidateDraft({ ...candidateDraft, groupName: event.target.value })} />}</label>
-                      {state.exam.contestType === 'TEAM' && state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? <>
-                        <label>队伍成员姓名<input value={candidateDraft.teamMembers} onChange={(event) => setCandidateDraft({ ...candidateDraft, teamMembers: event.target.value })} placeholder="用、隔开，并与成员学号逐一对应" /></label>
-                        <label>队伍成员学号<input value={candidateDraft.teamMemberStudentIds} onChange={(event) => setCandidateDraft({ ...candidateDraft, teamMemberStudentIds: event.target.value })} placeholder="用、隔开，并与成员姓名逐一对应" /></label>
-                      </> : <>
-                        <label>姓名<input value={candidateDraft.name} onChange={(event) => setCandidateDraft({ ...candidateDraft, name: event.target.value })} /></label>
-                        <label>学号<input value={candidateDraft.studentId} onChange={(event) => setCandidateDraft({ ...candidateDraft, studentId: event.target.value })} /></label>
-                      </>}
+                      <label>姓名<input value={candidateDraft.name} onChange={(event) => setCandidateDraft({ ...candidateDraft, name: event.target.value })} /></label>
+                      <label>学号<input value={candidateDraft.studentId} onChange={(event) => setCandidateDraft({ ...candidateDraft, studentId: event.target.value })} /></label>
                       <label>考号<input value={candidateDraft.examNumber} onChange={(event) => setCandidateDraft({ ...candidateDraft, examNumber: event.target.value })} /></label>
                       <label>密码<input value={candidateDraft.password} onChange={(event) => setCandidateDraft({ ...candidateDraft, password: event.target.value })} /></label>
                       <label>学校<input value={candidateDraft.school} onChange={(event) => setCandidateDraft({ ...candidateDraft, school: event.target.value })} /></label>
-                      {state.exam.contestType === 'TEAM' && state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? null : <label>学院<input value={candidateDraft.college} onChange={(event) => setCandidateDraft({ ...candidateDraft, college: event.target.value })} /> </label>}
-                      {state.exam.contestType === 'TEAM' && state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? null : <label>专业<input value={candidateDraft.major} onChange={(event) => setCandidateDraft({ ...candidateDraft, major: event.target.value })} /></label>}
-                      {state.exam.contestType === 'TEAM' && state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? null : <>
-                        <label>性别<input value={candidateDraft.gender} onChange={(event) => setCandidateDraft({ ...candidateDraft, gender: event.target.value })} /></label>
+                      <label>学院<input value={candidateDraft.college} onChange={(event) => setCandidateDraft({ ...candidateDraft, college: event.target.value })} /> </label>
+                      <label>专业<input value={candidateDraft.major} onChange={(event) => setCandidateDraft({ ...candidateDraft, major: event.target.value })} /></label>
+                      {<>
                         <label>年级<input value={candidateDraft.gradeYear} onChange={(event) => setCandidateDraft({ ...candidateDraft, gradeYear: event.target.value })} /></label>
                         <label>行政班级<input value={candidateDraft.className} onChange={(event) => setCandidateDraft({ ...candidateDraft, className: event.target.value })} /></label>
                       </>}
-                      <label>指导老师<input value={candidateDraft.advisor} onChange={(event) => setCandidateDraft({ ...candidateDraft, advisor: event.target.value })} /></label>
                       <label>座位号<input value={candidateDraft.seatNo} onChange={(event) => setCandidateDraft({ ...candidateDraft, seatNo: event.target.value })} /></label>
                       <label>
                         考室
@@ -2368,14 +2358,16 @@ export function ExamDetailClient({
                           ))}
                         </select>
                       </label>
-                      {state.exam.contestType === 'TEAM' ? <label className="exam-checkbox"><input type="checkbox" checked={candidateDraft.isTeamLeader} onChange={(event) => setCandidateDraft({ ...candidateDraft, isTeamLeader: event.target.checked })} /> 是否队长</label> : null}
+                      {state.exam.contestType === 'TEAM' ? <label>成员次序<input aria-label="成员次序" type="number" min={1} max={100} value={candidateDraft.memberOrder || 1} onChange={event => setCandidateDraft({ ...candidateDraft, memberOrder: Number(event.target.value), isTeamLeader: Number(event.target.value) === 1 })} /><small>1 为队长，2、3 为队员</small></label> : null}
                       <label className="exam-checkbox"><input type="checkbox" checked={candidateDraft.ranked && normalizeParticipationGroup(state.exam.contestRule, candidateDraft.groupName) !== 'star'} disabled={isXcpcLeaderboard(state.exam.contestRule) && normalizeParticipationGroup(state.exam.contestRule, candidateDraft.groupName) === 'star'} onChange={(event) => setCandidateDraft({ ...candidateDraft, ranked: event.target.checked })} /> 是否排名</label>
                     </div>
+                    {candidateDraft.id && candidateDraft.teamRoster?.length ? <fieldset className="form"><legend>队伍成员（按成员次序排列）</legend>{candidateDraft.teamRoster.map((member,index) => Number(member.memberOrder || 1) === 1 ? null : <div className="grid two" key={index}>{[['name','姓名'],['studentId','学号'],['school','学校'],['college','学院'],['gradeYear','年级'],['seatNo','座位号'],['memberOrder','成员次序']].map(([key,label]) => <label key={key}>{label}<input value={String(member[key] || '')} onChange={e => setCandidateDraft({ ...candidateDraft, teamRoster: candidateDraft.teamRoster!.map((m,i) => i === index ? { ...m, [key]: key === 'memberOrder' ? Number(e.target.value) : e.target.value } : m) })} /></label>)}</div>)}</fieldset> : null}
                     <button className="button" onClick={() => void saveCandidate()} disabled={busyAction === 'saveCandidate'}>
                       <Save size={18} />
                       {busyAction === 'saveCandidate' ? '保存中' : '保存考生'}
                     </button>
-                    {!candidateDraft.id ? (
+                    </div>
+                    {!candidateDraft.id && candidateAddMode === 'batch' ? (
                       <section className="candidate-import-box form">
                         <div className="modal-title">
                           <h3 style={{ margin: 0 }}>批量导入</h3>
@@ -2384,10 +2376,9 @@ export function ExamDetailClient({
                             下载模板
                           </button>
                         </div>
-                        <div className="muted">
-                          {state.exam.contestType !== 'TEAM' ? '兼容 cwnupaaweb 报名导出字段，其中“比赛账号”自动作为考号、“比赛密码”自动作为密码。' : state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? '一个队伍一行；考号就是全队共用的登录账号。' : '每名成员一行；兼容 cwnupaaweb 团队明细导出。“比赛账号”自动作为考号，同队首行在没有“是否队长”列时自动识别为队长。'}
-                        </div>
-                        <div className="muted">“考室”可选，填写本场考试已有的考室名称后自动分配；留空不分配，重复导入时保留已有分配。团队按整队分配，同队考室须一致。</div>
+                        {state.exam.contestType === 'TEAM' ? <div className="muted">
+                          {state.exam.teamAccountMode === 'TEAM_ACCOUNT' ? '每名成员一行，按队伍名称匹配、成员次序排序；仅 1 号队长填写考号和密码，其余成员留空。' : '每名成员一行，每人填写考号和密码；按队伍名称匹配，成员次序 1 为队长。'}
+                        </div> : null}
                         <label>
                           选择模板表格
                           <input type="file" accept=".xlsx,.xls,.csv" disabled={candidateImportReading || busyAction === 'importCandidates'} onChange={(event) => void readCandidateFile(event)} />
@@ -2431,7 +2422,7 @@ export function ExamDetailClient({
                   </div>
                   <div className="room-toolbar-actions">
                     <div className={unassignedCandidates.length ? 'coverage-badge warn' : 'coverage-badge ok'}>未分配考生 {unassignedCandidates.length}</div>
-                    <button className="button secondary" onClick={() => { setRoomCsv(''); setRoomImportOpen(true); }}>
+                    <button className="button secondary" onClick={() => { setRoomImportRows([]); setRoomImportError(''); setRoomImportOpen(true); }}>
                       <Upload size={18} />
                       批量导入
                     </button>
@@ -2450,7 +2441,7 @@ export function ExamDetailClient({
                           <div className="muted">考室考生 {room.candidates.length} 人</div>
                         </div>
                         <div className="room-card-actions">
-                          <button className="button secondary room-action-button" onClick={() => setRoomDetail(room)}>查看详情</button>
+                          <button type="button" className="button secondary room-action-button" aria-haspopup="dialog" onClick={() => setRoomDetail(room)}>查看详情</button>
                           <button className="button secondary room-action-button" onClick={() => editRoom(room)}>编辑考室</button>
                           <button className="button danger room-action-button" onClick={() => void deleteRoom(room.id, room.name)} disabled={busyAction === `deleteRoom-${room.id}`}>
                             {busyAction === `deleteRoom-${room.id}` ? '删除中' : '删除考室'}
@@ -2460,25 +2451,16 @@ export function ExamDetailClient({
                       <div className="room-config-summary">
                         <span>第二机位：{room.requireSecondCamera ? '需要' : '不需要'}</span>
                         <span>前置摄像头：{room.requireFrontCamera ? '需要' : '不需要'}</span>
-                        <span>登录方式：{room.loginMode === 'SECOND_CAMERA_QR' ? '第二机位扫码' : '考试编号＋姓名＋考号＋密码'}</span>
+                        <span>登录方式：{room.loginMode === 'SECOND_CAMERA_QR' ? '第二机位扫码' : '考试编号＋考号＋密码'}</span>
                         <span>登录请求审核：{room.loginReviewMode === 'AUTO' ? '自动通过' : '手动审核'}</span>
                       </div>
                       <div className="room-info-block">
                         <span>考室监考</span>
                         <div className="room-chip-list">
                           {room.proctors.map(({ user }) => (
-                            <span key={user.id}>{user.realName || user.nickname || user.username || '暂未更新'} / {user.numberId || '-'}</span>
+                            <span key={user.id}>{user.realName || user.nickname || user.username || '未填写姓名'}</span>
                           ))}
                           {!room.proctors.length ? <em>暂无监考</em> : null}
-                        </div>
-                      </div>
-                      <div className="room-info-block">
-                        <span>考室考生</span>
-                        <div className="room-candidate-list">
-                          {room.candidates.map(({ candidate }) => (
-                          <span key={candidate.id}>{candidate.seatNo} {displayName(candidate)} / {candidate.examNumber}</span>
-                          ))}
-                          {!room.candidates.length ? <em>暂无考生</em> : null}
                         </div>
                       </div>
                     </article>
@@ -2503,14 +2485,14 @@ export function ExamDetailClient({
                     <div className="grid two room-security-fields">
                       <label className="exam-checkbox"><input type="checkbox" checked={roomRequireSecondCamera} onChange={(event) => setRoomRequireSecondCamera(event.target.checked)} /> 需要第二机位</label>
                       <label className="exam-checkbox"><input type="checkbox" checked={roomRequireFrontCamera} onChange={(event) => setRoomRequireFrontCamera(event.target.checked)} /> 需要前置摄像头</label>
-                      <label>登录方式<select value={roomLoginMode} onChange={(event) => setRoomLoginMode(event.target.value as 'CREDENTIALS' | 'SECOND_CAMERA_QR')}><option value="CREDENTIALS">考试编号＋姓名＋考号＋密码</option><option value="SECOND_CAMERA_QR">第二机位扫码</option></select></label>
+                      <label>登录方式<select value={roomLoginMode} onChange={(event) => setRoomLoginMode(event.target.value as 'CREDENTIALS' | 'SECOND_CAMERA_QR')}><option value="CREDENTIALS">考试编号＋考号＋密码</option><option value="SECOND_CAMERA_QR">第二机位扫码</option></select></label>
                       <label>登录请求审核方式<select value={roomLoginReviewMode} onChange={(event) => setRoomLoginReviewMode(event.target.value as 'MANUAL' | 'AUTO')}><option value="MANUAL">手动审核</option><option value="AUTO">自动通过</option></select></label>
                     </div>
                     <section className="room-editor-section">
                       <div className="table-toolbar">
                         <div>
                           <h3 style={{ margin: 0 }}>监考名单</h3>
-                          <div className="muted">至少一个监考，姓名未同步时显示暂未更新</div>
+                          <div className="muted">监考可留空，姓名未同步时显示暂未更新</div>
                         </div>
                         <button type="button" className="button secondary compact-button" onClick={() => setRoomProctorAddOpen(true)}>添加监考</button>
                       </div>
@@ -2524,7 +2506,7 @@ export function ExamDetailClient({
                             <button type="button" className="button danger compact-button" onClick={() => removeRoomProctor(proctor.numberId)}>移除</button>
                           </div>
                         ))}
-                        {!roomProctorRows.length ? <div className="muted">暂无监考，请添加至少一个监考学号。</div> : null}
+                        {!roomProctorRows.length ? <div className="muted">暂无监考，可直接保存考室。</div> : null}
                       </div>
                     </section>
                     <section className="room-editor-section">
@@ -2632,15 +2614,26 @@ export function ExamDetailClient({
               ) : null}
 
               {roomDetail ? (
-                <div className="modal-backdrop" role="presentation" onMouseDown={() => setRoomDetail(null)}>
-                  <section className="modal-panel form room-detail-modal" onMouseDown={(event) => event.stopPropagation()}>
-                    <div className="modal-title"><div><h2 style={{ margin: 0 }}>{roomDetail.name}</h2><div className="muted">考室完整信息</div></div><button type="button" className="button secondary icon-button" onClick={() => setRoomDetail(null)} aria-label="关闭"><X size={18} /></button></div>
-                    <dl className="room-detail-facts"><div><dt>第二机位</dt><dd>{roomDetail.requireSecondCamera ? '需要' : '不需要'}</dd></div><div><dt>前置摄像头</dt><dd>{roomDetail.requireFrontCamera ? '需要' : '不需要'}</dd></div><div><dt>登录方式</dt><dd>{roomDetail.loginMode === 'SECOND_CAMERA_QR' ? '第二机位扫码' : '考试编号＋姓名＋考号＋密码'}</dd></div><div><dt>登录请求审核</dt><dd>{roomDetail.loginReviewMode === 'AUTO' ? '自动通过' : '手动审核'}</dd></div></dl>
+                <dialog ref={roomDetailDialog} className="nova-dialog room-detail-modal" aria-labelledby="room-detail-title"
+                  onClose={() => setRoomDetail(null)} onClick={event => {
+                    if (event.target !== event.currentTarget) return;
+                    const { left, right, top, bottom } = event.currentTarget.getBoundingClientRect();
+                    if (event.clientX < left || event.clientX > right || event.clientY < top || event.clientY > bottom) event.currentTarget.close();
+                  }}>
+                  <header className="nova-dialog-header">
+                    <h2 id="room-detail-title">{roomDetail.name}</h2>
+                    <button type="button" className="nova-dialog-close" aria-label="关闭考室详情" onClick={() => roomDetailDialog.current?.close()}><X size={20} /></button>
+                  </header>
+                  <div className="nova-dialog-body room-detail-content">
+                    <dl className="room-detail-facts"><div><dt>第二机位</dt><dd>{roomDetail.requireSecondCamera ? '需要' : '不需要'}</dd></div><div><dt>前置摄像头</dt><dd>{roomDetail.requireFrontCamera ? '需要' : '不需要'}</dd></div><div><dt>登录方式</dt><dd>{roomDetail.loginMode === 'SECOND_CAMERA_QR' ? '第二机位扫码' : '考试编号＋考号＋密码'}</dd></div><div><dt>登录请求审核</dt><dd>{roomDetail.loginReviewMode === 'AUTO' ? '自动通过' : '手动审核'}</dd></div></dl>
                     <section><h3>考室监考</h3><div className="room-detail-list">{roomDetail.proctors.map(({ user }) => <div className="room-detail-row" key={user.id}><strong>{user.realName || user.nickname || user.username || '暂未更新'}</strong><span>{user.numberId || '-'}</span></div>)}{!roomDetail.proctors.length ? <div className="muted">暂无监考</div> : null}</div></section>
                     <section><h3>考室考生</h3><div className="room-detail-list">{roomDetail.candidates.map(({ candidate }) => <div className="room-detail-row" key={candidate.id}><strong>{displayName(candidate)}</strong><span>{candidate.studentId || candidate.examNumber} · 座位 {candidate.seatNo || '-'}</span></div>)}{!roomDetail.candidates.length ? <div className="muted">暂无考生</div> : null}</div></section>
-                    <button className="button" onClick={() => { const room = roomDetail; setRoomDetail(null); editRoom(room); }}>编辑考室</button>
-                  </section>
-                </div>
+                  </div>
+                  <footer className="nova-dialog-footer">
+                    <button type="button" className="button secondary" onClick={() => roomDetailDialog.current?.close()}>关闭</button>
+                    <button type="button" className="button" onClick={() => { roomDetailDialog.current?.close(); editRoom(roomDetail); }}>编辑考室</button>
+                  </footer>
+                </dialog>
               ) : null}
 
               {roomImportOpen ? (
@@ -2652,7 +2645,6 @@ export function ExamDetailClient({
                         <X size={18} />
                       </button>
                     </div>
-                    <div className="muted">Excel 首行字段：考室名称、监考老师学号、考生考号、登录请求审核方式。审核方式填写“手动审核”或“自动通过”。多个学号或考号可用顿号、逗号、空格或换行分隔。</div>
                     <button className="button secondary" type="button" onClick={() => void downloadRoomTemplate()}>
                       <Download size={18} />
                       下载模板
@@ -2661,7 +2653,8 @@ export function ExamDetailClient({
                       选择模板表格
                       <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => void readRoomFile(event)} />
                     </label>
-                    <button className="button" onClick={() => void importRoomsBatch()} disabled={busyAction === 'importRoomsBatch' || !roomCsv.trim()}>
+                    {roomImportError ? <div className="exam-editor-error" role="alert">{roomImportError}</div> : null}
+                    <button className="button" onClick={() => void importRoomsBatch()} disabled={busyAction === 'importRoomsBatch' || !roomImportRows.length}>
                       <Upload size={18} />
                       {busyAction === 'importRoomsBatch' ? '导入中' : '批量导入考室'}
                     </button>

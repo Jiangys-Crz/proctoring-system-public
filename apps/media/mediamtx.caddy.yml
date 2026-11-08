@@ -29,6 +29,8 @@ hlsAlwaysRemux: false
 webrtc: true
 webrtcAddress: :8889
 webrtcAllowOrigins: ['*']
+# Desktop/mobile capture may start after signaling and device permission setup.
+webrtcTrackGatherTimeout: 15s
 # The listener port is advertised in ICE candidates. It MUST equal the
 # external Caddy gateway port; Docker maps host loopback 8189 to container 443.
 webrtcLocalUDPAddress: :443
@@ -43,6 +45,10 @@ pathDefaults:
   record: false
 
 paths:
+  '~^relay/[A-Za-z0-9_-]{1,64}$':
+    overridePublisher: false
+    record: false
+    maxReaders: 16
   '~^voice/[A-Za-z0-9_-]+_(ADMIN|DESKTOP)$':
     record: false
     overridePublisher: false

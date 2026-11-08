@@ -26,7 +26,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const existing = await prisma.user.findUnique({ where: { id } });
     if (!existing) return fail('用户不存在', 404);
     if (existing.associationImported && existing.associationVerifiedAt &&
-      ((fields.realName !== undefined && fields.realName !== existing.realName) || (fields.numberId !== undefined && fields.numberId !== existing.numberId))) return fail('已验证的姓名和学号由官网同步，不能手动修改', 400);
+      ((fields.realName !== undefined && fields.realName !== existing.realName) || (fields.numberId !== undefined && fields.numberId !== existing.numberId))) return fail('已验证的姓名和学号/工号由官网同步，不能手动修改', 400);
     if (existing.associationImported && !existing.associationVerifiedAt && password) return fail('协会用户须先通过官网验证，才能设置本地密码', 400);
     if (!existing.associationImported && (!fields.username?.trim() && fields.username !== undefined || !fields.realName?.trim() && fields.realName !== undefined)) return fail('本地用户的用户名和姓名不能为空', 400);
     const user = await prisma.user.update({

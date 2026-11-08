@@ -13,7 +13,7 @@
     "build": "prisma generate && next build",
     "start": "next start -p 4031",
     "db:generate": "prisma generate",
-    "db:push": "prisma generate && tsx --env-file-if-exists=.env scripts/migrate-user-identities.ts && tsx --env-file-if-exists=.env scripts/backfill-exam-codes.ts && prisma db push",
+    "db:push": "prisma generate && tsx --env-file-if-exists=.env scripts/migrate-user-identities.ts && tsx --env-file-if-exists=.env scripts/backfill-exam-codes.ts && prisma db push && tsx --env-file-if-exists=.env scripts/backfill-team-member-orders.ts",
     "db:seed": "tsx scripts/seed.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:novajudge": "tsx --test tests/novajudge.test.ts",
@@ -66,7 +66,10 @@
     "test:alerts:acknowledgement": "tsx tests/alert-acknowledgement-integration.ts",
     "test:alerts:acknowledgement:http": "tsx tests/alert-acknowledgement-http-integration.ts",
     "test:security:attachments": "tsx tests/attachment-browser-integration.ts",
-    "test:security:pairing": "tsx tests/pairing-security-integration.ts"
+    "test:security:pairing": "tsx tests/pairing-security-integration.ts",
+    "test:platform-sync": "tsx --test tests/platform-sync.test.ts",
+    "test:platform-sync:integration": "tsx tests/platform-sync-integration.ts",
+    "test:platform-sync:browser": "tsx tests/platform-sync-browser-integration.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.948.0",

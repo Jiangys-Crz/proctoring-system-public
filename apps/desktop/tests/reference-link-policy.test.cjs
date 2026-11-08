@@ -62,7 +62,7 @@ function windowHarness() {
   const context = vm.createContext({ BrowserWindow: Window, electron_1: { BrowserWindow: Window, app: { getPath: () => '/downloads' } },
     reference_link_policy_1: policy, contest_download_policy_1: require('../dist/main/contest-download-policy'),
     node_path_1: { default: path }, screenControlWatcher: { isDisplaying: false }, mainWindow: {},
-    referenceDomainApprovals: approvals, novaJudgeScope: null, URL, Date, Math,
+    referenceDomainApprovals: approvals, novaJudgeScope: null, hydroBrowserScope: null, URL, Date, Math,
   });
   vm.runInContext(source.slice(offset, source.indexOf('\nfunction createWindow(', offset)), context);
   return { open: url => context.openRestrictedExternalWindow(url), windows, context, approvals };

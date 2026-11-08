@@ -63,7 +63,8 @@ export function compareManifests(local: SyncManifest, remote: SyncManifest): Pro
 /** Called inside the same transaction as the definition mutation. Room-only operations stay independent. */
 export async function assertFederationDefinitionMutable(tx: Prisma.TransactionClient, examId: string) {
   await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${examId} FOR UPDATE`;
-  const config = await tx.examFederation.findUnique({ where: { examId }, select: { enabled: true } });
+  const config = await tx.examFederation.findUnique({ where: { examId }, select: { enabled: true, managedGlobally: true } });
+  if (config?.managedGlobally) return;
   const history = config && await tx.examFederationEntry.findFirst({ where: { examId }, select: { submissionId: true } });
   const contentHistory = config && await tx.examFederationContent.findFirst({ where: { examId }, select: { entityId: true } });
   if (config?.enabled || history || contentHistory) throw new RequestParseError('该考试已启用跨网同步或已有同步记录，不能修改考试定义、题目和考生资料；考室配置仍可单独修改');

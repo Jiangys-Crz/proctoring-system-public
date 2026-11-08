@@ -1,25 +1,27 @@
-import { gradeLatestSubmission } from '@/lib/contest-grading-write';
+import { gradeLatestSubmission, requireGradingEnded } from '@/lib/contest-grading-write';
 import { z } from 'zod';
+import type { Prisma } from '@prisma/client';
 import { AuthError, requireUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { calculateLeaderboards } from '@/lib/leaderboards';
 import { canManageExam } from '@/lib/permissions';
 import { compareSubmissionOrder, IGNORED_SUBMISSION_STATUS, problemLabel, scaledSubmissionScore } from '@/lib/contest-rules';
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
+import { admittedGradingRead, admittedGradingWrite } from '@/lib/heavy-read-admission';
 
 const GradeSchema = z.object({
   submissionId: z.string().min(1),
   score: z.number().finite().min(0).nullable(),
 });
 
-async function gradingExam(id: string) {
-  return prisma.exam.findUnique({
+async function gradingExam(tx: Prisma.TransactionClient, id: string) {
+  return tx.exam.findUnique({
     where: { id },
     include: {
       problems: {
         orderBy: { order: 'asc' },
         select: {
-          id: true, order: true, hydroProblemId: true, title: true, content: true, html: true,
+          id: true, order: true, label: true, hydroProblemId: true, title: true, content: true, html: true,
           problemType: true, hydroScore: true, scorePercent: true, score: true,
         },
       },
@@ -27,16 +29,24 @@ async function gradingExam(id: string) {
         orderBy: [{ seatNo: 'asc' }, { examNumber: 'asc' }],
         select: {
           id: true, examNumber: true, name: true, teamName: true, groupName: true,
-          school: true, college: true, ranked: true,
+          school: true, college: true, ranked: true, memberOrder: true, isTeamLeader: true,
         },
       },
     },
   });
 }
 
-async function gradingSubmissions(id: string, exam: { startAt: Date; endAt: Date }, now: Date) {
-  return prisma.contestSubmission.findMany({
-    where: { examId: id, status: { not: IGNORED_SUBMISSION_STATUS }, createdAt: { gte: exam.startAt, lt: exam.endAt, lte: now } },
+async function gradingSubmissions(tx: Prisma.TransactionClient, id: string, exam: { startAt: Date; endAt: Date }, now: Date) {
+  const where = { examId: id, status: { not: IGNORED_SUBMISSION_STATUS }, createdAt: { gte: exam.startAt, lt: exam.endAt, lte: now } };
+  // KS uses the latest run only. Historical code bodies do not belong in every poll.
+  const records = await tx.contestSubmission.findMany({ where, select: { id: true, candidateId: true, problemId: true, createdAt: true } });
+  const latest = new Map<string, (typeof records)[number]>();
+  for (const record of records) {
+    const key = `${record.candidateId}:${record.problemId}`, previous = latest.get(key);
+    if (!previous || compareSubmissionOrder(record, previous) > 0) latest.set(key, record);
+  }
+  return tx.contestSubmission.findMany({
+    where: { ...where, id: { in: [...latest.values()].map(row => row.id) } },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true, candidateId: true, problemId: true, status: true, statusText: true,
@@ -46,19 +56,28 @@ async function gradingSubmissions(id: string, exam: { startAt: Date; endAt: Date
   });
 }
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+async function getGrading(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser();
     const { id } = await context.params;
     if (!(await canManageExam(user, id))) return fail('无权评阅该考试', 403);
-    const exam = await gradingExam(id);
+    const now = new Date();
+    const data = await prisma.$transaction(async tx => {
+      const policy = await tx.exam.findUnique({ where: { id }, select: { endAt: true, contestRule: true } });
+      if (!policy) return null;
+      if (policy.contestRule !== 'KS') throw new AuthError('只有 KS 赛制可以使用评卷功能', 400);
+      requireGradingEnded(policy, now);
+      const exam = await gradingExam(tx, id);
+      if (!exam) return null;
+      return { exam, submissions: exam.contestRule === 'KS' ? await gradingSubmissions(tx, id, exam, now) : [] };
+    }, { isolationLevel: 'RepeatableRead', maxWait: 3000, timeout: 15_000 });
+    const exam = data?.exam;
     if (!exam) return fail('考试不存在', 404);
     if (exam.contestRule !== 'KS') return fail('只有 KS 赛制可以使用评卷功能', 400);
 
     // Poll the same durable results as candidate history; the background judge
     // refreshes them without making review pages wait on Hydro availability.
-    const now = new Date();
-    const submissions = await gradingSubmissions(id, exam, now);
+    const submissions = data!.submissions;
 
     const latest = new Map<string, (typeof submissions)[number]>();
     for (const submission of submissions) {
@@ -104,7 +123,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 
     return ok({
       exam: { id: exam.id, name: exam.name, examCode: exam.examCode, contestRule: exam.contestRule },
-      problems: exam.problems.map(problem => ({ ...problem, label: problemLabel(problem.order) })),
+      problems: exam.problems.map(problem => ({ ...problem, label: (problem.label || problemLabel(problem.order)) })),
       rows,
     });
   } catch (error) {
@@ -113,21 +132,28 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   }
 }
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+  return admittedGradingRead(request, () => getGrading(request, context));
+}
+
+async function patchGrading(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const user = await requireUser(request);
     const { id } = await context.params;
     if (!(await canManageExam(user, id))) return fail('无权评阅该考试', 403);
-    const input = await parseBody(request, GradeSchema);
+    const exam = await prisma.exam.findUnique({ where: { id }, select: { endAt: true, contestRule: true } });
+    if (!exam) return fail('考试不存在', 404);
+    if (exam.contestRule !== 'KS') return fail('只有 KS 赛制可以人工评分', 400);
+    requireGradingEnded(exam);
+    const input = await parseBody(request, GradeSchema, 8192);
     const submission = await prisma.contestSubmission.findFirst({
       where: { id: input.submissionId, examId: id, status: { not: IGNORED_SUBMISSION_STATUS } },
-      include: {
-        exam: { select: { contestRule: true } },
+      select: {
+        id: true, examId: true, candidateId: true, problemId: true, federationWriteToken: true,
         problem: { select: { id: true, score: true, problemType: true } },
       },
     });
     if (!submission) return fail('递交记录不存在或成绩已取消', 404);
-    if (submission.exam.contestRule !== 'KS') return fail('只有 KS 赛制可以人工评分', 400);
     if (submission.problem.problemType === 'objective') return fail('客观题不允许人工改分', 400);
     if (input.score !== null && input.score > submission.problem.score) {
       return fail(`评分不能超过该题满分 ${submission.problem.score}`, 400);
@@ -140,6 +166,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (error instanceof RequestParseError) return fail(error.message, 400, error.details);
     return fail(toErrorMessage(error), 500);
   }
+}
+
+export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+  return admittedGradingWrite(request, () => patchGrading(request, context));
 }
 
 export const OPTIONS = options;

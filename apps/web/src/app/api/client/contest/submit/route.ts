@@ -53,10 +53,11 @@ export async function POST(request: Request) {
       // statement, attachment list or private judge configuration in the exam.
       const problems = publicTest ? [await syncPublicTestProblem(session.examId)] : await prisma.examProblem.findMany({
         where: { examId: session.examId }, orderBy: { order: 'asc' },
-        select: { id: true, order: true, hydroProblemId: true, problemType: true, languages: true },
+        select: { id: true, order: true, hydroProblemId: true, sourceDeleted: true, problemType: true, languages: true },
       });
       const problem = problems.find((item) => Number.isSafeInteger(Number(item.hydroProblemId)) ? Number(item.hydroProblemId) === input.pid : item.order + 1 === input.pid);
       if (!problem) return fail('题目不存在', 404);
+      if (problem.sourceDeleted) return fail('源题已删除，不能继续提交', 409);
       const languages = ['objective', 'submit_answer'].includes(problem.problemType)
         ? []
         : await requestHydroLanguages();
@@ -74,9 +75,9 @@ export async function POST(request: Request) {
         if (current.exam.platformContestId === 'local' && !current.exam.published) throw new AuthError('考试尚未发布', 409);
         if (!canCandidateSubmit(current.exam, current.candidate)) throw new AuthError('本场团队赛仅允许队长提交', 403);
         const currentProblem = await tx.examProblem.findFirst({ where: { id: problem.id, examId: current.examId }, select: {
-          id: true, order: true, title: true, hydroProblemId: true, problemType: true, languages: true, score: true, scorePercent: true, hydroScore: true,
+          id: true, order: true, title: true, hydroProblemId: true, sourceDeleted: true, problemType: true, languages: true, score: true, scorePercent: true, hydroScore: true,
         } });
-        if (!currentProblem || currentProblem.hydroProblemId !== problem.hydroProblemId || currentProblem.problemType !== problem.problemType) throw new AuthError('题目配置已改变，请刷新后重试', 409);
+        if (!currentProblem || currentProblem.sourceDeleted || currentProblem.hydroProblemId !== problem.hydroProblemId || currentProblem.problemType !== problem.problemType) throw new AuthError('题目配置已改变，请刷新后重试', 409);
         const judgeLanguage = resolveJudgeLanguage(input.lang, allowedProblemLanguages(currentProblem, current.exam.allowedLanguages, languages));
         if (!judgeLanguage) throw new AuthError('本场考试或该题目不允许使用所选语言', 400);
         const acceptedAt = new Date();

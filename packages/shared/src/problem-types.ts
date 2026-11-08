@@ -4,6 +4,7 @@ const problemTypeNames: Readonly<Record<string, string>> = {
   submit_answer: '提交答案题',
   output_only: '输出题',
   interaction: '交互题',
+  interactive: '交互题',
   communication: '通信题',
   answer: '答案题',
 };

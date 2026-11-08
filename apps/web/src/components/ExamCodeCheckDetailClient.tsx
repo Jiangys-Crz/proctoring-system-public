@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, LoaderCircle } from 'lucide-react';
+import { LoaderCircle } from 'lucide-react';
 import { api } from './api';
 import { codeCheckLanguageLabel, codeCheckPercent, codeCheckSeverity, type CodeCheckDetailData, type CodeCheckMatch } from '@/lib/code-check/types';
 import styles from './ExamCodeCheck.module.css';
@@ -27,8 +27,7 @@ export function ExamCodeCheckDetailClient({ examId, pairId }: { examId: string; 
   const timing = data?.timing;
   const timingText = timing?.earlier === 'first' ? `左侧先提交，右侧晚 ${timing.differenceText}。` : timing?.earlier === 'second' ? `右侧先提交，左侧晚 ${timing.differenceText}。` : timing?.earlier === 'same' ? '两份代码在同一秒提交，无法据此确定先后。' : '部分提交时间缺失，无法比较先后。';
   return <div className={`exam-workspace-page ${styles.page}`}>
-    <header className="exam-workspace-header"><div className="return-only-row"><Link className="exam-back" href={`/dashboard/exams/${examId}/code-check${data ? `?jobId=${data.pair.jobId}` : ''}`}><ArrowLeft size={18} /> 返回查重结果</Link></div><div className="exam-workspace-title-row"><h1>代码对比详情</h1></div></header>
-    <main className={styles.detailMain}>
+    <main className={styles.detailMain} aria-label="代码对比详情">
       {error ? <div className={styles.error} role="alert">{error}</div> : null}
       {!data ? !error ? <div className={styles.empty}><LoaderCircle size={20} className="spin" /> 正在加载代码快照…</div> : null : <section className={styles.card}>
         <div className={styles.detailSummary}><span className={`${styles.badge} ${styles.largeBadge} ${styles[codeCheckSeverity(data.pair.similarity)]}`}>{codeCheckPercent(data.pair.similarity)}%</span><div><h2>{data.pair.problemTitle} · {codeCheckLanguageLabel(data.pair.language)}</h2><p>代码相似度 · 在 {data.pair.versions} 个提交版本配对中选取最相似的一组</p></div></div>

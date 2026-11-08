@@ -4,7 +4,7 @@ import { assertReleaseRequestOrigin } from '@/lib/desktop-releases';
 import { publicTestExamId } from '@/lib/public-test';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
-import { canAccessCandidate } from '@/lib/permissions';
+import { canAccessCandidate, canAccessExam } from '@/lib/permissions';
 import { publicObjectUrl } from '@/lib/storage';
 import { options, fail, ok, toErrorMessage, parseBody, RequestParseError } from '@/lib/http';
 import { evidenceForAlerts } from '@/lib/alert-evidence';
@@ -84,10 +84,13 @@ export async function GET(request: Request) {
   try {
     const user = await requireUser();
     const searchParams = new URL(request.url).searchParams;
+    const examId = searchParams.get('examId');
+    if (examId !== null && (!examId || examId.length > 191)) return fail('考试编号无效', 400);
+    if (examId && !await canAccessExam(user, examId)) return fail('无权查看该考试录像', 403);
     const candidateId = searchParams.get('candidateId');
     if (candidateId) {
       if (!(await canAccessCandidate(user, candidateId))) return fail('无权查看该考生录像', 403);
-      const candidate = await prisma.candidate.findUnique({ where: { id: candidateId }, select: candidateSelect });
+      const candidate = await prisma.candidate.findFirst({ where: { id: candidateId, ...(examId ? { examId } : {}) }, select: candidateSelect });
       if (!candidate) return fail('考生不存在', 404);
       const loadAll = searchParams.get('all') === '1';
       const page = Math.max(1, Number.parseInt(searchParams.get('page') || '1', 10) || 1);
@@ -109,7 +112,7 @@ export async function GET(request: Request) {
           { rooms: { some: { proctors: { some: { userId: user.id } } } } }
         ] };
     const exams = await prisma.exam.findMany({
-      where: { AND: [examScope, { id: { not: await publicTestExamId() } }] },
+      where: { AND: [examScope, { id: { not: await publicTestExamId() } }, ...(examId ? [{ id: examId }] : [])] },
       select: {
         id: true, name: true, startAt: true, endAt: true, createdById: true,
         administrators: { where: { userId: user.id }, select: { userId: true } },
@@ -206,7 +209,7 @@ export async function GET(request: Request) {
         recordingCount: rooms.reduce((total, room) => total + room.recordingCount, 0),
         rooms
       };
-    }).filter((exam) => exam.recordingCount > 0 || exam.mediaCount > 0 || exam.cleanupPending > 0));
+    }).filter((exam) => Boolean(examId) || exam.recordingCount > 0 || exam.mediaCount > 0 || exam.cleanupPending > 0));
   } catch (error) {
     if (error instanceof AuthError || error instanceof UploadSecurityError) return fail(error.message, error.status);
     return fail(toErrorMessage(error), 500);

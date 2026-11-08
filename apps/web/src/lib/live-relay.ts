@@ -3,6 +3,7 @@ import { AuthError } from './auth';
 import { prisma } from './db';
 import { authorizeLiveApiKey } from './live-api-key';
 import { kickRelayPath, readRelayPaths } from './live-relay-media';
+import { lockRelayCapacity } from './live-relay-lock';
 import { reconcileRelayConnections } from './live-relay-connections';
 import { createRelayTicket, relayEnabled, relayIdPattern, relayStreamLimit, requireRelayEnabled, verifyRelayTicket } from './live-relay-token';
 
@@ -12,9 +13,7 @@ export const RelayStreamCreateSchema = z.object({ id: z.string().regex(relayIdPa
 export async function createRelayStream(input: z.infer<typeof RelayStreamCreateSchema>) {
   requireRelayEnabled();
   await prisma.$transaction(async tx => {
-    const capacityKey = 'live-relay-capacity-v1';
-    await tx.systemSetting.upsert({ where: { key: capacityKey }, create: { key: capacityKey, value: {} }, update: {} });
-    await tx.$queryRaw`SELECT \`key\` FROM SystemSetting WHERE \`key\` = ${capacityKey} FOR UPDATE`;
+    await lockRelayCapacity(tx);
     if (await tx.liveRelayStream.findUnique({ where: { id: input.id }, select: { id: true } })) throw new AuthError('流 ID 已存在或曾被归档，请使用新 ID（大小写也不能重复）', 409);
     if (await tx.liveRelayStream.count({ where: { archived: false } }) >= relayStreamLimit()) throw new AuthError('直播数量已达上限，请先归档不再使用的流 ID', 429);
     await tx.liveRelayStream.create({ data: { id: input.id, name: input.name || input.id } });
@@ -51,10 +50,24 @@ export async function relayPreviewTicket(id: string, adminId: string) {
 export async function liveRelayState() {
   const registered = await prisma.liveRelayStream.findMany({ where: { archived: false }, select: { id: true, name: true, enabled: true }, orderBy: { createdAt: 'desc' }, take: 256 });
   let mediaError = '';
-  const paths = relayEnabled() ? await readRelayPaths().catch(() => { mediaError = '独立直播媒体服务暂不可用'; return []; }) : [];
-  const active = new Set(paths.filter(p => p.available ?? p.ready ?? p.online).map(p => p.name.slice(6)));
+  const paths = relayEnabled() ? await readRelayPaths().catch(() => { mediaError = '直播媒体服务暂不可用'; return []; }) : [];
+  // MediaMTX's online field reflects a real source; available may also
+  // describe an always-available placeholder. Preserve older API fallback.
+  const active = new Set(paths.filter(p => p.online ?? p.ready ?? p.available ?? false).map(p => p.name.slice(6)));
   const streams = registered.map(s => ({ ...s, online: active.has(s.id) }));
-  return { configured: relayEnabled(), onlineCount: streams.filter(s => s.online).length, registrationLimit: relayStreamLimit(), mediaError, streams };
+  return { configured: relayEnabled(), sharedMedia: true, ...relayPublishBases(), onlineCount: streams.filter(s => s.online).length, registrationLimit: relayStreamLimit(), mediaError, streams };
+}
+function relayPublishBases() {
+  const app = new URL(process.env.APP_BASE_URL || 'http://localhost:4031');
+  const port = process.env.LIVE_RELAY_RTMP_PORT || '1940';
+  if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new AuthError('RTMP 端口配置无效', 503);
+  const base = (value: string, protocol: string) => {
+    const url = new URL(value);
+    if (url.protocol !== protocol || url.username || url.password || url.search || url.hash || !['', '/', '/relay'].includes(url.pathname)) throw new AuthError('直播 RTMP 域名配置无效', 503);
+    return `${url.protocol}//${url.host}/relay`;
+  };
+  return { rtmpBase: base(process.env.LIVE_RELAY_RTMP_PUBLIC_BASE || `rtmp://${app.hostname}:${port}`, 'rtmp:'),
+    rtmpsBase: process.env.MEDIA_RTMPS_PUBLIC_BASE ? base(process.env.MEDIA_RTMPS_PUBLIC_BASE, 'rtmps:') : '' };
 }
 export async function updateRelay(input: z.infer<typeof RelayPatchSchema>) {
   await prisma.liveRelayStream.update({ where: { id: input.id }, data: { ...(input.archived ? { archived: true, enabled: false } : {}),
@@ -66,18 +79,19 @@ export function enforceRelayAccess() {
   if (worker.relayAccessTask) return worker.relayAccessTask;
   const task = (async () => {
     if (!relayEnabled()) return;
-    const paths = await readRelayPaths(true);
-    const allowed = await prisma.liveRelayStream.findMany({ where: { enabled: true, archived: false }, select: { id: true }, take: 256 });
+    const [paths, allowed] = await Promise.all([
+      readRelayPaths(true),
+      prisma.liveRelayStream.findMany({ where: { enabled: true, archived: false }, select: { id: true }, take: 256 }),
+    ]);
     const ids = new Set(allowed.map(s => s.id));
     const rejected = paths.filter(p => !ids.has(p.name.slice(6)));
-    const active = new Set(paths.flatMap(p => [p.source, ...(p.readers || [])]).filter(x => x?.type === 'webRTCSession').map(x => x!.id));
-    const results = await Promise.allSettled([reconcileRelayConnections(active), ...rejected.map(kickRelayPath)]);
+    const results = await Promise.allSettled([reconcileRelayConnections(), ...rejected.map(kickRelayPath)]);
     if (results.some(r => r.status === 'rejected')) throw new AuthError('断开部分直播连接失败，后台将继续重试', 503);
   })().finally(() => { if (worker.relayAccessTask === task) delete worker.relayAccessTask; });
   worker.relayAccessTask = task; return task;
 }
 export function startLiveRelayWorker() {
   if (!relayEnabled() || worker.relayAccessTimer) return;
-  worker.relayAccessTimer = setInterval(() => { void enforceRelayAccess().catch(() => console.error('Independent live relay access reconciliation unavailable')); }, 5000);
+  worker.relayAccessTimer = setInterval(() => { void enforceRelayAccess().catch(() => console.error('Live relay access reconciliation unavailable')); }, 5000);
   worker.relayAccessTimer.unref();
 }

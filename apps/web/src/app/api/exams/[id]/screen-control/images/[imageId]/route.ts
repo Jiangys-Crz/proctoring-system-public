@@ -1,8 +1,8 @@
 import { prisma } from '@/lib/db';
 import { fail, options } from '@/lib/http';
-import { requireScreenControlAdmin, screenControlImageResponse, screenControlRouteError } from '@/lib/screen-control-route';
+import { admittedScreenControlImage, requireScreenControlAdmin, screenControlImageResponse, screenControlRouteError } from '@/lib/screen-control-route';
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string; imageId: string }> }) {
+async function getImage(_request: Request, context: { params: Promise<{ id: string; imageId: string }> }) {
   try {
     const { id, imageId } = await context.params;
     await requireScreenControlAdmin(id);
@@ -10,6 +10,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     if (!image) return fail('图片不存在', 404);
     return await screenControlImageResponse(image);
   } catch (error) { return screenControlRouteError(error); }
+}
+
+export async function GET(request: Request, context: { params: Promise<{ id: string; imageId: string }> }) {
+  return admittedScreenControlImage(request, () => getImage(request, context));
 }
 
 export const OPTIONS = options;

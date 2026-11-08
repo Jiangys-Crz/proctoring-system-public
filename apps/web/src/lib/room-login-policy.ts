@@ -8,5 +8,5 @@ export function requireRoomLoginMethod(room: { loginMode: LoginMethod } | null, 
   if (room.loginMode === method) return;
   throw new LoginFlowError(method === 'CREDENTIALS'
     ? '所在考室不允许账号密码登录，请改用二维码登录'
-    : '所在考室不允许二维码登录，请在电脑客户端改用考试编号＋姓名＋考号＋密码登录', 403);
+    : '所在考室不允许二维码登录，请在电脑客户端改用考试编号＋考号＋密码登录', 403);
 }

@@ -1,6 +1,7 @@
 import type { ContestRule, ContestType, TeamAccountMode } from '@prisma/client';
 
 type FormatSettings = {
+  platform?: 'HYDRO' | 'NOVAJUDGE' | 'HYDRO_BROWSER';
   contestRule: ContestRule;
   contestType: ContestType;
   teamAccountMode: TeamAccountMode;
@@ -13,7 +14,7 @@ export function isXcpcRule(rule: ContestRule | string) {
 }
 
 export function normalizeContestFormat<T extends FormatSettings>(input: T): T {
-  if (input.contestRule === 'GPLT') {
+  if (input.platform !== 'NOVAJUDGE' && input.contestRule === 'GPLT') {
     return { ...input, contestType: 'TEAM', teamAccountMode: 'MEMBER_ACCOUNTS', leaderOnlySubmission: false };
   }
   if (isXcpcRule(input.contestRule)) {
@@ -25,8 +26,8 @@ export function normalizeContestFormat<T extends FormatSettings>(input: T): T {
     }
     return { ...input, leaderOnlySubmission: false };
   }
-  if (input.contestType === 'INDIVIDUAL') {
-    return { ...input, teamAccountMode: 'MEMBER_ACCOUNTS', allowTeamSubmissionView: false, leaderOnlySubmission: false };
+  if (input.contestType === 'INDIVIDUAL' || input.platform !== 'NOVAJUDGE') {
+    return { ...input, contestType: 'INDIVIDUAL', teamAccountMode: 'MEMBER_ACCOUNTS', allowTeamSubmissionView: false, leaderOnlySubmission: false };
   }
   return { ...input };
 }

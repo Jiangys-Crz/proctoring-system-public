@@ -9,7 +9,7 @@ const queueData = () => ({ ...federationChange(), status: 22, statusText: 'å·²æŽ
 });
 /** The HTTP request only enqueues. A lease/token prevents a stale judge response from replacing a newer action. */
 export async function queueContestRejudge(examId: string, submissionId?: string) {
-  const result = await prisma.contestSubmission.updateMany({ where: { examId, ...(submissionId ? { id: submissionId } : {}),
+  const result = await prisma.contestSubmission.updateMany({ where: { examId, problem: { sourceDeleted: false }, ...(submissionId ? { id: submissionId } : {}),
     ...(submissionId ? {} : { status: { not: 30 } }), judgeForced: false }, data: queueData() });
   if (result.count) void triggerDeferredJudge();
   return result.count;

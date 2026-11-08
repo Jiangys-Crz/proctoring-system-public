@@ -118,7 +118,7 @@ export const submissionDetailSelect = {
 } satisfies Prisma.ContestSubmissionSelect;
 
 type SubmissionDetails = Omit<Prisma.ContestSubmissionGetPayload<{ select: typeof submissionDetailSelect }>, 'updatedAt'> & { updatedAt?: Date };
-type SubmissionProblem = Pick<ExamProblem, 'id' | 'order' | 'title' | 'scorePercent' | 'hydroScore' | 'score' | 'problemType'>;
+type SubmissionProblem = Pick<ExamProblem, 'id' | 'order' | 'title' | 'scorePercent' | 'hydroScore' | 'score' | 'problemType'> & { label?: string | null };
 type SubmissionExam = Pick<Exam, 'contestRule' | 'endAt' | 'scoreboardFrozenAt' | 'showTestCaseCount' | 'showObjectiveScore'> & { problems: SubmissionProblem[] };
 
 function serializeSubmission(submission: SubmissionDetails, problem: SubmissionProblem, exam: SubmissionExam, viewerCandidateId: string, now: Date) {
@@ -137,7 +137,7 @@ function serializeSubmission(submission: SubmissionDetails, problem: SubmissionP
   return {
     id: submission.id,
     actorKey: submission.actorKey,
-    problemIndex: problemIndex(problem.order),
+    problemIndex: problem.label || problemIndex(problem.order),
     problemTitle: problem.title,
     resultHidden: !visibility.result,
     scoreVisible: visibility.score,
@@ -212,7 +212,7 @@ export function serializeLocalContest(input: LocalContestSession): ClientContest
         : {};
       const limits = problemLimits(config);
       return {
-        index: problemIndex(problem.order),
+        index: problem.label || problemIndex(problem.order),
         pid: Number.isSafeInteger(numericPid) ? numericPid : problem.order + 1,
         problemId: problem.hydroProblemId,
         title: started ? problem.title : `题目 ${problemIndex(problem.order)}`,
@@ -231,7 +231,7 @@ export function serializeLocalContest(input: LocalContestSession): ClientContest
       if (!Array.isArray(problem.files)) return [];
       return problem.files
         .filter((file): file is { name: string; size?: number } => Boolean(file && typeof file === 'object' && typeof (file as { name?: unknown }).name === 'string'))
-        .map((file) => ({ ...file, type: 'public' as const, problemId: problem.hydroProblemId, problemIndex: problemIndex(problem.order) }));
+        .map((file) => ({ ...file, type: 'public' as const, problemId: problem.hydroProblemId, problemIndex: problem.label || problemIndex(problem.order) }));
     }),
     user: {
       uid: candidate.id,

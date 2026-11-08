@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from './api';
-export function FileCleanupStatus({ kind, revision }: { kind: 'MEDIA' | 'INSTALLER'; revision: number }) {
+export function FileCleanupStatus({ kind, revision, examId }: { kind: 'MEDIA' | 'INSTALLER'; revision: number; examId?: string }) {
   const [status, setStatus] = useState({ pending: 0, failed: 0 });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -10,17 +10,17 @@ export function FileCleanupStatus({ kind, revision }: { kind: 'MEDIA' | 'INSTALL
     const load = async () => {
       if (running) return;
       running = true;
-      try { const data = await api<typeof status>(`/api/file-cleanup?kind=${kind}`); if (!cancelled) { setStatus(data); setError(''); } }
+      try { const data = await api<typeof status>(`/api/file-cleanup?kind=${kind}${examId ? `&examId=${encodeURIComponent(examId)}` : ''}`); if (!cancelled) { setStatus(data); setError(''); } }
       catch (error) { if (!cancelled) setError(error instanceof Error ? error.message : '文件清理状态读取失败'); }
       finally { running = false; }
     };
     void load();
     const timer = window.setInterval(() => void load(), 5000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [kind, revision]);
+  }, [kind, revision, examId]);
   async function retry() {
     setBusy(true);
-    try { await api('/api/file-cleanup', { method: 'POST', body: JSON.stringify({ kind }) }); setError(''); }
+    try { await api('/api/file-cleanup', { method: 'POST', body: JSON.stringify({ kind, ...(examId ? { examId } : {}) }) }); setError(''); }
     catch (error) { setError(error instanceof Error ? error.message : '重试失败'); }
     finally { setBusy(false); }
   }

@@ -14,12 +14,6 @@ export default async function DashboardLayout({ children }: { children: React.Re
       '考试管理',
       '发布考试、选择题目和编辑考试信息'
     ] as const,
-    ...(user.role === 'SUPER_ADMIN' ? [[
-      '/dashboard/proctor-records',
-      '监考记录',
-      '管理监考记录'
-    ] as const] : []),
-    ['/dashboard/recordings', '历史录像', '管理历史录像'] as const,
     ...(user.role === 'SUPER_ADMIN' ? [['/dashboard/live', '直播管理', '管理外部直播接收与转发'] as const] : []),
     ...(user.role === 'SUPER_ADMIN' ? [[
       '/dashboard/problems',
@@ -30,7 +24,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     ['/dashboard/system', '系统设置', '配置系统信息'] as const
   ] as const;
   return (
-    <div className="hydro-shell hydro-top-shell">
+    <div className="hydro-shell hydro-top-shell dashboard-theme">
       <header className="hydro-header">
         <div className="hydro-header-inner">
           <Link className="hydro-logo" href="/dashboard/exams">

@@ -20,26 +20,29 @@ export function calculateLeaderboards(
   const ranked = candidates.filter(candidate => candidate.ranked !== false || ['GPLT', 'LANQIAO'].includes(exam.contestRule) || isXcpcLeaderboard(exam.contestRule));
   if (exam.contestRule === 'GPLT') {
     const personal = scoreRows(exam, problems, ranked, records, now, admin);
+    const positions = new Map(candidates.map(candidate => [candidate.examNumber, candidate.memberOrder ?? (candidate.isTeamLeader ? 1 : 100)]));
     return {
       ...personal,
       rows: personal.rows,
       boards: [
         { key: 'personal' as const, label: '个人排名', rows: personal.rows },
-        { key: 'team' as const, label: '团队排名', rows: gpltTeamRows(personal.rows) },
+        { key: 'team' as const, label: '团队排名', rows: gpltTeamRows([...personal.rows].sort((a, b) => {
+          return (positions.get(a.username) ?? 100) - (positions.get(b.username) ?? 100) || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0);
+        })) },
       ],
       groups: [...leaderboardGroups(exam.contestRule)],
     };
   }
 
   if (exam.contestType !== 'TEAM') {
-    const result = scoreRows(exam, problems, ranked, records, now, admin);
+    const result = scoreRows(exam, problems, ranked.map(candidate => ({ ...candidate, teamName: null })), records, now, admin);
     return { ...result, boards: [{ key: 'main' as const, label: '排行榜', rows: result.rows }],
       groups: [...leaderboardGroups(exam.contestRule)] };
   }
 
   // Different installations have different candidate IDs and insertion order.
   // Pick team representatives and assemble member names by the shared exam number.
-  candidates = [...candidates].sort((a, b) => a.examNumber < b.examNumber ? -1 : a.examNumber > b.examNumber ? 1 : 0);
+  candidates = [...candidates].sort((a, b) => (a.memberOrder ?? (a.isTeamLeader ? 1 : Number.MAX_SAFE_INTEGER)) - (b.memberOrder ?? (b.isTeamLeader ? 1 : Number.MAX_SAFE_INTEGER)) || (a.examNumber < b.examNumber ? -1 : a.examNumber > b.examNumber ? 1 : 0));
   const representatives = new Map<string, string>();
   const candidateIds = new Map<string, string>();
   const membersByTeam = new Map<string, RankingCandidate[]>();

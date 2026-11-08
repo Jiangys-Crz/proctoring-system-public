@@ -1,0 +1,66 @@
+.external-standings {
+  --standing-metric-width:192px;
+  --standing-gap:5px;
+  margin-top:14px;
+  border:1px solid #dce4ee;
+  border-radius:8px;
+  overflow:hidden;
+  background:#fff;
+  color:#152033;
+  font-family:Arial,"Microsoft YaHei",sans-serif;
+  font-variant-numeric:tabular-nums;
+}
+.external-standing-head, .external-standing-row, .external-standing-summary-row { display:grid; grid-template-columns:var(--standing-metric-width) minmax(0,1fr); column-gap:8px; }
+.external-standing-sticky-holder { --standing-metric-width:192px; --standing-gap:5px; position:fixed; z-index:40; overflow:hidden; background:#f6f8fc; box-shadow:0 2px 5px #18233a1a; font-family:Arial,"Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; }
+.external-standing-head { min-height:62px; align-items:center; padding:10px 12px; background:#f6f8fc; border-bottom:1px solid #dce4ee; color:#111827; font-size:12px; font-weight:700; }
+.external-standing-head small { display:block; margin-top:3px; color:#8a97ac; font-size:10px; font-weight:400; }
+.external-standing-head-metrics, .external-standing-metrics { display:grid; grid-template-columns:var(--standing-metric-columns,58px 57px minmax(0,1fr)); gap:5px; text-align:center; }
+.external-standing-problem-heading { min-width:0; text-align:center; }
+.external-standing-problem-heading strong { font-family:Menlo,Consolas,monospace; font-size:14px; }
+.external-standing-problem-heading small { color:#69758c; font-size:11px; }
+.external-standing-problems { min-width:0; display:grid; grid-template-columns:repeat(var(--standing-problems),minmax(0,1fr)); gap:var(--standing-gap); align-items:center; text-align:center; }
+.external-standing-row { position:relative; padding:4px 12px; border-bottom:1px solid #dce4ee; background:#fff; }
+.external-standing-row:hover { background:#f5f8fc; }
+.external-standing-row.is-pinned { background:#edf6e8; box-shadow:inset 0 0 0 1px #b4d39f; }
+.external-standing-sidebar { position:relative; isolation:isolate; min-width:0; min-height:66px; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; }
+.external-standing-sidebar>.board-participant-watermark { z-index:-1; right:-4px; top:-2px; width:112px; height:112px; opacity:.16; transform:none; }
+.external-standing-people { min-width:0; }
+.external-standing-people .board-participant-meta { gap:5px; height:16px; margin:0; color:#78859b; font-size:10.5px; line-height:16px; }
+.external-standing-people .board-participant-meta>.anticon { color:#98a4b6; font-size:13px; }
+.external-standing-metrics>span { display:flex; justify-content:center; align-items:center; height:28px; min-width:0; border-radius:4px; font-weight:700; }
+.external-standing-metrics .external-standing-rank { background:#e6edf7; color:#1e3a66; font-family:Menlo,Consolas,monospace; font-size:18px; }
+.external-standing-metrics .external-standing-rank.gold { background:#dba90a; color:#352900; }
+.external-standing-metrics .external-standing-rank.silver { background:#b6c1d1; color:#1a2637; }
+.external-standing-metrics .external-standing-rank.bronze { background:#b9783c; color:#fff; }
+.external-standing-metrics .external-standing-rank.unofficial { border:1px dashed #97a4b7; background:transparent; color:#6b788d; }
+.external-standing-solved { color:#142136; font-size:16px; }
+.external-standing-score { color:#142136; font-size:20px; }
+.external-standing-problem.score { justify-content:center; }
+.external-standing-penalty { color:#4b5568; font-size:17px; }
+.external-standing-content { min-width:0; display:flex; flex-direction:column; justify-content:space-between; gap:4px; }
+.external-standing-info { display:flex; align-items:center; min-width:0; min-height:34px; }
+.external-standing-info .board-participant-organization { max-width:52%; flex:0 1 auto; padding:0; font-size:20px; font-weight:700; line-height:1.3; }
+.external-standing-info .board-participant-identity { flex:1; width:auto; min-height:0; margin-left:8px; padding:0 8px; border-left:2px solid #3b82f6; }
+.external-standing-info .board-participant-heading { gap:4px; font-size:14px; font-weight:500; line-height:1.35; }
+.external-standing-info .board-participant-marker { font-size:14px; }
+.external-standing-problem { position:relative; display:flex; align-items:center; justify-content:space-between; gap:3px; height:28px; min-width:0; padding:0 5px; border:0; border-radius:4px; color:#6a7688; background:#e9edf3; font-family:Menlo,Consolas,monospace; font-size:14px; font-weight:700; white-space:nowrap; cursor:pointer; }
+.external-standing-problem.empty { justify-content:center; }
+.external-standing-problem:focus-visible { outline:2px solid #3b82f6; outline-offset:2px; }
+.external-standing-problem:hover { filter:brightness(1.08); }
+.external-standing-problem.ac { background:var(--board-ac); color:#fff; }
+.external-standing-problem.first-ac { background:var(--board-first-ac); color:#fff; }
+.external-standing-problem.wa { background:var(--board-wa); color:#fff; }
+.external-standing-problem.frozen { background:var(--board-frozen); color:#fff; }
+.external-standing-attempts { flex:none; min-width:16px; padding:1px 3px; background:#0002; border-radius:2px; font-size:11px; }
+.external-standing-minute { min-width:0; letter-spacing:-.4px; }
+.external-standing-first-solve { position:absolute; top:-5px; right:-3px; color:#edac09; font-size:12px; line-height:1; text-shadow:0 0 1px #fff; pointer-events:none; }
+.external-standing-pin-divider { display:flex; align-items:center; gap:6px; min-height:38px; padding:8px 12px; color:#4a5c79; background:#fff; font-size:11px; }
+.external-standing-pin-divider>.anticon { font-size:14px; }
+.external-standing-pin-divider small { font-size:10px; color:#7082a0; }
+.external-standing-pin-divider>span:last-child { flex:1; height:1px; background:#c8d5e9; }
+.external-standing-summary { padding:6px 12px; background:#f5f8fc; }
+.external-standing-summary-row { padding:5px 0; border-bottom:1px solid #e3eaf3; color:#64748b; font-family:Menlo,Consolas,monospace; font-size:11px; }
+.external-standing-summary-row:last-child { border-bottom:0; }
+.external-standing-summary-label { text-align:right; font-family:Arial,"Microsoft YaHei",sans-serif; font-size:12px; font-weight:600; }
+.external-standing-summary-label small { margin-left:6px; font-size:10px; font-weight:400; }
+@media (prefers-reduced-motion:reduce) { .external-standings *, .external-standings { animation:none !important; transition:none !important; } }

@@ -8,23 +8,24 @@ const event = (id: string, seconds: number, extra: Partial<GroupableMonitorAlert
   createdAt: new Date(1_000_000 + seconds * 1000).toISOString(), acknowledgedAt: null, ...extra,
 });
 
-test('short identical bursts collapse while preserving every record and fixed five-minute windows', () => {
-  const alerts = [event('old', 0), event('middle', 290), event('new', 580), event('latest', 600)];
+test('same-type bursts collapse while preserving every record and fixed fifteen-minute windows', () => {
+  const alerts = [event('old', 0), event('middle', 290), event('new', 880), event('latest', 1200)];
   const groups = groupMonitorAlerts(alerts);
   assert.deepEqual(groups.map(group => group.alerts.map(alert => alert.id)), [['latest', 'new'], ['middle', 'old']]);
   assert.deepEqual(alerts.map(alert => alert.id), ['old', 'middle', 'new', 'latest'], 'input remains unchanged');
   assert.equal(groups.flatMap(group => group.alerts).length, alerts.length);
 });
 
-test('different people, sessions, severity, text, status and system notices never hide behind a group', () => {
+test('messages of one type group, while distinct people, sessions, severity, and teacher notes stay independent', () => {
   const alerts = [event('a', 100), event('b', 99),
     event('candidate', 98, { candidate: { id: 'candidate-b' } }), event('session', 97, { sessionId: 'session-b' }),
     event('severity', 96, { severity: 5 }), event('message', 95, { message: '禁止的另一个进程' }),
     event('handled', 94, { acknowledgedAt: new Date().toISOString() }), event('type', 93, { type: 'NETWORK_POLICY' }),
-    event('system-a', 92, { candidate: null }), event('system-b', 91, { candidate: null })];
+    event('system-a', 92, { candidate: null }), event('system-b', 91, { candidate: null }),
+    event('note-a', 90, { type: 'MANUAL_NOTE' }), event('note-b', 89, { type: 'MANUAL_NOTE' })];
   const groups = groupMonitorAlerts(alerts);
-  assert.equal(groups.length, 9);
-  assert.deepEqual(groups[0].alerts.map(alert => alert.id), ['a', 'b']);
+  assert.equal(groups.length, 10);
+  assert.deepEqual(groups[0].alerts.map(alert => alert.id), ['a', 'b', 'message']);
   assert.ok(groups.slice(1).every(group => group.alerts.length === 1));
 });
 

@@ -44,13 +44,22 @@ test('GPLT best score uses ceiling and earliest time at the rounded score, exclu
   assert.deepEqual(rows.map(row => [row.username, row.score, row.rank, row.penaltyMillis]), [['a', 4, 1, 10100], ['b', 4, 2, 10900]]);
 });
 
-test('LANQIAO is live, keeps fixed language groups and uses the highest rounded score', () => {
+test('LANQIAO is live, keeps fixed language groups and uses the latest rounded score including CE', () => {
   const board = calculateLeaderboards(exam('LANQIAO'), [{ id: 'a', score: 80 }], [user('a', LANQIAO_GROUPS[0])], [run('best', 'a', 'a', 10, 33, 2), run('lower', 'a', 'a', 20, 10, 2), run('ce', 'a', 'a', 30, 100, 7)], new Date(+start + 60_000));
   assert.equal(board.available, true);
-  assert.equal(board.rows[0].score, 26);
+  assert.equal(board.rows[0].score, 0);
   assert.deepEqual(board.groups, [...LANQIAO_GROUPS]);
   assert.deepEqual(filterLeaderboardRows(board.rows, 'LANQIAO', '', 'all', ''), []);
   assert.equal(filterLeaderboardRows(board.rows, 'LANQIAO', LANQIAO_GROUPS[0], 'all', '计算机').length, 1);
+});
+
+test('LANQIAO lower and pending latest runs replace previous scores with stable equal-time ordering', () => {
+  const records = [run('old', 'a', 'a', 10), run('a', 'a', 'a', 20, 33, 2), run('z', 'a', 'a', 20, 10, 2)];
+  const input = exam('LANQIAO'), candidates = [user('a', LANQIAO_GROUPS[0])];
+  const lower = scoreRows(input, [{ id: 'a', score: 80 }], candidates, [...records].reverse(), end, true);
+  assert.equal(lower.rows[0].score, 8);
+  assert.equal(lower.problemStats?.[0].maxScore, 8);
+  assert.equal(scoreRows(input, [{ id: 'a', score: 80 }], candidates, [...records, run('pending', 'a', 'a', 30, 100, 20)], end, true).rows[0].score, 0);
 });
 
 test('leaderboards normalize non-100 Hydro points before applying exam weights and contest rounding', () => {

@@ -36,7 +36,7 @@ function readMonitorExam(examId: string) {
     omit: { externalBoardApiKey: true, novaJudgeApiKey: true },
     include: { problems: {
       orderBy: { order: 'asc' },
-      select: { id: true, order: true, hydroProblemId: true, title: true,
+      select: { id: true, order: true, label: true, sourceDeleted: true, hydroProblemId: true, title: true,
         problemType: true, hydroScore: true, scorePercent: true, score: true },
     } },
   });

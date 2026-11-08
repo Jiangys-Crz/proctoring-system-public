@@ -4,16 +4,24 @@ export { statementDownloadTarget, statementAttachmentHref } from './statement-do
 export { ROOM_VIDEO_MIN_SECONDS, ROOM_VIDEO_MAX_SECONDS, isValidRoomVideoDuration } from './room-video';
 import { z } from 'zod';
 
-export const ExamPlatformSchema = z.enum(['HYDRO', 'NOVAJUDGE']);
+export const ExamPlatformSchema = z.enum(['HYDRO', 'NOVAJUDGE', 'HYDRO_BROWSER']);
 export type ExamPlatform = z.infer<typeof ExamPlatformSchema>;
+
+export function isBrowserExam(platform: ExamPlatform) {
+  return platform === 'NOVAJUDGE' || platform === 'HYDRO_BROWSER';
+}
+
+export function browserExamPlatformName(platform: ExamPlatform) {
+  return platform === 'HYDRO_BROWSER' ? 'HydroOJ' : 'NovaJudge';
+}
 
 export const ContestTypeSchema = z.enum(['INDIVIDUAL', 'TEAM']);
 export type ContestType = z.infer<typeof ContestTypeSchema>;
 export const TeamAccountModeSchema = z.enum(['MEMBER_ACCOUNTS', 'TEAM_ACCOUNT']);
 export type TeamAccountMode = z.infer<typeof TeamAccountModeSchema>;
 
-// LANQIAO is a distinct scoring rule; ACM is accepted as a legacy XCPC alias.
-export const ContestRuleSchema = z.enum(['GPLT', 'XCPC', 'LANQIAO', 'ACM', 'OI', 'IOI', 'KS']);
+// Old ACM payloads normalize to XCPC; newly exposed rules have six values only.
+export const ContestRuleSchema = z.preprocess(value => value === 'ACM' ? 'XCPC' : value, z.enum(['LANQIAO', 'GPLT', 'XCPC', 'IOI', 'OI', 'KS']));
 export type ContestRule = z.infer<typeof ContestRuleSchema>;
 
 export const CandidateStatusSchema = z.enum([
@@ -78,6 +86,7 @@ export const CreateExamSchema = z.object({
   freezeMinutes: z.coerce.number().int().min(0).nullable().optional(),
   administratorIds: z.array(z.string().min(1)).max(100).optional(),
   problemIds: z.array(z.string().trim().min(1)).max(200).optional(),
+  platformSyncEnabled: z.boolean().optional(),
   allowedLanguages: z.array(z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9_+-]*$/)).max(100).default([]),
   showTestCaseCount: z.boolean().default(false),
   showObjectiveScore: z.boolean().default(false),
@@ -120,12 +129,14 @@ export const CandidateImportRowSchema = z.object({
   advisor: z.string().optional(),
   groupName: z.string().optional(),
   teamName: z.string().optional(),
+  teamRoster: z.array(z.record(z.string(), z.unknown())).max(100).optional(),
   teamMembers: z.string().optional(),
   teamMemberStudentIds: z.string().optional(),
   hydroAccount: z.string().optional(),
-  examNumber: z.string().min(1),
-  password: z.string().min(1),
-  seatNo: z.string().min(1),
+  memberOrder: z.coerce.number().int().min(1).max(100).optional(),
+  examNumber: z.string().default(''),
+  password: z.string().default(''),
+  seatNo: z.string().default(''),
   roomName: z.string().trim().max(191).optional(),
   isTeamLeader: z.coerce.boolean().optional().default(false),
   ranked: z.coerce.boolean().optional().default(true)
@@ -208,6 +219,8 @@ export type AlertCreateInput = z.infer<typeof AlertCreateSchema>;
 
 export { sanitizeStatementHtml, type StatementHtmlOptions } from './html-safety';
 export * from './desktop-release';
+export { parseObjectiveContent, serializeObjectiveAnswers } from './objective-content';
+export { formatScore } from './score-format';
 
 /** Return the containing route without relying on browser visit history. */
 export function parentRoutePath(pathname: string) {

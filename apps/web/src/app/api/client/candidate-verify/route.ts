@@ -11,7 +11,7 @@ import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from 
 const Input = z.object({
   examCode: z.string().trim().regex(/^\d{10}$/), examId: z.string().max(191).optional(),
   examNumber: z.string().trim().min(1).max(191), password: z.string().min(1).max(200),
-  name: z.string().trim().min(1).max(191), studentId: z.string().max(191).optional(),
+  name: z.string().trim().max(191).default(''), studentId: z.string().max(191).optional(),
   school: z.string().max(191).optional(), college: z.string().max(191).optional(), teamName: z.string().max(191).optional(),
 });
 
@@ -38,7 +38,9 @@ async function handlePost(request: Request) {
     requireRoomLoginMethod(room, 'SECOND_CAMERA_QR');
     return ok({
       candidateId: result.candidate?.id,
-      name: result.candidate?.name,
+      name: result.memberIdentity?.memberName || result.candidate?.name,
+      studentId: result.memberIdentity?.memberStudentId || result.candidate?.studentId,
+      school: result.candidate?.school, college: result.candidate?.college, teamName: result.candidate?.teamName,
       memberIdentity: result.memberIdentity,
       requirements: room ? {
         requireSecondCamera: room.requireSecondCamera,

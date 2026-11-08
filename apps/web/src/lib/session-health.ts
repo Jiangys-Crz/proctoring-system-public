@@ -36,7 +36,7 @@ async function* healthSnapshots(examId: string | undefined, now: Date) {
     const ids = await healthSessionIds(examId, now, afterId);
     if (!ids.length) return;
     const sessions = await prisma.clientSession.findMany({
-      where: { id: { in: ids.map(row => row.id) }, status: { in: [...ACTIVE_CLIENT_SESSION_STATUSES] } },
+      where: { syncImported: false, id: { in: ids.map(row => row.id) }, status: { in: [...ACTIVE_CLIENT_SESSION_STATUSES] } },
       select: healthSessionSelect,
     });
     for (const session of sessions) yield session;

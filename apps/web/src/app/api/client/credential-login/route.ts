@@ -12,7 +12,7 @@ import { consumeCandidatePasswordAttempt } from '@/lib/login-attempts';
 import { UploadSecurityError } from '@/lib/upload-security';
 
 const Credentials = z.object({
-  examCode: z.string().trim().regex(/^\d{10}$/), name: z.string().trim().min(1).max(191),
+  examCode: z.string().trim().regex(/^\d{10}$/), name: z.string().trim().max(191).default(''),
   examNumber: z.string().trim().min(1).max(191), password: z.string().min(1).max(200), pairCode: z.string().regex(/^\d{6}$/)
 });
 const Inspect = z.object({ credentialTicket: z.string().min(1).max(4096), action: z.literal('inspect') });
@@ -59,14 +59,14 @@ async function handlePost(request: Request) {
       }), { status: 201 });
     }
     const exam = await prisma.exam.findUnique({ where: { examCode: input.examCode } });
-    if (!exam) throw new LoginFlowError('考试编号、姓名、考号或密码错误', 401);
+    if (!exam) throw new LoginFlowError('考试编号、考号或密码错误', 401);
     if (await isPublicTestExam(exam.id)) throw new LoginFlowError('请在浏览器填写测试账号，通过扫码或配对码登录', 403);
     const candidates = await prisma.candidate.findMany({ where: { examId: exam.id, examNumber: input.examNumber } });
     await consumeCandidatePasswordAttempt(candidates.map(candidate => candidate.id));
     const matches = candidates.filter(candidate => candidate.password === input.password)
       .map(candidate => ({ candidate, member: credentialMember(candidate, input.name, exam.contestType === 'TEAM') }))
       .filter(match => match.member);
-    if (matches.length !== 1) throw new LoginFlowError('考试编号、姓名、考号或密码不匹配，或姓名存在重复，请核对信息并联系监考老师', 401);
+    if (matches.length !== 1) throw new LoginFlowError('考试编号、考号或密码不匹配，请核对信息并联系监考老师', 401);
     const { candidate, member } = matches[0];
     const [pairing, room] = await Promise.all([
       prisma.pairingSession.findUnique({ where: { pairCode: input.pairCode } }),
@@ -102,7 +102,7 @@ async function handlePost(request: Request) {
     const result = await createCandidateLoginRequest({ exam, pairing, candidateId: candidate.id, memberIdentity: member!, materials: {}, method: 'CREDENTIALS', signal: request.signal });
     return ok({ requiresSecondCamera: false, id: result.id, sessionId: result.sessionId }, { status: 201 });
   } catch (error) {
-    if (error instanceof RequestParseError) return fail('请填写完整的考试编号、姓名、考号和密码，或重新扫码提交第二机位材料', 400);
+    if (error instanceof RequestParseError) return fail('请填写完整的考试编号、考号和密码，或重新扫码提交第二机位材料', 400);
     return fail(toErrorMessage(error), error instanceof LoginFlowError || error instanceof UploadSecurityError ? error.status : 500);
   }
 }

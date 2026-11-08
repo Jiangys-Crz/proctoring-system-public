@@ -171,7 +171,15 @@ export async function decodeCommunicationAssets(entries: CommunicationWire[], ex
   const buffers = new Map<string, Buffer>(); let total = 0;
   for (const entry of entries) if (entry.snapshot.kind === 'asset') {
     const known = await prisma.examFederationContent.findUnique({ where: contentIdentity(examId, 'asset', entry.snapshot.id), select: { payloadHash: true } });
-    if (known) { if (known.payloadHash !== digest(entry.snapshot)) throw new FederationError('同步图片元数据冲突'); continue; }
+    if (known) {
+      if (known.payloadHash !== digest(entry.snapshot)) throw new FederationError('同步图片元数据冲突');
+      const asset = await prisma.examFederationAsset.findUnique({ where: { id: entry.snapshot.id }, select: { examId: true, originNodeId: true, byteSize: true, sha256: true, accessKeyHash: true } });
+      if (asset) {
+        if (asset.examId !== examId || asset.originNodeId !== entry.snapshot.originNodeId || asset.byteSize !== entry.snapshot.byteSize || asset.sha256 !== entry.snapshot.sha256 || asset.accessKeyHash !== keyHash(entry.snapshot.accessKey)) throw new FederationError('同步图片存储身份冲突');
+        continue;
+      }
+      // An index alone is not the image. Rehydrate a missing blob on replay.
+    }
     const encoded = entry.data!;
     const buffer = Buffer.from(encoded, 'base64'); total += buffer.length;
     if (total > MAX_ASSET || buffer.length !== entry.snapshot.byteSize || buffer.toString('base64') !== encoded || sha(buffer) !== entry.snapshot.sha256) throw new FederationError('同步图片内容校验失败');

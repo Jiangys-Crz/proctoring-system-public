@@ -1,5 +1,6 @@
 'use client';
 
+import '@cwnupaa/proctor-shared/nova-theme.css';
 import './globals.css';
 import { AppErrorView } from '@/components/AppErrorView';
 

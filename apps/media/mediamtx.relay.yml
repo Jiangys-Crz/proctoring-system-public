@@ -1,4 +1,5 @@
-# Dedicated external relay. Do not merge into the examination media config.
+# Legacy dedicated configuration, retained for old-release reference only.
+# Current Compose uses mediamtx.caddy.yml / mediamtx.yml for shared media.
 logLevel: warn
 api: true
 apiAddress: :9997
@@ -17,6 +18,9 @@ webrtcAllowOrigins: ['*']
 webrtcLocalUDPAddress: :1940
 webrtcLocalTCPAddress: :1940
 webrtcIPsFromInterfaces: false
+# OBS starts its encoders after WHIP negotiation. Allow bounded startup time
+# before declaring the publisher empty; this does not add a playback buffer.
+webrtcTrackGatherTimeout: 15s
 # Override via MTX_WEBRTCADDITIONALHOSTS with this server's reachable address.
 moq: false
 playback: false

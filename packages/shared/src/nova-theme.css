@@ -1,0 +1,74 @@
+/* NovaJudge's light interface palette, shared by the administrator and candidate websites. */
+:root {
+  --nova-bg: #f4f4f5;
+  --nova-surface: #fff;
+  --nova-subtle: #f9fafb;
+  --nova-border: #e5e7eb;
+  --nova-line: #f3f4f6;
+  --nova-control-border: #d1d5dc;
+  --nova-text: #101828;
+  --nova-body: #4a5565;
+  --nova-muted: #6a7282;
+  --nova-blue: #155dfb;
+  --nova-blue-hover: #1447e6;
+  --nova-blue-soft: #eff6ff;
+  --nova-blue-border: #bedbff;
+  --nova-green: #00a63e;
+  --nova-red: #e7000b;
+  --nova-slate: #0f172b;
+  --nova-slate-deep: #020618;
+  --nova-serif: "Times New Roman", "PingFang SC", "Microsoft YaHei", serif;
+  --nova-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+  --nova-mono: Consolas, "Courier New", monospace;
+  --nova-shadow: 0 1px 2px rgb(16 24 40 / 6%);
+  --nova-dialog-shadow: 0 25px 50px -12px rgb(0 0 0 / 25%);
+  --nova-dialog-backdrop: rgb(0 0 0 / 50%);
+  --nova-dialog-radius: 12px;
+  --nova-control-radius: 6px;
+  --nova-focus-ring: 0 0 0 2px #2b7fff;
+}
+
+.nova-dialog {
+  position: fixed;
+  inset: 0;
+  width: min(384px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--nova-dialog-radius);
+  background: var(--nova-surface);
+  color: var(--nova-text);
+  box-shadow: var(--nova-dialog-shadow);
+  font: 14px/1.5 var(--nova-sans);
+}
+.nova-dialog::backdrop { background: var(--nova-dialog-backdrop); backdrop-filter: blur(4px); }
+.nova-dialog-header, .nova-dialog-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  background: var(--nova-subtle);
+}
+.nova-dialog-header { justify-content: space-between; border-bottom: 1px solid var(--nova-line); }
+.nova-dialog-header h2 { margin: 0; color: #1e2939; font: 700 16px/1.5 var(--nova-sans); }
+.nova-dialog-body { padding: 24px; color: var(--nova-body); overflow-wrap: anywhere; }
+.nova-dialog-body p { margin: 0; }
+.nova-dialog-body .nova-dialog-error { margin-top: 12px; color: var(--nova-red); }
+.nova-dialog-footer { justify-content: flex-end; }
+.nova-dialog-close {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--nova-control-radius);
+  background: transparent;
+  color: #99a1af;
+  cursor: pointer;
+}
+.nova-dialog-close:hover:not(:disabled) { color: var(--nova-body); }
+.nova-dialog-close:focus-visible { outline: 2px solid var(--nova-blue); outline-offset: 2px; }

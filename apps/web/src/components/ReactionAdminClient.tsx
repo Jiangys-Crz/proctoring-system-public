@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Download, Film, LoaderCircle, RefreshCw, Save, X } from 'lucide-react';
+import { Download, Film, LoaderCircle, RefreshCw, Save, X } from 'lucide-react';
 import { api } from './api';
 import type { ReactionAdminView, ReactionConfigView, ReactionExportSummary, ReactionItemView, ReactionPresentationView } from './reaction-types';
 import styles from './ReactionAdmin.module.css';
@@ -150,11 +150,7 @@ export function ReactionAdminClient({ examId }: { examId: string }) {
   const field = (key: 'bufferSeconds' | 'beforeSeconds' | 'afterSeconds' | 'maxPendingSeconds' | 'retentionDays', label: string, min: number, max: number) => <label>{label}<input type="number" required min={min} max={max} step={1} value={draft[key]} onChange={event => edit({ [key]: Number(event.target.value) })} /></label>;
 
   return <div className="exam-workspace-page">
-    <header className="exam-workspace-header">
-      <div className="return-only-row"><Link className="exam-back" href={`/dashboard/exams/${examId}`}><ArrowLeft size={18} /> 返回比赛详情</Link></div>
-      <div className="exam-workspace-title-row"><h1>Reaction 录像</h1><span>{data?.exam.name}</span></div>
-    </header>
-    <main className={styles.content}>
+    <main className={styles.content} aria-label="Reaction 录像">
       {error ? <div className="exam-editor-error" role="alert">{error}</div> : null}
       {message ? <div className={styles.message} role="status">{message}</div> : null}
       <section className="card grid">

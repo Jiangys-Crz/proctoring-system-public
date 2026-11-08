@@ -12,8 +12,14 @@ export function isTrustedMutationOrigin(request: Request, configuredBaseUrl = pr
   try { parsed = new URL(origin); } catch { return false; }
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== origin) return false;
   if (parsed.origin === new URL(request.url).origin) return true;
-  // A reverse proxy may give Next an internal HTTP URL while the browser uses
-  // the configured HTTPS address. Never trust a client-supplied forwarded host.
-  try { return !!configuredBaseUrl && parsed.origin === new URL(configuredBaseUrl).origin; }
+  // Docker may give Next an internal address. Match the configured public
+  // origin, including the two loopback names for a local-only deployment.
+  try {
+    const configured = new URL(configuredBaseUrl);
+    if (parsed.origin === configured.origin) return true;
+    const loopback = ['127.0.0.1', 'localhost'];
+    return loopback.includes(configured.hostname) && loopback.includes(parsed.hostname)
+      && parsed.protocol === configured.protocol && parsed.port === configured.port;
+  }
   catch { return false; }
 }

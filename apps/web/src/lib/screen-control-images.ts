@@ -1,8 +1,10 @@
 import sharp from 'sharp';
 import path from 'node:path';
-import { readFile, realpath, unlink } from 'node:fs/promises';
-import { DeleteObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { getStorageSettings, type StorageSettings } from './settings';
+import { realpath, unlink } from 'node:fs/promises';
+import { DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { getStorageSettings } from './settings';
+import { withS3Client } from './s3-client-pool';
+import { readStoredImage, StoredImageReadError } from './stored-image-read';
 import { processMedia } from './media-processing';
 import {
   SCREEN_CONTROL_MAX_DIMENSION, SCREEN_CONTROL_MAX_IMAGE_BYTES, SCREEN_CONTROL_MAX_PIXELS, ScreenControlError,
@@ -41,13 +43,6 @@ async function decodeScreenControlImage(buffer: Buffer) {
   }
 }
 
-function s3Client(settings: StorageSettings) {
-  const { accessKeyId, secretAccessKey, bucket } = settings.s3;
-  if (!accessKeyId || !secretAccessKey || !bucket) throw new Error('对象存储配置不完整');
-  return new S3Client({ endpoint: settings.s3.endpoint, region: settings.s3.region || 'auto',
-    forcePathStyle: settings.s3.forcePathStyle, credentials: { accessKeyId, secretAccessKey } });
-}
-
 function validateImageObjectPath(objectPath: string) {
   if (!objectPath.startsWith('screen-control/') || objectPath.includes('\\')
     || objectPath.split('/').some((part) => !part || part === '.' || part === '..' || part.includes('\0'))) {
@@ -57,20 +52,10 @@ function validateImageObjectPath(objectPath: string) {
 
 export async function readScreenControlImage(objectPath: string) {
   validateImageObjectPath(objectPath);
-  const settings = await getStorageSettings();
-  if (settings.provider === 'S3') {
-    const result = await s3Client(settings).send(new GetObjectCommand({ Bucket: settings.s3.bucket, Key: objectPath }));
-    if (!result.Body || (result.ContentLength && result.ContentLength > SCREEN_CONTROL_MAX_IMAGE_BYTES)) throw new ScreenControlError('图片不存在或文件过大', 404);
-    const buffer = Buffer.from(await result.Body.transformToByteArray());
-    if (buffer.length > SCREEN_CONTROL_MAX_IMAGE_BYTES) throw new ScreenControlError('图片文件过大', 413);
-    return buffer;
-  }
-  const root = path.resolve(/* turbopackIgnore: true */ process.cwd(), settings.localUploadDir || './uploads');
   try {
-    const [realRoot, fullPath] = await Promise.all([realpath(root), realpath(path.join(root, objectPath))]);
-    if (!fullPath.startsWith(`${realRoot}${path.sep}`)) throw new ScreenControlError('图片存储路径无效', 403);
-    return await readFile(fullPath);
+    return await readStoredImage(objectPath, SCREEN_CONTROL_MAX_IMAGE_BYTES);
   } catch (error) {
+    if (error instanceof StoredImageReadError) throw new ScreenControlError(error.message, error.status);
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') throw new ScreenControlError('图片文件不存在', 404);
     throw error;
   }
@@ -81,7 +66,7 @@ export async function removeScreenControlImage(objectPath: string) {
   validateImageObjectPath(objectPath);
   const settings = await getStorageSettings();
   if (settings.provider === 'S3') {
-    await s3Client(settings).send(new DeleteObjectCommand({ Bucket: settings.s3.bucket, Key: objectPath }));
+    await withS3Client(settings, client => client.send(new DeleteObjectCommand({ Bucket: settings.s3.bucket, Key: objectPath }), { abortSignal: AbortSignal.timeout(10_000) }));
   } else {
     const root = path.resolve(/* turbopackIgnore: true */ process.cwd(), settings.localUploadDir || './uploads');
     const [realRoot, fullPath] = await Promise.all([realpath(root), realpath(path.join(root, objectPath))]);

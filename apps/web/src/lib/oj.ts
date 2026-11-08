@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { Candidate, Exam } from '@prisma/client';
 import { getHydroSettings } from './settings';
 import { novaJudgeContestUrl } from './novajudge';
+import { hydroBrowserTarget } from './hydro-browser';
 
 function signedHeaders(body: unknown, secret: string) {
   const timestamp = String(Date.now());
@@ -20,6 +21,10 @@ function apiKeyHeaders(apiKey: string) {
 
 export async function requestOjLogin(exam: Exam, _candidate: Candidate) {
   if (exam.platform === 'NOVAJUDGE') return novaJudgeContestUrl(exam);
+  if (exam.platform === 'HYDRO_BROWSER') {
+    const { base, contestId } = hydroBrowserTarget(exam.platformBaseUrl, exam.platformContestId);
+    return `${base}/contest/${contestId}`;
+  }
   const settings = await getHydroSettings();
   const body = {
     contestId: exam.platformContestId,

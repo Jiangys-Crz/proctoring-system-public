@@ -28,15 +28,16 @@ export function participationGroupLabel(rule: string, group?: string | null) {
   return participationOptions(rule).find(option => option.value === value)?.label || value || '未分组';
 }
 export function isFemale(gender?: string | null) { return ['女', 'female', '2'].includes(gender?.trim().toLowerCase() || ''); }
-export type LeaderboardCell = { score: number | null; accepted: boolean; wrong: number; pending: number; seconds: number; penalty: number; firstBlood: boolean };
+export type LeaderboardCell = { score: number | null; accepted: boolean; wrong: number; pending: number; seconds: number; penalty: number; firstBlood: boolean; maxScore?: number };
+export type LeaderboardProblemStats = { submitted: number; attempted: number; accepted: number; firstSolved: number; lastSolved: number; avgScore: number; maxScore: number; minScore: number };
 export type LeaderboardRow = {
   rank: number; username: string; displayName: string; institution?: string; groupName?: string; teamName?: string | null;
-  members?: string; isStar?: boolean; isGirl?: boolean; medal?: 'Gold' | 'Silver' | 'Bronze';
+  members?: string; advisor?: string | null; hasSubmission?: boolean; isStar?: boolean; isGirl?: boolean; medal?: 'Gold' | 'Silver' | 'Bronze';
   score: number; solved: number; penalty: number; penaltyMillis?: number;
   problemScores: Array<number | null>; cells?: LeaderboardCell[];
 };
 export type LeaderboardData = {
-  available: boolean; frozen?: boolean; rows: LeaderboardRow[]; groups?: string[];
+  available: boolean; frozen?: boolean; rows: LeaderboardRow[]; groups?: string[]; problemStats?: LeaderboardProblemStats[];
   boards?: Array<{ key: string; label: string; rows: LeaderboardRow[] }>;
 };
 export type ParticipationFilter = 'all' | 'official' | 'star' | 'girl';
@@ -46,7 +47,7 @@ export function filterLeaderboardRows(rows: LeaderboardRow[], rule: string, grou
   return rows.filter(row => (!leaderboardGroups(rule).length || row.groupName === group)
     && (filter !== 'official' || !row.isStar)
     && (filter !== 'star' || row.isStar)
-    && (filter !== 'girl' || row.isGirl)
+    && (filter !== 'girl' || (!row.isStar && row.isGirl))
     && (!keyword || [row.displayName, row.institution, row.members].some(value => value?.toLowerCase().includes(keyword))));
 }
 export function leaderboardScoreClass(score: number | null, maximum: number) {

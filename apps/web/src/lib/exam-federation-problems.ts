@@ -6,12 +6,13 @@ const mappingSchema = z.array(z.object({
   order: z.number().int().min(0), localNumber: z.string().min(1).max(191), remoteNumber: z.string().min(1).max(191),
 }).strict()).max(10000);
 export type ProblemMapping = z.infer<typeof mappingSchema>;
-type Problem = { order: number; hydroProblemId: string };
+type Problem = { order: number; hydroProblemId: string; syncKey?: string | null };
 
 /** The hub's Hydro number is the stable wire identity. Only the edge translates
  * it; all local judging continues to use ExamProblem.hydroProblemId. Legacy
  * connections without a mapping retain their original equal-number behavior. */
-export function syncProblemNumber(config: { role: string; problemMapping: unknown }) {
+export function syncProblemNumber(config: { role: string; problemMapping: unknown; managedGlobally?: boolean }) {
+  if (config.managedGlobally) return (problem: Problem) => { if (!problem.syncKey) throw new FederationError('题目映射尚未同步'); return problem.syncKey; };
   if (config.problemMapping == null) return (problem: Problem) => problem.hydroProblemId;
   const parsed = mappingSchema.safeParse(config.problemMapping);
   if (config.role !== 'EDGE' || !parsed.success || new Set(parsed.data.map(p => p.order)).size !== parsed.data.length) {

@@ -12,7 +12,9 @@ import {
 import { registerProctorSystemSettings } from './settings';
 import { resolveJudgeLanguage } from './judge-language';
 import { judgeLanguageList } from './judge-language-list';
+import { registerProblemBank } from './problem-bank';
 import { problemFullScore } from './problem-score';
+import { registerBrowserContest } from './browser-contest';
 
 export { registerProctorSystemSettings } from './settings';
 
@@ -24,6 +26,12 @@ interface TicketRecord {
 
 // Hydro's record schema requires a numeric UID; this internal value is not an authentication account.
 const INTERNAL_RECORD_UID = 1;
+
+// Share the budget across plugin reloads as well as API callers from different
+// platform workers. Search must not retain hundreds of full statements/configs.
+const problemSearchState = (globalThis as typeof globalThis & {
+    proctorProblemSearchState?: { active: number };
+}).proctorProblemSearchState ??= { active: 0 };
 
 const tickets = new Map<string, TicketRecord>();
 const MAX_TICKETS = 4096;
@@ -544,7 +552,7 @@ function limitNumber(value: unknown, kind: 'time' | 'memory') {
     return Math.round(amount);
 }
 
-function publicProblem(pdoc: any) {
+function publicProblem(pdoc: any, summary = false) {
     const config = parseProblemConfig(pdoc.config);
     // Never expose objective answers to the proctoring frontend. The full
     // configuration is read only so the bridge can calculate the real score.
@@ -552,13 +560,17 @@ function publicProblem(pdoc: any) {
     delete publicConfig.answers;
     return {
         id: String(pdoc.docId),
+        docId: String(pdoc.docId),
         pid: pdoc.pid || String(pdoc.docId),
         title: pdoc.title || '',
-        content: pdoc.content || '',
+        content: summary ? '' : pdoc.content || '',
         html: Boolean(pdoc.html),
-        config: publicConfig,
-        data: pdoc.data || [],
-        files: pdoc.additional_file || [],
+        config: summary ? { type: String(config.type || 'default') } : publicConfig,
+        // Do not publish test-data fingerprints either: the config's ETag or
+        // byte size can reveal a small objective answer through enumeration.
+        // The authenticated bank transport reads its own private manifest.
+        data: [],
+        files: summary ? [] : pdoc.additional_file || [],
         tags: pdoc.tag || [],
         difficulty: pdoc.difficulty || 0,
         score: problemFullScore({ score: pdoc.score, config }) ?? 100,
@@ -573,8 +585,11 @@ class ProctorProblemGetHandler extends Handler {
         const body = this.request.body || {};
         assertApiRequest(this, body);
         await ensureProblemDomain();
-        const pdoc = await ProblemModel.get(problemDomain(), pid, ProblemModel.PROJECTION_PUBLIC, true);
-        if (!pdoc) throw new NotFoundError('problem');
+        const pdoc = await ProblemModel.get(problemDomain(), pid, [...ProblemModel.PROJECTION_PUBLIC, 'proctorCreatePending', 'proctorSyncPending', 'proctorSyncTransfer.applied'] as any, true);
+        if (!pdoc || (pdoc as any).proctorCreatePending) throw new NotFoundError('problem');
+        // The bank apply/ack recovery path reads the applied native document;
+        // unfinished placeholders must not be imported as complete questions.
+        if ((pdoc as any).proctorSyncPending && !(pdoc as any).proctorSyncTransfer?.applied) throw new BadRequestError('题目测试数据或附件正在同步，请等待补传完成');
         this.response.body = { ok: true, data: publicProblem(pdoc) };
     }
 }
@@ -587,8 +602,8 @@ class ProctorProblemAnswerKeyHandler extends Handler {
         const body = this.request.body || {};
         assertApiRequest(this, body);
         await ensureProblemDomain();
-        const pdoc = await ProblemModel.get(problemDomain(), pid, ProblemModel.PROJECTION_PUBLIC, true);
-        if (!pdoc) throw new NotFoundError('problem');
+        const pdoc = await ProblemModel.get(problemDomain(), pid, [...ProblemModel.PROJECTION_PUBLIC, 'proctorCreatePending'] as any, true);
+        if (!pdoc || (pdoc as any).proctorCreatePending) throw new NotFoundError('problem');
         const config = parseProblemConfig(pdoc.config);
         this.response.body = { ok: true, data: { answers: config.answers && typeof config.answers === 'object' ? config.answers : {} } };
     }
@@ -605,8 +620,8 @@ class ProctorProblemFileHandler extends Handler {
         if (!name || name.includes('/') || name.includes('\\') || name.includes('\0')) throw new BadRequestError('file name');
         await ensureProblemDomain();
         const targetDomain = problemDomain();
-        const pdoc = await ProblemModel.get(targetDomain, pid, ProblemModel.PROJECTION_PUBLIC);
-        if (!pdoc) throw new NotFoundError('problem');
+        const pdoc = await ProblemModel.get(targetDomain, pid, [...ProblemModel.PROJECTION_PUBLIC, 'proctorCreatePending'] as any);
+        if (!pdoc || (pdoc as any).proctorCreatePending) throw new NotFoundError('problem');
         const files = Array.isArray(pdoc.additional_file) ? pdoc.additional_file : [];
         if (!files.some((file: any) => file?.name === name)) throw new NotFoundError('file');
         const url = await StorageModel.signDownloadLink(`problem/${targetDomain}/${pid}/additional_file/${name}`, name, false, 'user');
@@ -632,17 +647,29 @@ class ProctorProblemListHandler extends Handler {
     async post({ domainId }) {
         const body = this.request.body || {};
         assertApiRequest(this, body);
-        await ensureProblemDomain();
-        const targetDomain = problemDomain();
         const queryText = `${body.query || ''}`.trim();
         const exactPid = typeof body.exactPid === 'string' ? body.exactPid.trim() : '';
+        const limit = body.limit === undefined ? 30 : Number(body.limit);
+        if (queryText.length > 1000 || exactPid.length > 1000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new BadRequestError('题库查询参数不正确');
+        if (problemSearchState.active >= 2) throw new BadRequestError('题库查询繁忙，请稍后重试');
         const escapedQuery = queryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const query: any = exactPid ? { pid: exactPid } : queryText
             ? { $or: [{ title: { $regex: escapedQuery, $options: 'i' } }, { pid: { $regex: escapedQuery, $options: 'i' } }, ...( /^\d+$/.test(queryText) ? [{ docId: Number(queryText) }] : [])] }
             : {};
-        const limit = Math.min(100, Math.max(1, Number(body.limit || 30)));
-        const docs = await ProblemModel.getMulti(targetDomain, query, ProblemModel.PROJECTION_PUBLIC).limit(limit).toArray();
-        this.response.body = { ok: true, data: docs.map(publicProblem) };
+        problemSearchState.active++;
+        try {
+            await ensureProblemDomain();
+            // One raw config at a time is needed to calculate the true full
+            // score, including objective groups. Never load statements/files,
+            // and keep only summaries in the response. Details/import use get.
+            const cursor = ProblemModel.getMulti(problemDomain(), { ...query, proctorCreatePending: { $ne: true }, proctorSyncPending: { $ne: true } } as any,
+                ['docId', 'pid', 'title', 'html', 'tag', 'difficulty', 'score', 'config'] as any).limit(limit).batchSize(1).maxTimeMS(10_000);
+            const data: ReturnType<typeof publicProblem>[] = [];
+            try {
+                for await (const doc of cursor) data.push(publicProblem(doc, true));
+            } finally { await cursor.close(); }
+            this.response.body = { ok: true, data };
+        } finally { problemSearchState.active--; }
     }
 }
 
@@ -669,8 +696,8 @@ class ProctorProblemSyncHandler extends Handler {
             return { name, value };
         });
         if (new Set(testdata.map(file => file.name)).size !== testdata.length) throw new BadRequestError('duplicate testdata file name');
-        let pdoc = requestedId ? await ProblemModel.get(targetDomain, requestedId, ProblemModel.PROJECTION_PUBLIC, true) : null;
-        if (requestedId && !pdoc) throw new NotFoundError('problem');
+        let pdoc = requestedId ? await ProblemModel.get(targetDomain, requestedId, [...ProblemModel.PROJECTION_PUBLIC, 'proctorCreatePending'] as any, true) : null;
+        if (requestedId && (!pdoc || (pdoc as any).proctorCreatePending)) throw new NotFoundError('problem');
         let targetId = requestedId;
         if (pdoc) {
             await ProblemModel.edit(targetDomain, requestedId, {
@@ -705,8 +732,8 @@ class ProctorProblemSyncHandler extends Handler {
         // Existing problems need these writes too; metadata updates alone leave
         // the old judge files in place while reporting a successful sync.
         for (const { name, value } of testdata) await ProblemModel.addTestdata(targetDomain, targetId, name, Buffer.from(value));
-        pdoc = await ProblemModel.get(targetDomain, targetId, ProblemModel.PROJECTION_PUBLIC, true);
-        if (!pdoc) throw new NotFoundError('problem');
+        pdoc = await ProblemModel.get(targetDomain, targetId, [...ProblemModel.PROJECTION_PUBLIC, 'proctorCreatePending'] as any, true);
+        if (!pdoc || (pdoc as any).proctorCreatePending) throw new NotFoundError('problem');
         this.response.body = { ok: true, data: publicProblem(pdoc) };
     }
 }
@@ -729,6 +756,13 @@ function publicRecordForApi(rdoc: any, includeCode = true) {
     };
 }
 
+// Polling needs verdicts/cases, not source code, compiler logs or task metadata.
+// Use the same projection for single and batch polls, including old web nodes.
+const RECORD_STATUS_PROJECTION = {
+    _id: 1, pid: 1, lang: 1, status: 1, score: 1, time: 1, memory: 1,
+    testCases: 1, subtasks: 1, judgeAt: 1,
+};
+
 class ProctorJudgeSubmitHandler extends Handler {
     noCheckPermView = true;
 
@@ -741,8 +775,9 @@ class ProctorJudgeSubmitHandler extends Handler {
         if (!Number.isSafeInteger(pid) || pid <= 0 || !lang || !code) throw new BadRequestError('pid/lang/code');
         if (lang.length > 64 || code.length > 512 * 1024) throw new BadRequestError('language or code too long');
         await ensureProblemDomain();
-        const pdoc = await ProblemModel.get(problemDomain(), pid, ProblemModel.PROJECTION_PUBLIC);
-        if (!pdoc) throw new NotFoundError('problem');
+        const pdoc = await ProblemModel.get(problemDomain(), pid, [...ProblemModel.PROJECTION_PUBLIC, 'proctorCreatePending', 'proctorSyncPending'] as any);
+        if (!pdoc || (pdoc as any).proctorCreatePending) throw new NotFoundError('problem');
+        if ((pdoc as any).proctorSyncPending) throw new BadRequestError('题目评测文件正在同步，请等待补传完成后重试');
         const config = parseProblemConfig(pdoc.config);
         if (['objective', 'submit_answer'].includes(config.type)) {
             if (lang !== '_') throw new BadRequestError('language');
@@ -771,7 +806,8 @@ class ProctorJudgeStatusHandler extends Handler {
     async post({ domainId }, rid: any) {
         const body = this.request.body || {};
         assertApiRequest(this, body);
-        const record = await RecordModel.get(problemDomain(), rid);
+        const record = await RecordModel.getMulti(problemDomain(), { _id: rid })
+            .project(RECORD_STATUS_PROJECTION).limit(1).next();
         if (!record) throw new NotFoundError('record');
         this.response.body = { ok: true, data: publicRecordForApi(record, false) };
     }
@@ -798,7 +834,7 @@ class ProctorJudgeBatchStatusHandler extends Handler {
         // One bounded query instead of 200 parallel lookups. Status polling
         // does not need the code already saved by the monitoring backend.
         const records = ids.size ? await RecordModel.getMulti(problemDomain(), { _id: { $in: [...ids.values()] } })
-            .project({ code: 0 }).limit(200).toArray() : [];
+            .project(RECORD_STATUS_PROJECTION).limit(200).toArray() : [];
         const byId = new Map(records.map(record => [record._id.toHexString(), record]));
         this.response.body = { ok: true, data: [...ids.keys()].flatMap(id => {
             const record = byId.get(id);
@@ -843,6 +879,7 @@ export default class CwnupaaProctorAuthService extends Service {
         registerProctorSystemSettings(ctx, legacyConfig);
         void ensureProblemDomain().catch((error) => ctx.logger.error(error));
         ctx.Route('cwnupaa_proctor_config_check', '/api/proctor/config-check', ProctorConfigCheckHandler);
+        registerBrowserContest(ctx, assertApiRequest);
         ctx.Route('cwnupaa_proctor_login_ticket', '/api/proctor/login-ticket', ProctorLoginTicketHandler);
         ctx.Route('cwnupaa_proctor_consume_ticket', '/proctor/consume-ticket', ProctorConsumeTicketHandler, PRIV.PRIV_NONE);
         ctx.Route('cwnupaa_proctor_contest_data', '/api/proctor/contest/:tid', ProctorContestDataHandler);
@@ -850,6 +887,7 @@ export default class CwnupaaProctorAuthService extends Service {
         ctx.Route('cwnupaa_proctor_contest_submissions', '/api/proctor/contest/:tid/submissions', ProctorContestSubmissionsHandler);
         ctx.Route('cwnupaa_proctor_contest_leaderboard', '/api/proctor/contest/:tid/leaderboard', ProctorContestLeaderboardHandler);
         ctx.Route('cwnupaa_proctor_contest_file', '/api/proctor/contest/:tid/file', ProctorContestFileHandler);
+        registerProblemBank(ctx, assertApiRequest, problemDomain, ensureProblemDomain);
         ctx.Route('cwnupaa_proctor_problem_sync', '/api/proctor/problem/sync', ProctorProblemSyncHandler);
         ctx.Route('cwnupaa_proctor_languages', '/api/proctor/languages', ProctorLanguageListHandler);
         ctx.Route('cwnupaa_proctor_problem_list', '/api/proctor/problems', ProctorProblemListHandler);

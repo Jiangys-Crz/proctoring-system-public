@@ -95,10 +95,6 @@ export function ReactionBrandingPanel() {
 
   const organizations = data?.organizations.filter(item => item.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) || [];
   return <div className={styles.panel}>
-    <div className={styles.introduction}>
-      <p className="muted">所有考试共用这份组织徽章设置。组织名称来自考生资料中的学校/组织字段，规范化后精确匹配；未匹配时使用全局默认徽章。</p>
-      <p className="muted">名称会统一兼容字符、去掉首尾空白并合并连续空白，保留大小写。请使用实际组织名称，不按相似名称猜测。</p>
-    </div>
     {error ? <div className={styles.error} role="alert">{error}</div> : null}
     {message ? <div className={styles.message} role="status">{message}</div> : null}
     <div className={styles.heading}><span className="muted">{data ? `${data.organizations.length} 个组织 · 上限 ${data.limit}` : '正在加载组织徽章…'}</span><button type="button" className="button secondary compact-button" disabled={Boolean(busy)} onClick={() => void mutate('refresh', '组织徽章设置已刷新。', async () => {})}><RefreshCw size={16} className={busy === 'refresh' ? 'spin' : undefined} />刷新</button></div>
@@ -127,7 +123,6 @@ export function ReactionBrandingPanel() {
           <div className={styles.actions}><button type="button" className="button" disabled={!defaultFile} onClick={() => void saveDefault()}><Save size={16} />保存默认徽章</button><button type="button" className="button secondary" disabled={!data?.defaultBadge.logoId} onClick={() => void resetDefault()}><RotateCcw size={16} />恢复内置默认</button></div>
         </section>
       </div>
-      <p className="muted">支持 PNG、JPEG、WebP，单张不超过 4 MiB。建议使用 512×512 的透明正方形图片；下方预览展示圆形底衬效果。设置保存后，已有视频需重新生成才能应用。</p>
       <section className={styles.organizations} aria-label="已配置的组织徽章">
         <div className={styles.heading}><h3>已配置的组织</h3><input className={styles.search} aria-label="搜索组织徽章" value={search} onChange={event => setSearch(event.target.value)} placeholder="搜索组织名称" /></div>
         {organizations.length ? organizations.map(item => <OrganizationBadgeRow key={item.name} item={item} rename={renameOrganization} replace={replaceOrganization} remove={deleteOrganization} setError={setError} />) : <p className="muted">{search ? '没有匹配的组织。' : '尚未添加组织徽章；目前使用全局默认徽章。'}</p>}

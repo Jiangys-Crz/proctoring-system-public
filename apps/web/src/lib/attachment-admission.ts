@@ -26,6 +26,8 @@ export function holdAttachment(response: Response, signal: AbortSignal, release:
   const abort = () => stop(new Error('附件下载已断开'));
   const timer = setTimeout(() => stop(new Error('附件下载超时，请重试')), timeoutMs);
   timer.unref?.();
+  // Do not prefetch the end marker while the consumer is still writing a
+  // large last chunk. That would release admission before backpressure drains.
   const body = new ReadableStream<Uint8Array>({
     start(value) {
       controller = value;
@@ -48,7 +50,7 @@ export function holdAttachment(response: Response, signal: AbortSignal, release:
       finish();
       try { await reader.cancel(reason); } finally { releaseReader(); }
     },
-  });
+  }, { highWaterMark: 0 });
   try { return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers }); }
   catch (error) { stop(error instanceof Error ? error : new Error('附件响应无效')); throw error; }
 }

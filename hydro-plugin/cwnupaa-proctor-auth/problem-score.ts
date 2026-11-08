@@ -13,8 +13,14 @@ export function problemFullScore(problem: ProblemScoreSource): number | null {
         const total = Object.values(config.answers).reduce<number>((sum, answer) => {
             if (Array.isArray(answer)) return sum + (nonNegativeNumber(answer[1]) ?? 0);
             if (answer && typeof answer === 'object') {
-                const scores = Object.values(answer).map(nonNegativeNumber).filter((score): score is number => score !== null);
-                return sum + (scores.length ? Math.max(...scores) : 0);
+                // Large alternative-answer maps must not become thousands of
+                // function arguments (or several temporary score arrays).
+                let maximum = 0;
+                for (const value of Object.values(answer)) {
+                    const score = nonNegativeNumber(value);
+                    if (score !== null && score > maximum) maximum = score;
+                }
+                return sum + maximum;
             }
             return sum;
         }, 0);

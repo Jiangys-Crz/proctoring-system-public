@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Copy, KeyRound, RefreshCw, Save, X } from 'lucide-react';
+import { PlatformSyncSettings } from './PlatformSyncSettings';
 import { api } from './api';
 import { DesktopReleasePanel } from './DesktopReleasePanel';
 import { LiveApiKeysPanel } from './LiveApiKeysPanel';
@@ -54,7 +55,7 @@ export function SystemPageClient() {
   const [externalSettings, setExternalSettings] = useState<ExternalLoginSettings>(externalFallback);
   const [hydroSettings, setHydroSettings] = useState<HydroSettings>(hydroFallback);
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(fallback);
-  const [openPanel, setOpenPanel] = useState<'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding' | null>('hydro');
+  const [openPanel, setOpenPanel] = useState<'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding' | 'sync' | null>('hydro');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState('');
   const [isError, setIsError] = useState(false);
@@ -212,7 +213,7 @@ export function SystemPageClient() {
     }
   }
 
-  function panelHeader(panel: 'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding', title: string) {
+  function panelHeader(panel: 'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding' | 'sync', title: string) {
     const open = openPanel === panel;
     return (
       <button className="collapse-header" onClick={() => setOpenPanel(open ? null : panel)}>
@@ -223,12 +224,10 @@ export function SystemPageClient() {
   }
 
   return (
-    <div className="grid">
-      <div>
-        <h1 style={{ margin: 0 }}>系统设置</h1>
-      </div>
+    <div className="grid management-page">
       {message ? <div className="card" role={isError ? 'alert' : 'status'} style={{ color: isError ? '#b42318' : 'var(--accent-2)' }}>{message}</div> : null}
 
+      <section className="card form">{panelHeader('sync', '公网与内网题库、考试同步')}{openPanel === 'sync' ? <PlatformSyncSettings /> : null}</section>
       <section className="card form">
         {panelHeader('desktop', '客户端发布与安装包管理')}
         {openPanel === 'desktop' && <DesktopReleasePanel />}
@@ -249,8 +248,6 @@ export function SystemPageClient() {
         {openPanel === 'hydro' ? (
           <fieldset className="form" disabled={!hydroLoaded || saving === 'hydro' || checking || generatingKey} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div className="muted">评测设置版本：{HYDRO_SETTINGS_VERSION}</div>
-            <div className="muted">所有考试共用此评测服务。填写服务主地址，不包含 /api 或其他子路由。</div>
-            <div className="muted">在评测服务的「系统设置 → 考试监考平台」中填写相同的 API-Key 和题库域 ID（默认 Problems）。保存后立即生效。</div>
             <label>
               评测服务主地址（域名）
               <input type="url" value={hydroSettings.baseUrl} onChange={(event) => updateHydroSettings({ baseUrl: event.target.value })} placeholder="http://localhost" required />
@@ -272,8 +269,6 @@ export function SystemPageClient() {
                 <input value={hydroSettings.problemDomainId} onChange={(event) => updateHydroSettings({ problemDomainId: event.target.value })} placeholder="Problems" required />
               </label>
             </div>
-            <div className="muted">API-Key 由监考后台生成。生成后先保存，再复制到评测服务插件；重新生成时，两端都需要更新。</div>
-            <div className="muted">监考后台仅使用 API-Key 调用判题机。无需账号、密码、签名密钥或 Hydro 比赛匹配；考生和考试记录保存在监考系统。</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
             <button className="button" onClick={() => void saveHydroSettings()} disabled={saving === 'hydro' || checking}>
               <Save size={18} />
@@ -284,7 +279,6 @@ export function SystemPageClient() {
               {checking ? '检测中…' : '检测连接与配置'}
             </button>
             </div>
-            <div className="muted">检测使用当前填写的内容，不会保存配置或产生判题记录。</div>
           </fieldset>
         ) : null}
         {openPanel === 'hydro' && connectionCheck ? <div role="status" style={{ display: 'grid', gap: 10, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
@@ -305,7 +299,6 @@ export function SystemPageClient() {
               AppKey
               <input type="password" value={externalSettings.appKey} onChange={(event) => setExternalSettings({ ...externalSettings, appKey: event.target.value })} placeholder="请输入协会官网分配的 AppKey" />
             </label>
-            <small className="muted">比赛外榜推送未单独填写密钥时使用此密钥；推送域名、赛事 ID 和可选密钥在每场比赛的管理设置中配置。开启推送前，请在 CWNUPAA 官网接口管理中为该密钥授予“外榜”权限。</small>
             <button className="button" onClick={() => void saveExternalSettings()} disabled={saving === 'external'}>
               <Save size={18} />
               {saving === 'external' ? '保存中' : '保存协会官网登录API设置'}
@@ -357,7 +350,7 @@ export function SystemPageClient() {
         </div>
         <label>
           <span>
-            <input type="checkbox" checked={storageSettings.s3.forcePathStyle} onChange={(event) => setStorageSettings({ ...storageSettings, s3: { ...storageSettings.s3, forcePathStyle: event.target.checked } })} /> 使用 Path Style
+            <input type="checkbox" role="switch" className="settings-switch" checked={storageSettings.s3.forcePathStyle} onChange={(event) => setStorageSettings({ ...storageSettings, s3: { ...storageSettings.s3, forcePathStyle: event.target.checked } })} /> 使用 Path Style
           </span>
         </label>
         <button className="button" onClick={() => void saveStorageSettings()} disabled={saving === 'storage'}>

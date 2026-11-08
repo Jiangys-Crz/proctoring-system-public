@@ -1,0 +1,426 @@
+/* NovaJudge navigation and management page controls. */
+.dashboard-theme .hydro-header {
+  background: #fff;
+  box-shadow: var(--hydro-shadow);
+}
+.dashboard-theme .hydro-nav { align-items: center; gap: 4px; }
+.dashboard-theme .hydro-nav a {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: #364153;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.dashboard-theme .hydro-nav a::before { content: none; }
+.dashboard-theme .hydro-nav a:hover {
+  color: var(--hydro-pink);
+  background: var(--hydro-page);
+  transform: none;
+}
+.dashboard-theme .hydro-nav .hydro-nav-active {
+  color: var(--hydro-pink);
+  background: var(--nova-blue-soft);
+}
+.dashboard-theme .hydro-user-copy strong { color: var(--text); }
+
+.management-page :is(.card, .exam-publish-list) {
+  border-color: var(--hydro-border);
+  border-radius: 8px;
+  box-shadow: var(--hydro-shadow);
+}
+.management-page .card:hover { box-shadow: var(--hydro-shadow); }
+.modal-backdrop, .hydro-test-modal-backdrop, .ks-grading-backdrop, .screen-template-backdrop {
+  background: var(--nova-dialog-backdrop);
+  backdrop-filter: blur(4px);
+}
+:is(.modal-panel, .hydro-test-modal, .ks-grading-dialog, .screen-template-dialog) {
+  border-radius: var(--nova-dialog-radius);
+  background: var(--nova-surface);
+  box-shadow: var(--nova-dialog-shadow);
+}
+:is(.modal-panel, .hydro-test-modal, .ks-grading-dialog, .screen-template-dialog) .icon-button:is([aria-label^="关闭"], [title^="关闭"]) {
+  border: 0;
+  color: #99a1af;
+  background: transparent;
+  box-shadow: none;
+}
+:is(.modal-panel, .hydro-test-modal, .ks-grading-dialog, .screen-template-dialog) .icon-button:is([aria-label^="关闭"], [title^="关闭"]):hover:not(:disabled) {
+  color: var(--nova-body);
+  background: transparent;
+}
+.nova-dialog-footer .button { min-height: 36px; padding: 8px 16px; border-radius: 8px; font-weight: 500; }
+
+:is(.management-page, .management-dialog) .button {
+  min-height: 38px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+:is(.management-page, .management-dialog) .button:not(.secondary, .danger, .warn):hover:not(:disabled) {
+  background: var(--hydro-pink);
+}
+:is(.management-page, .management-dialog) .button.secondary {
+  color: #364153;
+  border-color: var(--nova-control-border);
+  background: #fff;
+}
+:is(.management-page, .management-dialog) .button.secondary:hover:not(:disabled) {
+  color: var(--hydro-pink);
+  border-color: var(--nova-blue-border);
+  background: var(--nova-blue-soft);
+}
+:is(.management-page, .management-dialog) .button:hover:not(:disabled) {
+  box-shadow: none;
+  transform: none;
+}
+
+.dashboard-theme table:not(.hydro-problem-content table) thead th,
+:is(.management-dialog, .hydro-test-modal) table thead th {
+  color: #364153;
+  background: var(--nova-subtle);
+  border-bottom-color: var(--nova-border);
+  font-weight: 700;
+}
+.dashboard-theme table:not(.hydro-problem-content table) tbody td,
+:is(.management-dialog, .hydro-test-modal) table tbody td { border-bottom-color: var(--nova-line); }
+.dashboard-theme table:not(.hydro-problem-content table) tbody tr:hover,
+:is(.management-dialog, .hydro-test-modal) table tbody tr:hover { background: var(--nova-subtle); }
+.management-page .card a:not(.button) { color: var(--hydro-pink); }
+.management-page :is(.users-toolbar, .problems-browser-toolbar) {
+  background: var(--hydro-page);
+  border-color: var(--hydro-border);
+}
+.management-page :is(.users-search, .problems-search) {
+  color: var(--hydro-muted);
+  border-color: var(--nova-control-border);
+  border-radius: 6px;
+  box-shadow: none;
+}
+.management-page :is(.users-search, .problems-search):focus-within {
+  border-color: var(--hydro-blue);
+  box-shadow: var(--hydro-focus-ring);
+}
+
+.exam-select-input { border-color: var(--nova-control-border); border-radius: var(--nova-control-radius); }
+.exam-select-input:focus-within { border-color: var(--nova-blue); box-shadow: var(--nova-focus-ring); }
+.exam-select-query input:focus { box-shadow: none; }
+.exam-select-dropdown { border-color: var(--nova-border); border-radius: 8px; box-shadow: var(--nova-dialog-shadow); }
+.exam-select-dropdown [role="option"] { color: var(--nova-body); }
+.exam-select-dropdown [role="option"]:is(:hover, .is-active) { color: var(--nova-blue); background: var(--nova-blue-soft); }
+.management-page :is(.problem-type-badge, .problems-search-icon, .problems-count-icon, .users-summary-icon.total) {
+  color: var(--hydro-pink);
+  border-color: #dbeafe;
+  background: var(--nova-blue-soft);
+}
+.management-page .problem-row-title { color: var(--text) !important; }
+.management-page .problem-row-title:hover { color: var(--hydro-pink) !important; }
+.management-page .users-summary-item:hover { transform: none; }
+.management-page .collapse-header { font-size: 16px; }
+.management-page .collapse-header:hover { color: var(--hydro-pink); }
+
+.management-toolbar, .management-actions, .exam-list-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.management-toolbar { gap: 12px; padding: 12px; }
+.management-toolbar .management-actions { margin-inline-start: auto; }
+.management-page-actions, .live-relay-dialog .management-actions { justify-content: flex-end; }
+
+.hydro-main > .new-exam-page { width: min(1120px, 100%); }
+.exam-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.exam-editor-heading h2 { margin: 0; }
+.exam-editor-create .exam-editor-form { width: 100%; margin: 0; }
+.exam-editor-footer .button { min-height: 44px; min-width: 150px; font-weight: 600; background: var(--nova-slate); }
+.exam-editor-footer .button:hover:not(:disabled) { background: var(--nova-slate-deep); }
+
+.management-search { position: relative; flex: 1 1 175px; min-width: 0; }
+.management-search svg {
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  color: var(--hydro-muted);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.management-search input, .exam-list-filters select {
+  height: 38px;
+  border: 1px solid var(--nova-control-border) !important;
+  border-radius: 6px !important;
+  font-size: 13px;
+  color: var(--text) !important;
+}
+.management-search input { width: 100%; padding: 0 10px 0 35px; }
+.exam-list-filters select { padding: 0 8px; cursor: pointer; }
+
+.exam-status-filters {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--hydro-border);
+  border-radius: 6px;
+  background: #f3f4f6;
+}
+.exam-status-filters button {
+  flex: 1;
+  border: 0;
+  border-radius: 4px;
+  padding: 0 9px;
+  min-height: 30px;
+  background: transparent;
+  color: #4a5565;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.exam-status-filters button:hover { color: var(--hydro-pink); }
+.exam-status-filters button[aria-pressed="true"] {
+  color: var(--hydro-pink);
+  background: #fff;
+  box-shadow: var(--hydro-shadow);
+  font-weight: 600;
+}
+
+.management-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #f3f4f6;
+  color: #364153;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.management-badge[data-status="info"] { color: var(--hydro-pink); background: var(--nova-blue-soft); }
+.management-badge[data-status="ongoing"] { color: #166534; background: #dcfce7; }
+.management-badge[data-status="ended"] { color: #991b1b; background: #fee2e2; }
+.management-badge[data-status="unknown"] { color: #854d0e; background: #fef3c7; }
+
+.exam-publish-list { border: 1px solid var(--hydro-border); background: #fff; }
+.exam-publish-item + .exam-publish-item { border-top: 1px solid var(--hydro-border); }
+.exam-publish-item:hover { background: var(--hydro-page); }
+.exam-publish-main-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 19px 22px;
+}
+.exam-publish-content { min-width: 0; }
+.exam-list-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.exam-list-title h2 { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
+.exam-publish-main-link:hover h2 { color: var(--hydro-pink); }
+.exam-publish-meta, .exam-publish-meta > span, .exam-publish-open { display: flex; align-items: center; }
+.exam-publish-meta { flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+.exam-publish-meta > span { gap: 6px; }
+.exam-publish-meta svg { color: var(--hydro-muted); }
+.exam-publish-open { flex: 0 0 auto; gap: 6px; color: var(--hydro-pink); font-size: 13px; }
+.exam-publish-main-link:focus-visible { outline-offset: -3px; }
+.management-empty, .exam-list-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 150px;
+  gap: 9px;
+  color: var(--hydro-muted);
+  font-size: 14px;
+}
+
+.live-relay-toolbar .management-search { flex: 0 1 360px; }
+.live-relay-toolbar .management-actions { margin-inline-start: 0; }
+.live-relay-summary { display: grid; gap: 10px; padding: 16px 18px; font-size: 13px; }
+.live-relay-summary-metrics { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); }
+.live-relay-summary-metrics > span { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; overflow-wrap: anywhere; }
+.live-relay-summary-metrics strong { color: var(--text); }
+.live-relay-summary-metrics svg { color: var(--hydro-pink); }
+.live-relay-summary p { margin: 0; color: var(--muted); line-height: 1.55; }
+.live-relay-summary p[role="alert"] { color: #854d0e; }
+
+.live-relay-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.live-relay-card { min-width: 0; grid-template-rows: auto auto repeat(3, auto) 1fr; }
+.live-relay-card-header { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--hydro-border); }
+.live-relay-card-header > div { min-width: 0; }
+.live-relay-card-header small { color: var(--hydro-muted); font-size: 11px; }
+.live-relay-card-header h2 { margin: 2px 0 0; font: 600 16px ui-monospace, monospace; overflow-wrap: anywhere; }
+.live-relay-card-header .management-badge { margin-inline-start: auto; }
+.live-relay-card-icon { display: grid; place-items: center; flex: 0 0 36px; height: 36px; border-radius: 6px; color: var(--hydro-pink); background: var(--nova-blue-soft); }
+.live-relay-servers { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+.live-relay-address { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.live-relay-card input { height: 38px; min-width: 0; border-radius: 6px !important; background: var(--hydro-page) !important; font: 12px ui-monospace, monospace; }
+.live-relay-card-footer { align-self: end; display: flex; justify-content: flex-end; padding-top: 12px; border-top: 1px solid var(--hydro-border); }
+
+.management-page .live-relay-dialog { width: min(440px, calc(100% - 24px)); max-height: calc(100dvh - 24px); border-radius: 10px; color: var(--text); }
+.live-relay-dialog::backdrop { background: var(--nova-dialog-backdrop); backdrop-filter: blur(4px); }
+.live-relay-dialog h2 { margin: 0; color: var(--text); font-size: 18px; }
+.live-relay-dialog .icon-button { padding: 0; }
+.live-relay-dialog small { color: var(--muted); line-height: 1.5; }
+.live-relay-dialog small a { color: var(--hydro-pink); }
+.management-notice {
+  padding: 10px 14px;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 13px;
+}
+.management-notice[role="alert"] { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+.management-toast {
+  position: fixed;
+  inset-block-start: 72px;
+  inset-inline-end: 16px;
+  max-width: calc(100vw - 32px);
+  z-index: 1200;
+  pointer-events: none;
+}
+.management-toast .management-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: var(--hydro-shadow);
+}
+.management-toast svg { flex: none; }
+
+@media (max-width: 720px) {
+  .live-relay-grid { grid-template-columns: minmax(0, 1fr); }
+  .exam-publish-main-link { padding: 16px; }
+}
+@media (max-width: 480px) {
+  .dashboard-theme .hydro-nav { gap: 2px; }
+  .dashboard-theme .hydro-nav a { padding-inline: 8px; }
+  .exam-list-filters, .exam-status-filters, .management-search { flex-basis: 100%; }
+  .exam-list-filters select { flex: 1; }
+  .live-relay-toolbar .management-search { flex: 1 0 100%; }
+  .exam-publish-open { display: none; }
+}
+
+/* Keep the same settings control in exam and system forms. */
+input.settings-switch[role="switch"] {
+  position: relative;
+  display: inline-block;
+  appearance: none;
+  flex: none;
+  box-sizing: border-box;
+  width: 36px;
+  height: 20px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  vertical-align: middle;
+  border: 0;
+  border-radius: 999px;
+  background: #d1d5dc;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color .15s;
+}
+input.settings-switch[role="switch"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: var(--nova-shadow);
+  transition: transform .15s;
+}
+input.settings-switch[role="switch"]:checked { background: var(--nova-blue); }
+input.settings-switch[role="switch"]:checked::before { transform: translateX(16px); }
+input.settings-switch[role="switch"]:focus-visible { outline: 2px solid var(--nova-blue); outline-offset: 2px; }
+input.settings-switch[role="switch"]:disabled { opacity: .55; cursor: default; }
+.exam-language-options label { display: inline-flex; align-items: center; gap: 8px; }
+.exam-checkbox, .checkbox-label { gap: 8px; }
+
+.users-page .users-toolbar { gap: 10px 14px; flex-flow: row nowrap; align-items: center; overflow-x: auto; }
+.users-toolbar .users-search { flex: 1 1 240px; min-width: 72px; }
+.users-toolbar-actions { flex: none; flex-wrap: nowrap; margin-inline-start: auto; }
+.users-toolbar .users-result-count { align-self: center; }
+.users-toolbar-actions .button { white-space: nowrap; }
+@media (max-width: 620px) {
+  .users-toolbar .users-result-count { display: none; }
+  .users-page .users-toolbar { gap: 8px; padding-inline: 10px; }
+  .users-toolbar-actions { gap: 4px; margin-inline-start: 0; }
+  .users-toolbar-actions .button { padding-inline: 7px; font-size: 12px; }
+  .users-toolbar-actions svg { display: none; }
+}
+
+:is(.modal-panel, .hydro-test-modal, .ks-grading-dialog) :is(.user-import-header, .hydro-test-modal-head) {
+  background: var(--nova-subtle);
+  border-color: var(--nova-line);
+}
+.user-import-dialog .user-import-close, .user-edit-dialog .user-import-close {
+  border: 0;
+  background: transparent;
+  color: #99a1af;
+  box-shadow: none;
+}
+.user-import-dialog .user-import-close:hover, .user-edit-dialog .user-import-close:hover {
+  background: transparent;
+  color: var(--nova-body);
+}
+
+/* NovaJudge problem and submission workspaces. */
+.problem-detail-layout {
+  grid-template-columns: 288px minmax(0, 1fr);
+  grid-template-areas: "actions statement";
+  align-items: start;
+  gap: 24px;
+}
+.problem-detail-layout .hydro-problem-card { grid-area: statement; min-width: 0; min-height: 0; }
+.problem-detail-layout .problem-action-column { grid-area: actions; top: 76px; }
+:is(.problem-detail-page, .problem-record-page, .problem-records-page, .problem-submit-page) .card {
+  border: 1px solid var(--nova-border);
+  border-radius: 4px;
+  box-shadow: var(--nova-shadow);
+}
+.problem-detail-layout .hydro-problem-content { padding: clamp(20px, 4vw, 40px); }
+.hydro-problem-content .problem-detail-heading {
+  display: block;
+  margin: 0 0 32px;
+  padding: 0 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--nova-border);
+  border-radius: 0;
+  text-align: center;
+  box-shadow: none;
+}
+.hydro-problem-content .problem-detail-heading h1 {
+  justify-content: center;
+  margin: 0 0 12px;
+  color: var(--nova-text);
+  font: 700 clamp(24px, 3vw, 30px)/1.2 var(--nova-serif);
+  letter-spacing: normal;
+}
+.hydro-problem-content .problem-heading-pid { color: var(--nova-muted); }
+.hydro-problem-content .problem-heading-meta { justify-content: center; }
+.hydro-problem-content .problem-info-badge { min-height: 0; padding: 3px 8px; background: var(--nova-subtle); color: var(--nova-muted); }
+.hydro-problem-content :is(.hydro-markdown, .problem-content) { color: var(--nova-body); font-family: var(--nova-serif); }
+.hydro-problem-content :is(.hydro-markdown, .problem-content) :is(h2, h3) {
+  padding: 0 0 0 12px;
+  border: 0;
+  border-left: 4px solid var(--nova-blue);
+  color: #193cb8;
+  font: 700 18px/1.55 var(--nova-serif);
+}
+.problem-action-menu h2, .submissions-browser-head { background: var(--nova-subtle); color: var(--nova-body); font-weight: 700; }
+.problem-action-menu-item:hover:not(:disabled) { background: var(--nova-subtle); }
+.problem-submit-page .hydro-submit-form { padding: clamp(16px, 3vw, 24px); }
+.hydro-submit-form-title h1, .problem-record-title h1 { margin: 0; color: var(--nova-text); font: 700 24px/1.35 var(--nova-serif); }
+.hydro-submit-form :is(.hydro-language-field, .hydro-code-field) { color: var(--nova-body); font-size: 14px; font-weight: 700; }
+.hydro-submit-form .hydro-language-field select { width: min(100%, 320px); height: 40px; border-radius: 4px; background: var(--nova-subtle); font-weight: 400; }
+.hydro-submit-form .code-editor { border-color: var(--nova-border); border-radius: 4px; }
+.hydro-submit-form .code-editor:focus-within { border-color: var(--nova-blue); box-shadow: var(--nova-focus-ring); }
+.hydro-submit-form .code-editor textarea:focus { box-shadow: none; }
+.hydro-submit-page-actions { justify-content: flex-start; }
+.hydro-submit-page-actions .button { padding: 10px 24px; border-radius: 4px; }
+.hydro-record-metrics { border-color: var(--nova-border); background: var(--nova-border); }
+.hydro-record-metrics div { background: var(--nova-subtle); }
+.hydro-record-metrics strong { color: var(--nova-text); font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) {
+  .problem-detail-layout { grid-template-columns: minmax(0, 1fr); grid-template-areas: "statement" "actions"; }
+  .problem-detail-layout .problem-action-column { position: static; }
+}

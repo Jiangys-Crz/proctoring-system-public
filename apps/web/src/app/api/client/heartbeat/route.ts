@@ -1,7 +1,7 @@
 import { resumedSessionStatus } from '@/lib/session-resume';
 import { isRetiredDesktopCredential } from '@/lib/retired-desktop-credential';
 import { createHash } from 'node:crypto';
-import { ClientHeartbeatSchema, type ClientHeartbeatInput } from '@cwnupaa/proctor-shared';
+import { ClientHeartbeatSchema, isBrowserExam, type ClientHeartbeatInput } from '@cwnupaa/proctor-shared';
 import type { AlertType, CandidateStatus } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
@@ -85,7 +85,7 @@ export async function POST(request: Request) {
         const item = { ...sessionRow, ...data };
         // An old, expired session must not finish a newer login by the same candidate.
         if (session.status !== 'FINISHED') await tx.candidate.update({ where: { id: session.candidateId }, data: { status: 'FINISHED' } });
-        return { publicTest, novaJudge: session.exam.platform === 'NOVAJUDGE', session: { ...publicClientSession(item), effectiveEndAt: effectiveEndAt.toISOString() }, requirements, alertsCreated: 0 };
+        return { publicTest, browserExam: isBrowserExam(session.exam.platform), session: { ...publicClientSession(item), effectiveEndAt: effectiveEndAt.toISOString() }, requirements, alertsCreated: 0 };
       }
       const messages: Array<{ type: AlertType; message: string; id?: string }> = publicTest ? [] : abnormalMessages(input, { requireFrontCamera, requireMiniProgram: requireSecondCamera });
       const peripheralScanFailed = !publicTest && input.side === 'DESKTOP' && input.system?.peripheralScanOk === false;
@@ -225,16 +225,16 @@ export async function POST(request: Request) {
           }
         }
       }
-      return { publicTest, novaJudge: session.exam.platform === 'NOVAJUDGE', session: { ...publicClientSession(refreshed), effectiveEndAt: effectiveEndAt.toISOString() }, requirements, alertsCreated, acceptedPeripheralEventIds };
+      return { publicTest, browserExam: isBrowserExam(session.exam.platform), session: { ...publicClientSession(refreshed), effectiveEndAt: effectiveEndAt.toISOString() }, requirements, alertsCreated, acceptedPeripheralEventIds };
     }, { signal: request.signal });
     if ('revoked' in result) return revokedClientSessionResponse();
     if ('desktopReplaced' in result) return Response.json({ ok: false, code: 'CLIENT_DESKTOP_REPLACED', message: '当前电脑连接已被新电脑替换，请在新电脑继续考试' }, {
       status: 401, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }
     });
-    const { publicTest, novaJudge, ...response } = result;
+    const { publicTest, browserExam, ...response } = result;
     const recordingEvents = publicTest || response.requirements?.saveIncidentRecording !== true ? [] : await recordingEventsForSession(selected.id);
-    const retry = novaJudge && input.side === 'DESKTOP' ? await prisma.oJLoginTicket.findFirst({
-      where: { sessionId: selected.id, status: 'ISSUED', exam: { platform: 'NOVAJUDGE' } },
+    const retry = browserExam && input.side === 'DESKTOP' ? await prisma.oJLoginTicket.findFirst({
+      where: { sessionId: selected.id, status: 'ISSUED' },
       orderBy: { createdAt: 'desc' }, select: { id: true },
     }) : null;
     return ok({ ...response, serverNow: new Date().toISOString(), recordingEvents, ojLoginRetryId: retry?.id || null, desktopSessionToken: null, miniProgramSessionToken: null });

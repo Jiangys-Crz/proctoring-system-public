@@ -12,7 +12,7 @@ const at = (minutes: number) => new Date(+start + minutes * 60_000);
 
 function fixture(): ContestSummarySession {
   return {
-    id: 'session', status: 'IN_EXAM', startedAt: start, lockdown: false, lockdownReason: null,
+    id: 'session', status: 'IN_EXAM', approvedAt: start, startedAt: start, lockdown: false, lockdownReason: null,
     desktopTokenHash: credentials.tokenHash, miniProgramTokenHash: null, revokedAt: null,
     updatedAt: start, lastDesktopSeenAt: start,
     candidate: { id: 'candidate', updatedAt: start, startedAt: start, lateStartAllowedAt: null, isTeamLeader: true },
@@ -130,7 +130,7 @@ test('30 concurrent state requests use fresh authorization with problem metadata
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'private, no-store');
     const { data } = await response.json();
-    assert.deepEqual(Object.keys(data).sort(), ['revision', 'session']);
+    assert.deepEqual(Object.keys(data).sort(), ['revision', 'serverNow', 'session']);
     revisions.add(data.revision);
     assert.equal(data.session.desktopTokenHash, undefined);
     assert.equal(data.session.startedAt, start.toISOString());

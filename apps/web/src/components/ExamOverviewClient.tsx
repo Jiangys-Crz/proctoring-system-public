@@ -1,9 +1,13 @@
 'use client';
 
+import { formatScore } from '@cwnupaa/proctor-shared';
+
+import { browserExamPlatformName, isBrowserExam, type ExamPlatform } from '@cwnupaa/proctor-shared';
+
 import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowLeft, Ban, BarChart3, CalendarClock, Clock3, CopyCheck, Download, FileCheck, FileText, Film, Flag, List, LoaderCircle,
+  Ban, BarChart3, CalendarClock, Clock3, CopyCheck, Download, FileCheck, FileText, Film, Flag, List, LoaderCircle,
   Eye, Pencil, RotateCcw, Settings, Trophy, Users
 } from 'lucide-react';
 import { MarkdownContent } from './MarkdownComposer';
@@ -14,10 +18,10 @@ import type { LeaderboardData } from '@cwnupaa/proctor-shared/leaderboard';
 
 type Rule = 'GPLT' | 'XCPC' | 'LANQIAO' | 'ACM' | 'OI' | 'IOI' | 'KS';
 type View = 'details' | 'problems' | 'leaderboard' | 'submissions';
-type Problem = { id: string; order: number; hydroProblemId: string; title: string; problemType: string; score: number };
+type Problem = { id: string; order: number; label?: string | null; sourceDeleted?: boolean; hydroProblemId: string; title: string; problemType: string; score: number };
 type Overview = {
   exam: {
-    platform: 'HYDRO' | 'NOVAJUDGE'; platformBaseUrl: string; platformContestId: string; id: string; examCode: string; name: string; rules: string; contestRule: Rule; contestType: 'INDIVIDUAL' | 'TEAM';
+    platform: ExamPlatform; platformBaseUrl: string; platformContestId: string; id: string; examCode: string; name: string; rules: string; contestRule: Rule; contestType: 'INDIVIDUAL' | 'TEAM';
     startAt: string; latestStartAt: string; endAt: string; durationMinutes: number; flexible: boolean;
     problems: Problem[]; participantCount: number; submissionCount: number;
   };
@@ -79,7 +83,7 @@ function resultTone(status: number) {
   return 'failed';
 }
 
-export function ExamOverviewClient({ examId, initialCanManage, initialView = 'details', fullScreen = false }: { examId: string; initialCanManage: boolean; initialView?: View; fullScreen?: boolean }) {
+export function ExamOverviewClient({ examId, initialCanManage, canViewProctorRecords = false, initialView = 'details', fullScreen = false }: { examId: string; initialCanManage: boolean; canViewProctorRecords?: boolean; initialView?: View; fullScreen?: boolean }) {
   const [data, setData] = useState<Overview | null>(null);
   const view = initialView;
   const [submissions, setSubmissions] = useState<Submission[] | null>(null);
@@ -250,43 +254,41 @@ export function ExamOverviewClient({ examId, initialCanManage, initialView = 'de
   if (loading) return <div className={fullScreen ? 'exam-workspace-page' : ''}><div className="exam-overview-loading"><LoaderCircle className="spin" size={22} /> 正在加载考试详情…</div></div>;
   if (!data || !status) return <div className={fullScreen ? 'exam-workspace-page' : ''}><div className="exam-editor-error" role="alert">{error || '考试不存在或无权访问'}</div></div>;
   const exam = data.exam;
+  const browser = isBrowserExam(exam.platform);
+  const platformName = browserExamPlatformName(exam.platform);
   const beginsIn = +new Date(exam.startAt) - now;
   const remaining = +new Date(exam.endAt) - now;
   const countdownTitle = beginsIn > 0 ? '距离考试开始' : remaining > 0 ? '考试剩余时间' : '考试剩余时间';
   const countdownValue = countdown(beginsIn > 0 ? beginsIn : remaining);
-  const viewTitles: Record<View, string> = { details: '考试说明', problems: '题目列表', leaderboard: '排行榜', submissions: '所有递交' };
+  const viewTitles: Record<View, string> = { details: '考试说明', problems: '题目列表', leaderboard: '排行榜', submissions: '所有提交' };
   const viewContent = <>
-    {exam.platform === 'NOVAJUDGE' && view !== 'details' ? <section className="exam-overview-card"><p>本场考试的题目、提交和排行榜由 NovaJudge 管理。</p><a className="button" href={`${exam.platformBaseUrl}/contest/${exam.platformContestId}`} target="_blank" rel="noreferrer">打开 NovaJudge 比赛</a></section> : null}
+    {browser && view !== 'details' ? <section className="exam-overview-card"><p>本场考试的题目、提交和排行榜由 {platformName} 管理。</p><a className="button" href={`${exam.platformBaseUrl}/contest/${exam.platformContestId}`} target="_blank" rel="noreferrer">打开 {platformName} 比赛</a></section> : null}
     {view === 'details' ? <section className="exam-overview-card exam-description-card">
       <div className="exam-card-heading"><FileText size={19} /><h2>考试说明</h2></div>
       <div className="hydro-markdown exam-description-markdown"><MarkdownContent content={exam.rules || '暂无考试详情'} /></div>
     </section> : null}
 
-    {view === 'problems' && exam.platform !== 'NOVAJUDGE' ? <section className="exam-overview-card">
+    {view === 'problems' && !browser ? <section className="exam-overview-card">
       <div className="exam-card-heading"><List size={19} /><h2>题目列表</h2><span>{exam.problems.length} 道题</span></div>
-      <div className="exam-overview-problems">{exam.problems.map(problem => <Link href={`/dashboard/problems/${encodeURIComponent(problem.hydroProblemId)}?examId=${encodeURIComponent(examId)}`} key={problem.id} className="exam-overview-problem"><span>{problemLabel(problem.order)}</span><div><strong>{problem.title}</strong><small>{problemTypeLabel(problem.problemType)} · {problem.score} 分</small></div><span className="exam-problem-open">查看题目</span></Link>)}{!exam.problems.length ? <div className="exam-overview-empty">暂无题目</div> : null}</div>
+      <div className="exam-overview-problems">{exam.problems.map(problem => <Link href={`/dashboard/problems/${encodeURIComponent(problem.hydroProblemId)}?examId=${encodeURIComponent(examId)}`} key={problem.id} className="exam-overview-problem"><span>{(problem.label || problemLabel(problem.order))}</span><div><strong>{problem.title}</strong><small>{problemTypeLabel(problem.problemType)} · {formatScore(problem.score)} 分</small></div><span className="exam-problem-open">查看题目</span></Link>)}{!exam.problems.length ? <div className="exam-overview-empty">暂无题目</div> : null}</div>
     </section> : null}
 
-    {view === 'leaderboard' && exam.platform !== 'NOVAJUDGE' ? <section className="exam-overview-card">
-      <LeaderboardTable key={examId} leaderboard={data.leaderboard} rule={exam.contestRule} title={exam.name} startAt={exam.startAt} endAt={exam.endAt} problems={exam.problems.map(problem => ({ id: problem.id, label: problemLabel(problem.order), title: problem.title, score: problem.score }))} onRefresh={() => void refreshBoard()} onTimeChange={timePoint => void refreshBoard(timePoint)} />
+    {view === 'leaderboard' && !browser ? <section className="exam-overview-card">
+      <LeaderboardTable key={examId} leaderboard={data.leaderboard} rule={exam.contestRule} isTeam={exam.contestType === 'TEAM'} title={exam.name} startAt={exam.startAt} endAt={exam.endAt} problems={exam.problems.map(problem => ({ id: problem.id, label: (problem.label || problemLabel(problem.order)), title: problem.title, score: problem.score }))} onRefresh={() => void refreshBoard()} onTimeChange={timePoint => void refreshBoard(timePoint)} />
     </section> : null}
 
-    {view === 'submissions' && exam.platform !== 'NOVAJUDGE' ? <section className="exam-overview-card">
-      <div className="exam-card-heading"><Flag size={19} /><h2>所有递交</h2><div className="exam-card-heading-actions">{bulkRejudgeMessage ? <span>{bulkRejudgeMessage}</span> : null}<button type="button" onClick={() => void rejudgeAllSubmissions()} disabled={bulkRejudging || Boolean(submissionAction) || !submissions?.length}>{bulkRejudging ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}{bulkRejudging ? '重测中…' : '重测所有提交'}</button><span>{exam.submissionCount} 条记录</span></div></div>
+    {view === 'submissions' && !browser ? <section className="exam-overview-card">
+      <div className="exam-card-heading"><Flag size={19} /><h2>所有提交</h2><div className="exam-card-heading-actions">{bulkRejudgeMessage ? <span>{bulkRejudgeMessage}</span> : null}<button type="button" onClick={() => void rejudgeAllSubmissions()} disabled={bulkRejudging || Boolean(submissionAction) || !submissions?.length}>{bulkRejudging ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}{bulkRejudging ? '重测中…' : '重测所有提交'}</button><span>{exam.submissionCount} 条记录</span></div></div>
       {submissionsLoading ? <div className="exam-overview-empty"><LoaderCircle className="spin" size={18} /> 正在加载递交记录…</div> : <div className="exam-overview-table-wrap"><table className="exam-overview-table exam-submissions-table"><thead><tr><th>操作</th><th>提交时间</th><th>考生 / 队伍</th><th>题目</th><th>语言</th><th>结果</th><th>得分</th><th>测试点</th><th>提交内容</th></tr></thead><tbody>{(submissions || []).map(submission => {
         const rejudging = submissionAction?.id === submission.id && submissionAction.action === 'rejudge';
         const ignoring = submissionAction?.id === submission.id && submissionAction.action === 'ignore';
-        return <tr key={submission.id}><td><div className="submission-admin-actions"><button type="button" onClick={() => void actOnSubmission(submission, 'rejudge')} disabled={bulkRejudging || Boolean(submissionAction)}>{rejudging ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}{rejudging ? '重测中…' : '重测'}</button><button className="danger" type="button" onClick={() => void actOnSubmission(submission, 'ignore')} disabled={bulkRejudging || Boolean(submissionAction) || submission.status === 30}>{ignoring ? <LoaderCircle className="spin" size={14} /> : <Ban size={14} />}{ignoring ? '取消中…' : '取消成绩'}</button></div></td><td><time dateTime={submission.createdAt}>{dateTime(submission.createdAt)}</time></td><td><strong>{submission.candidate.teamName || submission.candidate.name || submission.candidate.examNumber}</strong><small>{submission.candidate.examNumber}</small></td><td>{problemLabel(submission.problem.order)} · {submission.problem.title}</td><td>{submission.lang}</td><td><span className={`submission-result-tag ${resultTone(submission.status)}`}>{resultText(submission)}</span></td><td><strong>{Number(submission.score.toFixed(2))}</strong></td><td>{submission.passedTestCases} / {submission.totalTestCases}</td><td><details><summary>查看提交内容</summary><pre><code>{submission.code}</code></pre></details></td></tr>;
+        return <tr key={submission.id}><td><div className="submission-admin-actions"><button type="button" onClick={() => void actOnSubmission(submission, 'rejudge')} disabled={bulkRejudging || Boolean(submissionAction) || submission.problem.sourceDeleted}>{rejudging ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}{rejudging ? '重测中…' : '重测'}</button><button className="danger" type="button" onClick={() => void actOnSubmission(submission, 'ignore')} disabled={bulkRejudging || Boolean(submissionAction) || submission.status === 30}>{ignoring ? <LoaderCircle className="spin" size={14} /> : <Ban size={14} />}{ignoring ? '取消中…' : '取消成绩'}</button></div></td><td><time dateTime={submission.createdAt}>{dateTime(submission.createdAt)}</time></td><td><strong>{submission.candidate.teamName || submission.candidate.name || submission.candidate.examNumber}</strong><small>{submission.candidate.examNumber}</small></td><td>{(submission.problem.label || problemLabel(submission.problem.order))} · {submission.problem.title}</td><td>{submission.lang}</td><td><span className={`submission-result-tag ${resultTone(submission.status)}`}>{resultText(submission)}</span></td><td><strong>{formatScore(submission.score)}</strong></td><td>{submission.passedTestCases} / {submission.totalTestCases}</td><td><details><summary>查看提交内容</summary><pre><code>{submission.code}</code></pre></details></td></tr>;
       })}</tbody></table>{submissions && !submissions.length ? <div className="exam-overview-empty">暂无递交记录</div> : null}</div>}
     </section> : null}
   </>;
 
   if (fullScreen) return <div className="exam-workspace-page">
-    <header className="exam-workspace-header">
-      <div className="return-only-row"><Link href={`/dashboard/exams/${examId}`} className="exam-back"><ArrowLeft size={18} /> 返回考试详情</Link></div>
-      {view === 'leaderboard' ? null : <div className="exam-workspace-title-row"><h1>{viewTitles[view]}</h1><span>{exam.name}</span></div>}
-    </header>
-    <main className="exam-workspace-content">{error ? <div className="exam-editor-error" role="alert">{error}</div> : null}{viewContent}</main>
+    <main className="exam-workspace-content" aria-label={viewTitles[view]}>{error ? <div className="exam-editor-error" role="alert">{error}</div> : null}{viewContent}</main>
   </div>;
 
   return <div className="exam-overview-page">
@@ -297,7 +299,7 @@ export function ExamOverviewClient({ examId, initialCanManage, initialView = 'de
           <div className="exam-overview-title"><span>考试编号 #{exam.examCode}</span><h1>{exam.name}</h1></div>
           <div className="exam-overview-meta">
             <span className={`exam-status-badge ${status.tone}`}>{status.text}</span>
-            <span className="exam-rule-badge"><Trophy size={17} />{exam.platform === 'NOVAJUDGE' ? 'NovaJudge' : ruleLabels[exam.contestRule]}</span>
+            <span className="exam-rule-badge"><Trophy size={17} />{browser ? platformName : ruleLabels[exam.contestRule]}</span>
             <span><CalendarClock size={17} />开始于 {dateTime(exam.startAt)}</span>
             {latestStartVisible ? <span><CalendarClock size={17} />最晚开始 {dateTime(exam.latestStartAt)}</span> : null}
             <span><Clock3 size={17} />{durationLabel(exam.durationMinutes)}</span>
@@ -311,22 +313,34 @@ export function ExamOverviewClient({ examId, initialCanManage, initialView = 'de
 
       <aside className="exam-overview-sidebar">
         <nav className="exam-overview-actions" aria-label="考试详情操作">
-          {exam.platform === 'NOVAJUDGE' ? <>
-            <a href={`${exam.platformBaseUrl}/contest/${exam.platformContestId}`} target="_blank" rel="noreferrer"><Trophy size={19} />NovaJudge 比赛</a>
-            {canManage ? <Link href={`/dashboard/exams/${examId}/reactions`}><Film size={19} />Reaction 录像</Link> : null}
-            {canManage ? <><Link href={`/dashboard/exams/${examId}/settings`}><Pencil size={19} />编辑考试</Link><Link href={`/dashboard/exams/${examId}/settings/rooms`}><Settings size={19} />考试管理</Link></> : null}
-            <Link href={`/dashboard/exams/${examId}/status`}><Eye size={19} />考试监考</Link>
+          {browser ? <>
+            <a href={`${exam.platformBaseUrl}/contest/${exam.platformContestId}`} target="_blank" rel="noreferrer"><Trophy size={19} />{platformName} 比赛</a>
+            {canManage && exam.platform === 'NOVAJUDGE' ? <Link href={`/dashboard/exams/${examId}/reactions`}><Film size={19} />Reaction 录像</Link> : null}
           </> : <>
-          <Link href={`/dashboard/exams/${examId}/problems`}><List size={19} />题目列表</Link>
-          <Link href={`/dashboard/exams/${examId}/leaderboard`}><BarChart3 size={19} />排行榜</Link>
-          {canManage ? <Link href={`/dashboard/exams/${examId}/code-check`}><CopyCheck size={19} />代码查重</Link> : null}
-          {canManage ? <>{exam.contestRule === 'KS' ? <Link href={`/dashboard/exams/${examId}/grading`}><FileCheck size={19} />评卷</Link> : null}<Link href={`/dashboard/exams/${examId}/settings`}><Pencil size={19} />编辑考试</Link><Link href={`/dashboard/exams/${examId}/settings/problems`}><Settings size={19} />考试管理</Link></> : null}
-          <Link href={`/dashboard/exams/${examId}/status`}><Eye size={19} />考试监考</Link>
-          {canManage ? <><button disabled={exportingPapers} onClick={() => void exportPapers()}>{exportingPapers ? <LoaderCircle className="spin" size={19} /> : <FileText size={19} />}{exportingPapers ? '正在生成试卷…' : '导出试卷（PDF）'}</button><button disabled={exporting} onClick={() => void exportCodes()}>{exporting ? <LoaderCircle className="spin" size={19} /> : <Download size={19} />}导出所有代码</button><Link href={`/dashboard/exams/${examId}/submissions`}><Flag size={19} />所有递交</Link></> : null}
+            <Link href={`/dashboard/exams/${examId}/problems`}><List size={19} />题目列表</Link>
+            <Link href={`/dashboard/exams/${examId}/leaderboard`}><BarChart3 size={19} />排行榜</Link>
           </>}
+          {canManage ? <>
+            <Link href={`/dashboard/exams/${examId}/settings`}><Pencil size={19} />编辑考试</Link>
+            <Link href={`/dashboard/exams/${examId}/settings/${browser ? 'rooms' : 'problems'}`}><Settings size={19} />考试管理</Link>
+          </> : null}
+          <Link href={`/dashboard/exams/${examId}/status`}><Eye size={19} />考试监考</Link>
+          {canManage && !browser ? <>
+            <Link href={`/dashboard/exams/${examId}/code-check`}><CopyCheck size={19} />代码查重</Link>
+            {exam.contestRule === 'KS' ? <Link href={`/dashboard/exams/${examId}/grading`}><FileCheck size={19} />人工评卷</Link> : null}
+            <button disabled={exportingPapers || remaining > 0} title={remaining > 0 ? '考试结束后可导出' : undefined} onClick={() => void exportPapers()}>
+              {exportingPapers ? <LoaderCircle className="spin" size={19} /> : <FileText size={19} />}{exportingPapers ? '正在生成试卷…' : '导出试卷'}
+            </button>
+            <button disabled={exporting || remaining > 0} title={remaining > 0 ? '考试结束后可导出' : undefined} onClick={() => void exportCodes()}>
+              {exporting ? <LoaderCircle className="spin" size={19} /> : <Download size={19} />}{exporting ? '正在导出…' : '导出所有代码'}
+            </button>
+            <Link href={`/dashboard/exams/${examId}/submissions`}><Flag size={19} />所有提交</Link>
+          </> : null}
+          {canViewProctorRecords ? <Link href={`/dashboard/exams/${examId}/proctor-records`}><Flag size={19} />监考记录</Link> : null}
+          <Link href={`/dashboard/exams/${examId}/recordings`}><Film size={19} />历史录像</Link>
         </nav>
         <dl className="exam-overview-facts">
-          <div><dt>状态</dt><dd>{status.text}</dd></div><div><dt>{countdownTitle}</dt><dd>{countdownValue}</dd></div><div><dt>规则</dt><dd>{exam.platform === 'NOVAJUDGE' ? 'NovaJudge' : ruleLabels[exam.contestRule]}</dd></div>{exam.platform !== 'NOVAJUDGE' ? <div><dt>题目</dt><dd>{exam.problems.length}</dd></div> : null}<div><dt>开始于</dt><dd>{dateTime(exam.startAt)}</dd></div>{latestStartVisible ? <div><dt>最晚开始</dt><dd>{dateTime(exam.latestStartAt)}</dd></div> : null}<div><dt>结束于</dt><dd>{dateTime(exam.endAt)}</dd></div><div><dt>持续时间</dt><dd>{durationLabel(exam.durationMinutes)}</dd></div><div><dt>参与人数</dt><dd>{exam.participantCount}</dd></div>
+          <div><dt>状态</dt><dd>{status.text}</dd></div><div><dt>{countdownTitle}</dt><dd>{countdownValue}</dd></div><div><dt>规则</dt><dd>{browser ? platformName : ruleLabels[exam.contestRule]}</dd></div>{!browser ? <div><dt>题目</dt><dd>{exam.problems.length}</dd></div> : null}<div><dt>开始于</dt><dd>{dateTime(exam.startAt)}</dd></div>{latestStartVisible ? <div><dt>最晚开始</dt><dd>{dateTime(exam.latestStartAt)}</dd></div> : null}<div><dt>结束于</dt><dd>{dateTime(exam.endAt)}</dd></div><div><dt>持续时间</dt><dd>{durationLabel(exam.durationMinutes)}</dd></div><div><dt>参与人数</dt><dd>{exam.participantCount}</dd></div>
         </dl>
       </aside>
     </div>

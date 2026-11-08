@@ -20,7 +20,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: {
         candidate: { select: { examNumber: true, name: true, teamName: true } },
-        problem: { select: { order: true, hydroProblemId: true, title: true, problemType: true, hydroScore: true, scorePercent: true, score: true } }
+        problem: { select: { order: true, label: true, sourceDeleted: true, hydroProblemId: true, title: true, problemType: true, hydroScore: true, scorePercent: true, score: true } }
       }
     });
     return ok(submissions.map(submission => ({

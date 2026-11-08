@@ -33,11 +33,6 @@ export function readCredentialTicket(value: string, now = Date.now()) {
 export function credentialMember(candidate: {
   name: string | null; studentId: string | null; teamMembers: string | null; teamMemberStudentIds: string | null;
 }, name: string, team: boolean) {
-  if (candidate.name === name) return { memberName: name, memberStudentId: candidate.studentId };
-  if (!team) return null;
-  const split = (value: string | null) => (value || '').split(/[、,，;；\s]+/).filter(Boolean);
-  const names = split(candidate.teamMembers), ids = split(candidate.teamMemberStudentIds);
-  const matches = names.map((item, index) => item === name ? index : -1).filter(index => index >= 0);
-  if (matches.length !== 1 || !ids[matches[0]]) return null;
-  return { memberName: name, memberStudentId: ids[matches[0]] };
+  return { memberName: candidate.name || (candidate.teamMembers || '').split(/[、,，;；\s]+/).filter(Boolean)[0] || '',
+    memberStudentId: candidate.studentId || (candidate.teamMemberStudentIds || '').split(/[、,，;；\s]+/).filter(Boolean)[0] || null };
 }

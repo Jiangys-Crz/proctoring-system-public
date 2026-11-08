@@ -97,7 +97,7 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
 
   return <div className="exam-qa-panel grid">
     <section className="card exam-announcement-compose">
-      <div className="exam-panel-heading"><div><h2>发布公告</h2><p>{canManage ? '通过服务端实时推送，可发送给全体考生或指定考生。' : '通过服务端实时推送，可发送给负责考室的指定考生。'}</p></div><Bell size={21} /></div>
+      <div className="exam-panel-heading"><h2>发布公告</h2><Bell size={21} /></div>
       <label className="exam-announcement-target">接收考生<select value={announcementTarget} onChange={event => setAnnouncementTarget(event.target.value)}><option value="">{canManage ? '全体考生' : '请选择负责考室的考生'}</option>{data.candidates.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.examNumber} · {candidate.teamName || candidate.name || '未命名考生'}{candidate.seatNo ? ` · ${candidate.seatNo}` : ''}</option>)}</select></label>
       <MarkdownComposer value={announcement} onChange={setAnnouncement} onUploadImage={uploadImage} placeholder="使用 Markdown 编写公告，可直接粘贴截图或图片" maxLength={10000} rows={6} />
       <div className="exam-qa-actions"><span>{announcementTarget ? '仅向指定考生推送' : canManage ? '向全体考生推送' : '请选择负责考室的考生'}</span><button className="button" onClick={() => void publishAnnouncement()} disabled={!announcement.trim() || (!canManage && !announcementTarget) || busy === 'announcement'}>{busy === 'announcement' ? <LoaderCircle size={16} className="spin" /> : <Send size={16} />}{busy === 'announcement' ? '发布中' : '发布公告'}</button></div>
@@ -115,7 +115,7 @@ export function ExamQAPanel({ examId, canManage = false }: { examId: string; can
       {loading && !data.questions.length ? <div className="problem-loading"><LoaderCircle size={18} className="spin" />正在加载答疑</div> : null}
     </section>
     <section className="card exam-qa-section">
-      <div className="exam-panel-heading"><div><h2>已发布公告</h2><p>按发布时间倒序显示。</p></div><Bell size={20} /></div>
+      <div className="exam-panel-heading"><h2>已发布公告</h2><Bell size={20} /></div>
       {data.announcements.map(item => <article className="exam-announcement-card" key={item.id}><div className="exam-announcement-target-badge">{item.candidate ? `指定：${item.candidate.examNumber} · ${item.candidate.teamName || item.candidate.name || '未命名考生'}` : '全体考生'}</div><MarkdownContent content={item.content} /><span>{(item.creatorLabel || personName(item.createdBy))} · {new Date(item.createdAt).toLocaleString('zh-CN')}</span></article>)}
       {!data.announcements.length ? <div className="muted">暂无公告</div> : null}
     </section>

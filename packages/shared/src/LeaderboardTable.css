@@ -1,0 +1,51 @@
+    .reference-leaderboard .rank-page-header { margin: 12px 24px; padding: 12px 20px; background: #ffffff; border: 1px solid #f3f4f6; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .reference-leaderboard .rank-page-heading { display: block; }
+    .reference-leaderboard .rank-page-title { min-width: 0; text-align: center; }
+    .reference-leaderboard .rank-page-title h3 { color: #111827; font-family: 'Times New Roman', 'Microsoft YaHei', serif; font-size: 26px; font-weight: 700; line-height: 1.2; white-space: nowrap; margin: 0 0 6px !important; }
+    .reference-leaderboard .rank-page-meta { display: flex; flex-wrap: nowrap; justify-content: center; gap: 8px 16px; color: #6b7280; font-family: Arial, 'Microsoft YaHei', sans-serif; font-size: 14px; }
+    .reference-leaderboard .rank-page-meta-id { color: #374151; font-family: Menlo, Monaco, monospace; }
+    .reference-leaderboard .rank-page-meta-type { color: #1d4ed8; font-weight: 700; }
+    .reference-leaderboard .rank-page-meta-status { color: #dc2626; font-weight: 700; }
+    .reference-leaderboard .rank-page-timeline { margin-top: 12px; }
+    .reference-leaderboard .rank-page-timeline-bottom { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 10px 20px; margin-top: 8px; }
+    .reference-leaderboard .rank-page-time-progress { margin-right: auto; display: flex; align-items: center; gap: 12px; font-family: Menlo, Monaco, monospace; font-size: 16px; white-space: nowrap; color: #15803d; }
+    .reference-leaderboard .rank-page-time-progress[data-replay="true"] { color: #b45309; }
+    .reference-leaderboard .rank-page-time-progress-total { color: #9ca3af; }
+    .reference-leaderboard .rank-page-legend { display: flex; flex-wrap: nowrap; justify-content: flex-end; align-items: center; gap: 12px 24px; font-size: 12px; }
+    .reference-leaderboard .rank-page-times { display: flex; justify-content: space-between; flex-wrap: nowrap; gap: 4px 16px; font-size: 16px; font-weight: 700; color: #555; margin-bottom: 4px; }
+    .reference-leaderboard .rank-page-content { margin: 24px; padding: 24px; min-width: 0; background: #ffffff; border: 1px solid #f3f4f6; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .reference-leaderboard .rank-page-back { margin-bottom: 2px; }
+    .reference-leaderboard .rank-page-filters { padding-bottom: 12px; display: flex; gap: 12px; align-items: center; flex-wrap: nowrap; border-bottom: 1px solid #f0f0f0; }
+    .reference-leaderboard .rank-page-filters > * { max-width: 100%; }
+    .reference-leaderboard .rank-participant-search { flex: 0 0 320px; min-width: 0; }
+    .reference-leaderboard .rank-participant-option { display: flex; flex-direction: column; gap: 2px; line-height: 1.4; }
+    .reference-leaderboard .rank-participant-option-meta { color: #6b7280; font-size: 12px; }
+
+.reference-leaderboard { width:100%; color:#111827; font-family:'Times New Roman','Microsoft YaHei',serif; }
+.reference-leaderboard .board-page-fit-viewport { position:relative; width:100%; min-width:0; overflow:clip; }
+.reference-leaderboard .rank-container { display:flow-root; max-width:none; }
+.reference-leaderboard .rank-page-filters { font:14px Arial,'Microsoft YaHei',sans-serif; }
+.reference-leaderboard :is(button,input,select) { box-sizing:border-box; }
+.reference-leaderboard .rank-page-filters :is(button,input,select), .reference-leaderboard .rank-page-time-progress button { min-height:36px; width:auto; border:1px solid #d1d5db; border-radius:2px; padding:6px 12px; background:#fff; color:#374151; font:14px Arial,'Microsoft YaHei',sans-serif; }
+.reference-leaderboard button { cursor:pointer; }
+.reference-leaderboard button:disabled { opacity:.5; cursor:wait; }
+.reference-leaderboard .rank-page-filters :is(input,select):focus { border-color:#3b82f6; outline:0; box-shadow:0 0 0 2px #3b82f633; }
+.reference-leaderboard .rank-scope-control { display:flex; }
+.reference-leaderboard .rank-scope-control button + button { border-left:0; }
+.reference-leaderboard .rank-scope-control button.active, .reference-leaderboard .rank-page-time-progress button { background:#1677ff; border-color:#1677ff; color:#fff; }
+.reference-leaderboard .rank-toolbar-spacer { flex:1; }
+.reference-leaderboard .rank-participant-search { position:relative; flex-basis:300px; }
+.reference-leaderboard .rank-participant-search input { width:100%; }
+.reference-leaderboard .rank-participant-options { position:absolute; z-index:50; inset:100% 0 auto; padding:4px; background:#fff; border:1px solid #e5e7eb; box-shadow:0 4px 12px #17213122; }
+.reference-leaderboard .rank-participant-options button { display:grid; width:100%; border:0; text-align:left; }
+.reference-leaderboard .rank-participant-options button:hover { background:#eff6ff; }
+.reference-leaderboard .rank-participant-options small { color:#6b7280; }
+.reference-leaderboard .rank-pinned-tags { display:flex; gap:8px; padding-top:10px; }
+.reference-leaderboard .rank-pinned-tags button { border:1px solid #d1d5db; border-radius:2px; background:#f5f8fc; }
+.reference-leaderboard .rank-page-legend > span { display:inline-flex; align-items:center; gap:6px; font:12px Arial,'Microsoft YaHei',sans-serif; }
+.reference-leaderboard .rank-page-legend i { width:16px; height:16px; border-radius:3px; }
+.reference-leaderboard .rank-score-legend { padding:2px 7px; border-radius:4px; }
+.reference-leaderboard .rank-page-progress input { display:block; width:100%; height:20px; padding:0; border:1px solid #e5e7eb; border-radius:999px; appearance:none; }
+.reference-leaderboard .rank-page-progress input::-webkit-slider-thumb { appearance:none; width:14px; height:14px; border-radius:50%; background:#15803d; border:1px solid #ffffff59; }
+.reference-leaderboard .rank-page-progress input::-moz-range-thumb { width:14px; height:14px; border-radius:50%; background:#15803d; border:1px solid #ffffff59; }
+.reference-leaderboard .cwnu-rank-empty { padding:40px 20px; text-align:center; color:#777; }

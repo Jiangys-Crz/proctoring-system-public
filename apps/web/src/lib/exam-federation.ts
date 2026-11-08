@@ -1,7 +1,7 @@
 import { CommunicationReplySchema } from './exam-communication-protocol';
 import { decodeCommunicationAssets, installPreparedAssets } from './exam-communication-assets';
 import { prepareIncomingCommunications } from './exam-communication-incoming';
-import { buildCommunicationPage, communicationPage, materializeCommunications, mergeCommunications, prepareCommunications } from './exam-communications';
+import { buildCommunicationPage, communicationPage, materializeCommunications, mergeCommunications, prepareCommunications, repairCommunicationHistory, pendingQaHistoryError, qaHistoryFailureKey, QaHistoryRepairError } from './exam-communications';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { ExamFederation, Prisma } from '@prisma/client';
@@ -9,7 +9,7 @@ import { prisma } from './db';
 import { RequestParseError } from './http';
 import { compareManifests, eligibleSyncExam, syncManifest } from './exam-federation-contract';
 import { syncProblemNumber } from './exam-federation-problems';
-import { federationTransaction, materializeSubmissions, mergeSnapshots, readSyncPage } from './exam-federation-store';
+import { federationTransaction, materializeSubmission, mergeSnapshots, readSyncPage } from './exam-federation-store';
 import { ExchangeReplySchema, FederationError, keyHash, manifestContractHash, ManifestSchema, newSyncKey, openKey, sealKey, syncBaseUrl, syncRequest, SYNC_VERSION } from './exam-federation-protocol';
 
 export const FederationSettingsSchema = z.discriminatedUnion('action', [
@@ -26,7 +26,7 @@ export async function federationState(examId: string) {
     prisma.contestSubmission.count({ where: { examId, federationDirty: true } }),
     config?.role === 'EDGE' ? prisma.examFederationEntry.count({ where: { examId, writerNodeId: config.nodeId, sequence: { gt: config.pushCursor } } }) : Promise.resolve(0),
   ]);
-  return { examCode: exam.examCode, role: config?.role ?? null, enabled: config?.enabled ?? false,
+  return { examCode: exam.examCode, managedGlobally: config?.managedGlobally ?? false, role: config?.role ?? null, enabled: config?.enabled ?? false,
     baseUrl: config?.remoteBaseUrl ?? '', hasKey: Boolean(config?.apiKeyCiphertext),
     communicationSuccessAt: config?.communicationSuccessAt ?? null, communicationError: config?.communicationError ?? '',
     nodeId: config?.nodeId ?? '', lastSuccessAt: config?.lastSuccessAt ?? null, lastError: config?.lastError ?? '',
@@ -96,6 +96,12 @@ export async function configureFederation(examId: string, input: z.infer<typeof 
       const manifest = await syncManifest(examId, config.nodeId, openKey(config.apiKeyCiphertext), tx);
       if (manifest.hash !== (config.localContractHash ?? config.contractHash)) throw new FederationError('考试定义已改变，请重新核对并配置同步');
     }
+    if (input.action === 'retry') {
+      // An explicit retry bypasses the per-row cooldown. Preserve its error
+      // until successful materialization rather than silently declaring repair.
+      await tx.$executeRaw`UPDATE ContestSubmission SET federationAttemptAt = ${new Date(0)}
+        WHERE examId = ${examId} AND federationDirty = true AND federationAttemptAt IS NOT NULL`;
+    }
     await tx.examFederation.update({ where: { examId }, data: { ...(input.action === 'pause' ? { enabled: false } : input.action === 'resume' ? { enabled: true } : {}),
       generation: { increment: 1 }, leaseToken: null, leaseUntil: null, failures: 0, lastError: null, submissionNextAttemptAt: new Date(), communicationNextAttemptAt: new Date(), communicationFailures: 0, communicationError: null, nextAttemptAt: new Date() } });
   });
@@ -114,14 +120,33 @@ async function currentLease(tx: Prisma.TransactionClient, config: ExamFederation
 }
 async function syncExamSubmissions(config: ExamFederation) {
   try {
-    // Bounded backfill; catch up without holding the login pool or an HTTP transaction open.
-    for (let index = 0; index < 4; index++) {
-      await federationTransaction(config.examId, async tx => { await materializeSubmissions(tx, await currentLease(tx, config)); });
+    const refs = await prisma.contestSubmission.findMany({ where: { examId: config.examId, federationDirty: true,
+      OR: [{ federationAttemptAt: null }, { federationAttemptAt: { lt: new Date(Date.now() - 30_000) } }] },
+      select: { id: true, federationRevision: true, federationWriteToken: true },
+      orderBy: [{ federationAttemptAt: 'asc' }, { updatedAt: 'asc' }, { id: 'asc' }], take: 32 });
+    const materializeUntil = Date.now() + 3000;
+    for (const ref of refs) {
+      if (Date.now() >= materializeUntil) break;
+      try { await federationTransaction(config.examId, async tx => { await materializeSubmission(tx, await currentLease(tx, config), ref.id); }); }
+      catch (error) {
+        if (!(error instanceof FederationError || error instanceof z.ZodError)) throw error;
+        const message = error instanceof z.ZodError ? '提交结果字段不符合同步格式，原记录已保留等待处理' : error.message;
+        await federationTransaction(config.examId, async tx => {
+          await currentLease(tx, config);
+          // CAS prevents an old failure from delaying a newly judged/graded
+          // revision. Retry metadata must not change the business update time.
+          await tx.$executeRaw`UPDATE ContestSubmission SET federationAttemptAt = NOW(3), federationError = ${`提交 ${ref.id}：${message}`.slice(0, 500)}
+            WHERE id = ${ref.id} AND examId = ${config.examId} AND federationDirty = true
+            AND federationRevision = ${ref.federationRevision} AND federationWriteToken = ${ref.federationWriteToken}`;
+        });
+      }
     }
     if (config.role === 'EDGE') {
       const exam = await prisma.exam.findUniqueOrThrow({ where: { id: config.examId }, select: { examCode: true } });
       const key = openKey(config.apiKeyCiphertext);
+      const exchangeUntil = Date.now() + 10_000;
       for (let index = 0; index < 4; index++) {
+        if (Date.now() >= exchangeUntil) break;
         const { fresh, page } = await federationTransaction(config.examId, async tx => {
           const fresh = await currentLease(tx, config);
           return { fresh, page: await readSyncPage(tx, fresh, fresh.pushCursor, 'push') };
@@ -140,8 +165,12 @@ async function syncExamSubmissions(config: ExamFederation) {
         if (!page.entries.length && !reply.entries.length && page.after === fresh.pushCursor.toString() && reply.after === fresh.pullCursor.toString()) break;
       }
     }
+    // Attempted dirty rows are isolated failures. Use the retry index to avoid
+    // scanning all never-attempted submissions just to retain their error.
+    const pendingError = await prisma.contestSubmission.findFirst({ where: { examId: config.examId, federationDirty: true,
+      federationAttemptAt: { not: null }, federationError: { not: null } }, select: { federationError: true }, orderBy: { federationAttemptAt: 'asc' } });
     await prisma.examFederation.updateMany({ where: { examId: config.examId, leaseToken: config.leaseToken }, data: {
-      failures: 0, lastError: null, submissionNextAttemptAt: new Date(Date.now() + 2000) } });
+      failures: 0, lastError: pendingError?.federationError ?? null, submissionNextAttemptAt: new Date(Date.now() + 2000) } });
   } catch (error) {
     const message = error instanceof FederationError ? error.message : '同步暂时失败，将自动重试；请检查公网连接和两端服务状态';
     await prisma.examFederation.updateMany({ where: { examId: config.examId, leaseToken: config.leaseToken }, data: {
@@ -150,6 +179,9 @@ async function syncExamSubmissions(config: ExamFederation) {
   }
 }
 async function syncExam(config: ExamFederation) {
+  if (config.managedGlobally && !(await (await import('./platform-sync-settings')).getPlatformSyncSettings()).enabled) {
+    await prisma.examFederation.updateMany({ where: { examId: config.examId, leaseToken: config.leaseToken }, data: { leaseToken: null, leaseUntil: null, nextAttemptAt: new Date(Date.now() + 10000) } }); return;
+  }
   let deferred = false;
   try {
     const communicationsFirst = communicationWaiting.has(config.examId) || +config.communicationNextAttemptAt < +config.submissionNextAttemptAt;
@@ -239,14 +271,66 @@ async function syncExamCommunications(config: ExamFederation): Promise<'idle' | 
     return 'idle';
   }
   if (!await takeCommunicationTurn(current)) return 'deferred';
+  const historyUntil = Date.now() + 2000;
   try {
+    const historyErrors: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      if (Date.now() >= historyUntil) break;
+      try { const more = await federationTransaction(config.examId, async tx => repairCommunicationHistory(tx, await currentLease(tx, config))); if (!more) break; }
+      catch (error) {
+        if (!(error instanceof QaHistoryRepairError)) throw error;
+        historyErrors.push(error.message);
+        await federationTransaction(config.examId, async tx => {
+          await currentLease(tx, config);
+          const key = `qa-history:${config.examId}`;
+          const prior = await tx.systemSetting.findUnique({ where: { key } });
+          const value = { ...(prior?.value as Record<string, unknown> || {}), after: error.questionId, lastError: error.message, nextAt: 0 } as Prisma.InputJsonValue;
+          await tx.systemSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+          const failureKey = qaHistoryFailureKey(config.examId, error.questionId);
+          const failure = { examId: config.examId, questionId: error.questionId, message: error.message.slice(0, 500) };
+          await tx.systemSetting.upsert({ where: { key: failureKey }, create: { key: failureKey, value: failure }, update: { value: failure } });
+        });
+      }
+    }
     const prepared = await prepareCommunications(current);
-    await federationTransaction(config.examId, async tx => {
-      const fresh = await currentLease(tx, config);
-      await materializeCommunications(tx, fresh, prepared);
-      await tx.examFederation.update({ where: { examId: config.examId }, data: { leaseUntil: new Date(Date.now() + 60_000) } });
-    });
+    const historyError = await federationTransaction(config.examId, async tx => pendingQaHistoryError(tx, await currentLease(tx, config)));
+    if (historyError) historyErrors.push(historyError);
+    prepared.assets.errors.push(...historyErrors);
+    await federationTransaction(config.examId, async tx => { await installPreparedAssets(tx, await currentLease(tx, config), prepared.assets); });
+    const assets = { ...prepared.assets, pending: [] };
+    const tasks = [
+      ...prepared.questions.map((row, index) => ({ slot: index * 3 + 2, kind: 'question' as const, id: row.id, batch: { questions: [row], messages: [], announcements: [], assets } })),
+      ...prepared.messages.map((row, index) => ({ slot: index * 3, kind: 'message' as const, id: row.id, batch: { questions: [], messages: [row], announcements: [], assets } })),
+      ...prepared.announcements.map((row, index) => ({ slot: index * 3 + 1, kind: 'announcement' as const, id: row.id, batch: { questions: [], messages: [], announcements: [row], assets } })),
+    ].sort((a, b) => a.slot - b.slot);
+    const materializeUntil = Date.now() + 3000;
+    const attemptedKinds = new Set<(typeof tasks)[number]['kind']>();
+    for (const task of tasks) {
+      // Unprocessed dirty rows remain durable for the next turn. A large
+      // history/image backlog must not monopolize the shared content slot.
+      // Still give each present kind one attempt if an earlier item was slow.
+      if (Date.now() >= materializeUntil && attemptedKinds.has(task.kind)) continue;
+      attemptedKinds.add(task.kind);
+      try { await federationTransaction(config.examId, async tx => { await materializeCommunications(tx, await currentLease(tx, config), task.batch); }); }
+      catch (error) {
+        if (!(error instanceof FederationError || error instanceof RequestParseError || error instanceof z.ZodError)) throw error;
+        prepared.assets.errors.push(error instanceof z.ZodError ? '答疑记录字段不符合同步格式，已保留原记录等待处理' : error.message);
+        // Preserve the failed record, but let other replies and notices pass it.
+        // Attempt times survive the failed record's transaction rollback.
+        await federationTransaction(config.examId, async tx => {
+          await currentLease(tx, config);
+          if (task.kind === 'question') await tx.$executeRaw`UPDATE ExamQuestion SET federationAttemptAt = NOW(3) WHERE id = ${task.id} AND examId = ${config.examId}`;
+          else if (task.kind === 'message') await tx.examQuestionMessage.updateMany({ where: { id: task.id, question: { examId: config.examId } }, data: { federationAttemptAt: new Date() } });
+          else await tx.$executeRaw`UPDATE ExamAnnouncement SET federationAttemptAt = NOW(3) WHERE id = ${task.id} AND examId = ${config.examId}`;
+        });
+      }
+    }
+    // Separate budgets guarantee history backfill cannot consume the next
+    // phase's entire turn. Each original message creates its parent snapshot
+    // as needed, so interleaving replies/notices/questions preserves order.
+    const exchangeUntil = Date.now() + 10_000;
     if (current.role === 'EDGE') for (let round = 0; round < 4; round++) {
+      if (Date.now() >= exchangeUntil) break;
       const { fresh, selected } = await federationTransaction(config.examId, async tx => {
         const fresh = await currentLease(tx, config);
         return { fresh, selected: await communicationPage(tx, fresh, fresh.contentPushCursor, true) };

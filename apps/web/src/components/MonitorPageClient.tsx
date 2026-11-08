@@ -57,8 +57,7 @@ export function MonitorPageClient() {
     }), [exams, now]);
 
   return <div className="grid monitor-list-page">
-    <div className="topbar">
-      <div><h1 style={{ margin: 0 }}>考试监考</h1></div>
+    <div className="topbar topbar-actions">
       <button className="button secondary" onClick={() => void load()} disabled={loading}><RefreshCw size={18} /> {loading ? '刷新中' : '刷新'}</button>
     </div>
     {error ? <div className="card problem-error">{error}</div> : null}

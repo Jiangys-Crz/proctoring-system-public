@@ -1,3 +1,4 @@
+import { clearRoomAssignmentPending } from '@/lib/platform-sync-room';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
@@ -9,7 +10,7 @@ import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from 
 const RoomUpsertSchema = z.object({
   id: z.string().trim().min(1).optional(),
   name: z.string().trim().min(1).max(100),
-  proctorNumberIds: z.array(z.string().min(1)).min(1),
+  proctorNumberIds: z.array(z.string().min(1)).default([]),
   candidateExamNumbers: z.array(z.string().min(1)).default([]),
   requireSecondCamera: z.boolean().optional(),
   requireFrontCamera: z.boolean().optional(),
@@ -50,7 +51,7 @@ async function upsertRoom(tx: Prisma.TransactionClient, examId: string, input: R
           requireSecondCamera: input.requireSecondCamera ?? true,
           requireFrontCamera: input.requireFrontCamera ?? true,
           loginMode: input.loginMode ?? 'CREDENTIALS',
-          loginReviewMode: input.loginReviewMode ?? 'MANUAL'
+          loginReviewMode: input.loginReviewMode ?? 'AUTO'
         }
       });
 
@@ -75,6 +76,8 @@ async function upsertRoom(tx: Prisma.TransactionClient, examId: string, input: R
     candidates = Array.from(new Map([...candidates, ...teamMembers].map(candidate => [candidate.id, candidate])).values());
   }
 
+  const priorAssignments = await tx.examRoomCandidate.findMany({ where: { roomId: upserted.id }, select: { candidate: { select: { syncKey: true } } } });
+  await clearRoomAssignmentPending(tx, [...priorAssignments.map(row => row.candidate.syncKey), ...candidates.map(row => row.syncKey)]);
   await tx.examRoomProctor.deleteMany({ where: { roomId: upserted.id } });
   await tx.examRoomCandidate.deleteMany({ where: { roomId: upserted.id } });
   if (candidates.length) {
@@ -142,6 +145,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!exam) return fail('考试不存在', 404);
 
     const rooms = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${id} FOR UPDATE`;
       const result = [];
       for (const roomInput of roomsInput) {
         result.push(await upsertRoom(tx, id, roomInput));
@@ -168,7 +172,12 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     if (!roomId) return fail('缺少 roomId', 400);
     const room = await prisma.examRoom.findFirst({ where: { id: roomId, examId: id } });
     if (!room) return fail('考室不存在', 404);
-    await prisma.examRoom.delete({ where: { id: roomId } });
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${id} FOR UPDATE`;
+      const assigned = await tx.examRoomCandidate.findMany({ where: { roomId, room: { examId: id } }, select: { candidate: { select: { syncKey: true } } } });
+      await clearRoomAssignmentPending(tx, assigned.map(row => row.candidate.syncKey));
+      await tx.examRoom.deleteMany({ where: { id: roomId, examId: id } });
+    });
     return ok({ deleted: true });
   } catch (error) {
     if (error instanceof AuthError) return fail(error.message, error.status);

@@ -1,13 +1,13 @@
 import { admittedQaRead, admittedQaWrite } from '@/lib/qa-admission';
 import { randomUUID } from 'node:crypto';
-import { appendQuestionMessage, ensureQuestionMessages, initialQuestionMessageId, qaContentDto, qaMessagesForRead, refreshQuestionSummary, requireFreshQaSession, requireQuestionExam } from '@/lib/qa-thread';
+import { appendQuestionMessage, ensureQuestionMessages, initialQuestionMessageId, resolveQaMessageId, qaContentDto, qaMessagesForRead, refreshQuestionSummary, requireFreshQaSession, requireQuestionExam } from '@/lib/qa-thread';
 import { readCandidateQa } from '@/lib/qa-read';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { verifyClientTokenForAnySide } from '@/lib/client-auth';
 import { AuthError } from '@/lib/auth';
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
-import { effectiveEnd } from '@/lib/contest-rules';
+import { effectiveEnd, problemLabel } from '@/lib/contest-rules';
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 
 const QuestionSchema = z.discriminatedUnion('action', [z.object({
@@ -56,16 +56,24 @@ async function postQa(request: Request) {
         const current = await requireFreshQaSession(tx, request, input.sessionId, { allowEnded: true });
         const announcement = await tx.examAnnouncement.findFirst({ where: { id: input.announcementId, examId: current.examId, OR: [{ candidateId: null }, { candidateId: current.candidateId }] } });
         if (!announcement) throw new AuthError('公告不存在', 404);
-        await tx.examAnnouncementReceipt.upsert({ where: { announcementId_candidateId: { announcementId: announcement.id, candidateId: current.candidateId } }, create: { announcementId: announcement.id, candidateId: current.candidateId }, update: { acknowledgedAt: new Date() } });
+        const receipt = await tx.examAnnouncementReceipt.upsert({ where: { announcementId_candidateId: { announcementId: announcement.id, candidateId: current.candidateId } }, create: { announcementId: announcement.id, candidateId: current.candidateId }, update: {} });
+        await tx.$executeRaw`UPDATE ExamAnnouncementReceipt SET acknowledgedAt = GREATEST(acknowledgedAt, ${new Date()}) WHERE id = ${receipt.id}`;
       }, { signal: request.signal });
       return ok({ acknowledged: true });
     }
     if (input.action === 'ack-reply') {
       await withSessionWrite(input.sessionId, async tx => {
         const current = await requireFreshQaSession(tx, request, input.sessionId, { allowEnded: true });
-        const message = await tx.examQuestionMessage.findFirst({ where: { id: input.messageId, sender: 'ADMIN', question: { examId: current.examId, candidateId: current.candidateId } } });
-        if (!message) throw new AuthError('回复不存在', 404);
-        await tx.examQuestionMessage.update({ where: { id: message.id }, data: { acknowledgedAt: new Date() } });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const id = await resolveQaMessageId(tx, current.examId, input.messageId);
+          await tx.$queryRaw`SELECT id FROM ExamQuestionMessage WHERE id = ${id} FOR UPDATE`;
+          const message = await tx.examQuestionMessage.findFirst({ where: { id, sender: 'ADMIN', question: { examId: current.examId, candidateId: current.candidateId } } });
+          if (!message) continue; // Replacement may have committed while this writer waited for its lock.
+          const now = new Date();
+          await tx.$executeRaw`UPDATE ExamQuestionMessage SET acknowledgedAt = GREATEST(COALESCE(acknowledgedAt, ${now}), ${now}) WHERE id = ${message.id}`;
+          return;
+        }
+        throw new AuthError('回复不存在', 404);
       }, { signal: request.signal });
       return ok({ acknowledged: true });
     }
@@ -96,15 +104,18 @@ async function postQa(request: Request) {
       await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${authorized.session.examId} FOR SHARE`;
       const fresh = await requireFreshQaSession(tx, request, input.sessionId);
       if (fresh.examId !== authorized.session.examId || fresh.candidateId !== authorized.session.candidateId) throw new AuthError('考试会话已改变，请刷新后重试', 409);
+      const local = fresh.exam.platform === 'HYDRO' && fresh.exam.platformContestId === 'local';
+      const problem = local && input.problem ? await tx.examProblem.findFirst({ where: { examId: fresh.examId, hydroProblemId: input.problem.pid }, select: { hydroProblemId: true, label: true, order: true, title: true } }) : null;
+      if (local && input.problem && !problem) throw new RequestParseError('所选题目不属于本场考试，请刷新后重试');
       const initialClock = BigInt(Date.now());
       return tx.examQuestion.create({
         data: {
           messageClock: initialClock, initialMessageId: initialQuestionMessageId(questionId), id: questionId, examId: fresh.examId,
           candidateId: fresh.candidateId,
           sessionId: fresh.id,
-          problemPid: input.problem?.pid,
-          problemIndex: input.problem?.index,
-          problemTitle: input.problem?.title,
+          problemPid: problem?.hydroProblemId || input.problem?.pid,
+          problemIndex: problem ? problem.label || problemLabel(problem.order) : input.problem?.index,
+          problemTitle: (problem?.title || input.problem?.title)?.slice(0, 200),
           content: input.content,
           messages: { create: { id: initialQuestionMessageId(questionId), threadOrder: initialClock, sender: 'CANDIDATE', deliveredAt: new Date(), content: input.content } }
         },

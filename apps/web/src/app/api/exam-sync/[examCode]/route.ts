@@ -24,11 +24,12 @@ export async function POST(request: Request, context: { params: Promise<{ examCo
   try {
     release = await acquire(request.signal);
     const { examCode } = await context.params;
-    const key = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get('authorization') || '')?.[1];
+    const key = /^Bearer ([^\s]{1,512})$/.exec(request.headers.get('authorization') || '')?.[1];
     if (!key || !/^\d{10}$/.test(examCode)) throw new FederationError('同步认证失败', 401);
     const exam = await prisma.exam.findUnique({ where: { examCode }, select: { id: true, federation: true } });
     const config = exam?.federation;
     if (!exam || !config?.enabled || config.role !== 'HUB' || !equalHash(config.apiKeyHash || '', keyHash(key))) throw new FederationError('同步认证失败或公网接收已暂停', 401);
+    if (config.managedGlobally && !(await (await import('@/lib/platform-sync-settings')).getPlatformSyncSettings()).enabled) throw new FederationError('系统同步已关闭', 403);
     const input = await parseBody(request, schema, SYNC_BYTES);
     if (input.action === 'communications') releaseCommunication = await acquireCommunication(request.signal);
     const incoming = input.action === 'communications' ? await prepareIncomingCommunications(config, input.entries) : null;

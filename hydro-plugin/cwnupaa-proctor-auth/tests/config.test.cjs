@@ -172,6 +172,10 @@ class BadRequestError extends Error {}
 class NotFoundError extends Error {}
 const sideEffectModel = (name) => new Proxy({}, {
   get: (_target, method) => (...args) => {
+    if (name === 'database' && method === 'collection'
+      && ['cwnupaa.proctor.browser.contest', 'cwnupaa.proctor.browser.binding'].includes(args[0])) {
+      return sideEffectModel(args[0]);
+    }
     modelCalls.push({ name, method, args });
     if (name === 'domain' && method === 'get') return Promise.resolve({ _id: args[0] });
     throw new Error(`Unexpected model access: ${name}.${String(method)}`);
@@ -199,6 +203,7 @@ const hydroMock = {
   Types: nativeTypes,
   ValidationError,
   ForbiddenError,
+  CreateError: (_name, BaseError) => class extends BaseError {},
   BadRequestError,
   NotFoundError,
 };
@@ -215,6 +220,16 @@ try {
 } finally {
   Module._load = originalLoad;
 }
+
+test('authoring accepts the legacy Hydro zero summary count only for a parsed configuration of the expected type', () => {
+  const { matchesAuthoredProblemConfig } = require('../problem-bank.ts');
+  assert.equal(matchesAuthoredProblemConfig({ type: 'objective', count: 0 }, 'objective', 1), true);
+  assert.equal(matchesAuthoredProblemConfig({ type: 'default', count: 0 }, 'default', 3), true);
+  assert.equal(matchesAuthoredProblemConfig({ type: 'objective', count: 2 }, 'objective', 2), true);
+  assert.equal(matchesAuthoredProblemConfig({ type: 'objective', count: 1 }, 'objective', 2), false);
+  assert.equal(matchesAuthoredProblemConfig({ type: 'default', count: 0 }, 'objective', 1), false);
+  assert.equal(matchesAuthoredProblemConfig('Cannot parse: invalid config', 'objective', 1), false);
+});
 
 function context() {
   const disposers = [];

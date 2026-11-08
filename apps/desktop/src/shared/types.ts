@@ -134,6 +134,7 @@ export interface ProctorApi {
   setAllowedHosts(hosts: string[]): Promise<void>;
   setContestScope(baseUrl: string, contestId: string, clientWebUrl?: string, platform?: string, backendOrigin?: string): Promise<void>;
   installNovaJudgeLogin(login: { loginUrl: string; cookie: { name: string; value: string } }): Promise<string>;
+  installHydroBrowserLogin(login: unknown): Promise<string>;
   getNovaJudgeSubmitStatus(): Promise<NovaJudgeSubmitStatus>;
   retryNovaJudgeSubmit(): Promise<void>;
   onNovaJudgeSubmitStatus(callback: (status: NovaJudgeSubmitStatus) => void): () => void;

@@ -1,5 +1,7 @@
+import '@cwnupaa/proctor-shared/nova-theme.css';
 import './globals.css';
 import './hydro-theme.css';
+import './dashboard-theme.css';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {

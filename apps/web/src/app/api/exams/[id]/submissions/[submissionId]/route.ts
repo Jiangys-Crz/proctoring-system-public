@@ -16,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const input = await parseBody(request, ActionSchema);
     const submission = await prisma.contestSubmission.findFirst({
       where: { id: submissionId, examId: id },
-      include: { exam: { select: { platformBaseUrl: true } }, problem: { select: { hydroProblemId: true, problemType: true } } },
+      include: { exam: { select: { platformBaseUrl: true } }, problem: { select: { hydroProblemId: true, problemType: true, sourceDeleted: true } } },
     });
     if (!submission) return fail('递交记录不存在', 404);
 
@@ -36,6 +36,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return ok({ id: submission.id, action: input.action });
     }
 
+    if (submission.problem.sourceDeleted) return fail('源题已删除，历史记录已保留，不能重测', 409);
     const queued = await queueContestRejudge(id, submission.id);
     if (!queued) return fail('该提交已有重测任务，请等待结果后再操作', 409);
     return ok({ id: submission.id, action: input.action });

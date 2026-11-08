@@ -66,9 +66,11 @@ function configuredConcurrency() {
 const shared = globalThis as typeof globalThis & {
   loginAdmission?: ReturnType<typeof createRequestAdmission>;
   contestLoadAdmission?: ReturnType<typeof createRequestAdmission>;
+  problemSearchAdmission?: ReturnType<typeof createRequestAdmission>;
 };
 export const acquireLoginSlot = shared.loginAdmission ??= createRequestAdmission(configuredConcurrency());
 const acquireContestLoadSlot = shared.contestLoadAdmission ??= createRequestAdmission(4, 128, 5000);
+export const acquireProblemSearchSlot = shared.problemSearchAdmission ??= createRequestAdmission(2, 16, 3000);
 
 /** Bound full statement/history/remote judge loading independently of the
  * login budget, reducing competing work during simultaneous page refreshes. */

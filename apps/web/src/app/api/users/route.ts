@@ -52,7 +52,7 @@ export async function POST(request: Request) {
     const input = await parseBody(request, ImportUsersSchema);
     const duplicateFields = [
       ['用户名', input.users.map(user => user.username.toLocaleLowerCase())],
-      ['姓名和学号', input.users.map(user => `${user.realName.toLocaleLowerCase()}\0${user.numberId}`)],
+      ['姓名和学号/工号', input.users.map(user => `${user.realName.toLocaleLowerCase()}\0${user.numberId}`)],
       ['邮箱', input.users.map(user => user.email?.toLocaleLowerCase()).filter(Boolean)]
     ] as const;
     for (const [label, values] of duplicateFields) {
@@ -72,7 +72,7 @@ export async function POST(request: Request) {
         });
         if (matches.some(user => user.associationImported)) throw new RequestParseError(`用户 ${row.username} 已属于协会账号，请通过编辑修改`);
         const ids = Array.from(new Set(matches.map(item => item.id)));
-        if (ids.length > 1) throw new RequestParseError(`用户 ${row.username} 的用户名、学号或邮箱分别属于不同账号`);
+        if (ids.length > 1) throw new RequestParseError(`用户 ${row.username} 的用户名、学号/工号或邮箱分别属于不同账号`);
         const data = { username: row.username, realName: row.realName, school: row.school, numberId: row.numberId, email: row.email, passwordHash: row.passwordHash, status: row.status, role: row.role };
         result.push(ids[0] ? await tx.user.update({ where: { id: ids[0] }, data }) : await tx.user.create({ data }));
       }

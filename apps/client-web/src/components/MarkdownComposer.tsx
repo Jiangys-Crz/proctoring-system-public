@@ -5,7 +5,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { Bold, Code2, Heading2, ImagePlus, Link2, List } from 'lucide-react';
+import { applyMarkdownFormat, applyMarkdownShortcut, markdownShortcutHelp, markdownToolbarActions } from '@cwnupaa/proctor-shared/markdown-shortcuts';
+import { Bold, Code2, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, Quote } from 'lucide-react';
+
+const formatIcons = { 2: Heading2, bold: Bold, italic: Italic, ordered: ListOrdered, unordered: List, quote: Quote, code: Code2, link: Link2 };
 
 export function MarkdownContent({ content, className = '' }: { content: string; className?: string }) {
   return <div className={`qa-markdown ${className}`}><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={{ a: ({ children, node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer noopener">{children}</a>, img: ({ src, alt }) => <img src={String(src || '')} alt={alt || '答疑图片'} loading="lazy" /> }}>{content}</ReactMarkdown></div>;
@@ -24,20 +27,9 @@ export function MarkdownComposer({ value, onChange, onUploadImage, placeholder, 
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
 
-  function insert(before: string, after = '', fallback = '') {
-    const element = editor.current;
-    if (!element) return;
-    const start = element.selectionStart;
-    const end = element.selectionEnd;
-    const selected = value.slice(start, end) || fallback;
-    const next = `${value.slice(0, start)}${before}${selected}${after}${value.slice(end)}`.slice(0, maxLength);
-    onChange(next);
-    requestAnimationFrame(() => { element.focus(); element.setSelectionRange(start + before.length, start + before.length + selected.length); });
-  }
-
   async function upload(files: File[]) {
     const images = files.filter(file => file.type.startsWith('image/'));
-    if (!images.length || uploading) return;
+    if (!images.length || uploading || disabled) return;
     const start = editor.current?.selectionStart ?? value.length;
     const end = editor.current?.selectionEnd ?? start;
     setUploading(true);
@@ -58,8 +50,21 @@ export function MarkdownComposer({ value, onChange, onUploadImage, placeholder, 
   }
 
   return <div className="qa-markdown-composer">
-    <div className="qa-markdown-toolbar"><strong>Markdown</strong><div><button type="button" title="标题" onClick={() => insert('## ', '', '标题')}><Heading2 size={15} /></button><button type="button" title="粗体" onClick={() => insert('**', '**', '文字')}><Bold size={15} /></button><button type="button" title="列表" onClick={() => insert('- ', '', '列表项')}><List size={15} /></button><button type="button" title="代码" onClick={() => insert('`', '`', 'code')}><Code2 size={15} /></button><button type="button" title="链接" onClick={() => insert('[', '](https://)', '链接文字')}><Link2 size={15} /></button><button type="button" title="上传图片" onClick={() => fileInput.current?.click()} disabled={uploading}><ImagePlus size={15} />{uploading ? '上传中' : '图片'}</button><input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={event => { void upload(Array.from(event.target.files || [])); event.target.value = ''; }} /></div></div>
-    <div className="qa-markdown-live"><textarea ref={editor} rows={7} maxLength={maxLength} value={value} onChange={event => onChange(event.target.value)} onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.some(file => file.type.startsWith('image/'))) { event.preventDefault(); void upload(files); } }} placeholder={placeholder} disabled={disabled} /><div className="qa-markdown-preview" aria-label="内容预览"><MarkdownContent content={value} /></div></div>
+    <div className="qa-markdown-toolbar">
+      <strong title={markdownShortcutHelp}>Markdown</strong>
+      <div role="group" aria-label="Markdown 格式">
+        {markdownToolbarActions.map(({ format, label, keys }) => {
+          const Icon = formatIcons[format];
+          return <button key={format} type="button" aria-label={label} title={`${label}（${keys}）`} disabled={disabled || uploading}
+            onMouseDown={event => event.preventDefault()} onClick={() => applyMarkdownFormat(editor.current, format, onChange)}>
+            <Icon size={15} aria-hidden="true" />
+          </button>;
+        })}
+        <button type="button" title="上传图片" onClick={() => fileInput.current?.click()} disabled={disabled || uploading}><ImagePlus size={15} />{uploading ? '上传中' : '图片'}</button>
+        <input ref={fileInput} type="file" accept="image/*" multiple hidden onChange={event => { void upload(Array.from(event.target.files || [])); event.target.value = ''; }} />
+      </div>
+    </div>
+    <div className="qa-markdown-live"><textarea ref={editor} rows={7} maxLength={maxLength} value={value} onChange={event => onChange(event.target.value)} onKeyDown={event => { if (!uploading) applyMarkdownShortcut(event, onChange); }} onPaste={event => { const files = Array.from(event.clipboardData.files); if (files.some(file => file.type.startsWith('image/'))) { event.preventDefault(); void upload(files); } }} placeholder={placeholder} disabled={disabled} /><div className="qa-markdown-preview" aria-label="内容预览"><MarkdownContent content={value} /></div></div>
     <div className="qa-markdown-status"><span>{value.length}/{maxLength}</span>{error ? <b>{error}</b> : null}</div>
   </div>;
 }

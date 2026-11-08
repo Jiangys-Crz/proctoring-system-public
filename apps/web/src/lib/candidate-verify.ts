@@ -50,7 +50,7 @@ export interface CandidateVerifyResult {
   memberIdentity?: { memberStudentId: string; memberName: string } | null;
 }
 
-/** Validate the four login fields; member metadata comes from the registered candidate. */
+/** Validate the three login fields; member metadata comes from the registered candidate. */
 export async function verifyCandidateIdentity(input: CandidateVerifyInput): Promise<CandidateVerifyResult> {
   if (!/^\d{10}$/.test(input.examCode || '')) return { ok: false, error: '请输入 10 位考试编号' };
   const exam = await prisma.exam.findUnique({ where: { examCode: input.examCode } });
@@ -62,7 +62,7 @@ export async function verifyCandidateIdentity(input: CandidateVerifyInput): Prom
   const matches = candidates.filter(candidate => candidate.password === input.password)
     .map(candidate => ({ candidate, member: credentialMember(candidate, (input.name || '').trim(), exam.contestType === 'TEAM') }))
     .filter(match => match.member);
-  if (matches.length !== 1) return { ok: false, error: '考试编号、姓名、考号或密码不匹配，或姓名存在重复，请核对信息并联系监考老师' };
+  if (matches.length !== 1) return { ok: false, error: '考试编号、考号或密码不匹配，请核对信息并联系监考老师' };
   const { candidate, member } = matches[0];
   const memberIdentity = member?.memberStudentId ? { memberStudentId: member.memberStudentId, memberName: member.memberName } : null;
 

@@ -58,6 +58,7 @@ test('embedded student page may call backend client APIs without opening backend
     contestClientScope: { host: 'proctorstu.example.org', origin: 'https://proctorstu.example.org' },
     contestScope: { host: 'oj.example.test', contestId: 'fixture' },
     novaJudgeScope: null,
+    hydroBrowserScope: null,
   });
   vm.runInContext(source, context);
   assert.equal(context.isAllowedUrl('https://proctorstu.example.org/contest', 'mainFrame'), true);

@@ -120,7 +120,7 @@ async function main() {
     await check('Reaction management page renders', async () => {
       const response = await page.goto(`${base}/dashboard/exams/${examId}/reactions`, { waitUntil: 'domcontentloaded', timeout: 120_000 });
       assert.equal(response?.status(), 200);
-      await page.getByRole('heading', { name: 'Reaction 录像', exact: true }).waitFor();
+      await page.getByRole('heading', { name: '自动保存提交 Reaction', exact: true }).waitFor();
       await page.getByRole('button', { name: 'Camera 预览', exact: true }).first().waitFor({ timeout: 60_000 });
       return 'Real management page rendered with Camera/Desktop/Reaction preview actions';
     });

@@ -42,6 +42,7 @@ const api: ProctorApi = {
   setAllowedHosts: (hosts: string[]) => ipcRenderer.invoke('browser:setAllowedHosts', hosts),
   setContestScope: (baseUrl: string, contestId: string, clientWebUrl?: string, platform?: string, backendOrigin?: string) => ipcRenderer.invoke('browser:setContestScope', baseUrl, contestId, clientWebUrl, platform, backendOrigin),
   installNovaJudgeLogin: (login: unknown) => ipcRenderer.invoke('browser:installNovaJudgeLogin', login),
+  installHydroBrowserLogin: (login: unknown) => ipcRenderer.invoke('browser:installHydroBrowserLogin', login),
   getNovaJudgeSubmitStatus: () => ipcRenderer.invoke('novajudge-submit:status'),
   retryNovaJudgeSubmit: () => ipcRenderer.invoke('novajudge-submit:retry'),
   onNovaJudgeSubmitStatus: callback => {

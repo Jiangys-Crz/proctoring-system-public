@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import ts from 'typescript';
+import { NextResponse } from 'next/server';
 import { prisma } from '../src/lib/db';
+import { setSessionCookie, verifySessionToken } from '../src/lib/auth';
 import { isTrustedMutationOrigin } from '../src/lib/request-origin';
 import { parseBody, RequestParseError } from '../src/lib/http';
 import { POST as login } from '../src/app/api/auth/login/route';
@@ -22,6 +24,20 @@ const origin = 'https://admin.example.test';
 function request(body: object = {}, headers: Record<string, string> = {}, url = `${origin}/api/test`) {
   return new Request(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 }
+
+test('admin cookie and signed session both last seven days', async () => {
+  const start = Math.floor(Date.now() / 1000);
+  const lifetime = 7 * 24 * 60 * 60;
+  const response = NextResponse.json({});
+  await setSessionCookie(response, { id: 'admin', role: 'SUPER_ADMIN', username: 'admin', numberId: null });
+  const cookie = response.cookies.get('cwnupaa_proctor_session');
+  assert.ok(cookie);
+  assert.equal(cookie.maxAge, lifetime);
+  assert.equal(cookie.httpOnly, true);
+  const session = verifySessionToken(cookie.value);
+  assert.ok(session);
+  assert.ok(session.exp >= start + lifetime && session.exp <= Math.floor(Date.now() / 1000) + lifetime);
+});
 
 test('cookie writes require an exact origin, including sibling sites and opaque origins', () => {
   assert.equal(isTrustedMutationOrigin(request({}, { origin }), ''), true);
@@ -43,6 +59,17 @@ test('all administrator login aliases and logout reject forged forms before auth
     assert.equal(response.status, 403);
     assert.equal(response.headers.get('set-cookie'), null);
   }
+});
+
+test('Docker accepts both loopback names on the configured scheme and port', () => {
+  const internal = 'http://0.0.0.0:4031/api/test';
+  const check = (origin: string, base = 'http://127.0.0.1:4031') =>
+    isTrustedMutationOrigin(request({}, { origin }, internal), base);
+  assert.equal(check('http://localhost:4031'), true);
+  assert.equal(check('http://127.0.0.1:4031', 'http://localhost:4031'), true);
+  assert.equal(check('http://localhost:4032'), false);
+  assert.equal(check('https://localhost:4031'), false);
+  assert.equal(check('http://localhost:4031', 'https://admin.example.test'), false);
 });
 
 test('login JSON limits apply to both Content-Length and chunked streams', async () => {

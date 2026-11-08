@@ -20,6 +20,8 @@ export async function register() {
     startSessionHealthWorker();
     const { startExternalBoardWorker } = await import('./lib/external-board');
     startExternalBoardWorker();
+    const { startPlatformSyncWorker } = await import('./lib/platform-sync');
+    startPlatformSyncWorker();
     const { startExamFederationWorker } = await import('./lib/exam-federation');
     startExamFederationWorker();
     const { startLiveRelayWorker } = await import('./lib/live-relay');

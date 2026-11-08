@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CreateExamSchema, type CreateExamInput } from '@cwnupaa/proctor-shared';
+import { CreateExamSchema, isBrowserExam, type CreateExamInput } from '@cwnupaa/proctor-shared';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
 import { canAccessExam, canManageExam } from '@/lib/permissions';
@@ -57,13 +57,17 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (input.platform && input.platform !== current.platform) return fail('已创建考试不能切换答题平台，请另行发布考试', 400);
     const merged = CreateExamSchema.parse({ ...current, ...input });
     const normalized = normalizeExamSettings(merged);
-    if (current.platform === 'NOVAJUDGE' && (normalized.platformBaseUrl !== current.platformBaseUrl || merged.platformContestId !== current.platformContestId)
+    const targetChanged = normalized.platformBaseUrl !== current.platformBaseUrl || normalized.platformContestId !== current.platformContestId;
+    if (current.platform === 'HYDRO_BROWSER' && current.published && targetChanged) {
+      return fail('发布后不能更换已启用监考的 HydroOJ 比赛，请另行发布考试', 409);
+    }
+    if (current.platform === 'NOVAJUDGE' && targetChanged
       && await prisma.reactionConfig.count({where:{examId:id,initializedAt:{not:null}}})) {
       return fail('本场 Reaction 已绑定 CCS 比赛，请新建考试关联其他比赛，避免混用历史提交与录像',409);
     }
-    if (current.platform === 'NOVAJUDGE' && (normalized.platformBaseUrl !== current.platformBaseUrl || merged.platformContestId !== current.platformContestId)
+    if (isBrowserExam(current.platform) && targetChanged
       && await prisma.clientSession.count({ where: { examId: id, status: { not: 'FINISHED' } } })) {
-      return fail('已有未结束的监考会话时不能更换 NovaJudge 域名或比赛 ID，请先结束这些会话', 409);
+      return fail('已有未结束的监考会话时不能更换浏览器考试地址或比赛 ID，请先结束这些会话', 409);
     }
     if ((normalized.teamAccountMode !== current.teamAccountMode || normalized.contestType !== current.contestType)
       && await prisma.candidate.count({ where: { examId: id } })) {

@@ -1,8 +1,11 @@
 'use client';
 
+import { formatScore } from '@cwnupaa/proctor-shared';
+
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, Database, LoaderCircle, RefreshCw, Search, X } from 'lucide-react';
+import { ArrowRight, Database, LoaderCircle, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ProblemCreateDialog } from './ProblemCreateDialog';
 import { api } from './api';
 import { problemTypeLabel } from '@cwnupaa/proctor-shared';
 
@@ -16,10 +19,12 @@ export function ProblemsPageClient() {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const searchController = useRef<AbortController | null>(null);
   const busy = useRef(false);
+  const refreshQueued = useRef(false);
+  const [creating, setCreating] = useState(false);
   const queryRef = useRef(query);
   queryRef.current = query;
 
-  const load = useCallback(async (nextQuery: string, signal?: AbortSignal) => {
+  const load = useCallback(async (nextQuery: string, signal?: AbortSignal): Promise<void> => {
     if (busy.current) return;
     busy.current = true;
     setLoading(true);
@@ -38,6 +43,7 @@ export function ProblemsPageClient() {
     } finally {
       busy.current = false;
       if (!signal?.aborted) setLoading(false);
+      if (refreshQueued.current) { refreshQueued.current = false; queueMicrotask(() => void load(queryRef.current)); }
     }
   }, []);
 
@@ -57,12 +63,12 @@ export function ProblemsPageClient() {
     return () => window.clearInterval(timer);
   }, [load]);
 
-  return <div className="problems-page grid">
-    <div className="topbar problems-page-header">
-      <div><h1>题库管理</h1></div>
-      <button className="button secondary problems-refresh" onClick={() => void load(query)} disabled={loading}>
+  return <div className="problems-page grid management-page">
+    <div className="management-actions management-page-actions">
+      <button className="button secondary" onClick={() => void load(query)} disabled={loading}>
         <RefreshCw size={15} className={loading ? 'spin' : ''} />{loading ? '刷新中…' : '刷新'}
       </button>
+      <button className="button" onClick={() => setCreating(true)}><Plus size={16} />创建题目</button>
     </div>
     {error ? <div className="card problem-error" role="status">{error}</div> : null}
     <section className="card problems-browser">
@@ -88,7 +94,7 @@ export function ProblemsPageClient() {
             <td><span className="problem-type-badge">{type}</span></td>
             <td><div className="problem-tags">{tags.slice(0, 3).map(tag => <span key={tag}>{tag}</span>)}{!tags.length ? <em>未分类</em> : null}</div></td>
             <td><span className={`problem-difficulty difficulty-${Math.min(5, Math.max(0, difficulty))}`}>{difficulty ? `Lv.${difficulty}` : '—'}</span></td>
-            <td><strong className="problem-score">{Number.isFinite(score) && score > 0 ? score : '—'}</strong></td>
+            <td><strong className="problem-score">{Number.isFinite(score) && score > 0 ? formatScore(score) : '—'}</strong></td>
             <td className="problem-row-action"><Link href={`/dashboard/problems/${problem.id}`} aria-label={`查看 ${problem.title}`}><ArrowRight size={16} /></Link></td>
           </tr>;
         })}
@@ -97,5 +103,8 @@ export function ProblemsPageClient() {
         {loading && !items.length ? Array.from({ length: 5 }, (_, index) => <tr className="problem-skeleton-row" key={index}><td colSpan={7}><span /></td></tr>) : null}
       </tbody></table></div>
     </section>
+    <ProblemCreateDialog open={creating} onClose={() => setCreating(false)} onSaved={() => {
+      if (busy.current) refreshQueued.current = true; else void load(queryRef.current);
+    }} />
   </div>;
 }

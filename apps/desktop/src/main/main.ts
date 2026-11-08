@@ -30,6 +30,9 @@ import { relaunchWindowsAdministrator } from './windows-admin-startup';
 import { novaJudgeClientKey, novaJudgeHeaders, novaJudgeCookie, novaJudgeDownloadAllowed, novaJudgeFileUrl, novaJudgeNavigationAllowed, novaJudgeRequestAllowed, type NovaJudgeScope } from './novajudge-policy';
 import { NovaJudgeSubmit, type SubmitLogin } from './novajudge-submit';
 import { requestNovaJudgeSubmit } from './novajudge-submit-network';
+import { HYDRO_PROCTOR_HEADER, hydroBrowserClientKey, hydroBrowserCookie, hydroBrowserDownloadAllowed, hydroBrowserFileUrl,
+  hydroBrowserHeaders, hydroBrowserNavigationAllowed, hydroBrowserRecordId,
+  hydroBrowserRequestAllowed, hydroBrowserScope as parseHydroBrowserScope, type HydroBrowserScope } from './hydro-browser-policy';
 
 let mainWindow: BrowserWindow | null = null;
 const rendererRecovery = new RendererRecoveryStore();
@@ -53,10 +56,23 @@ const referenceDomainApprovals = new Map<string, number>();
 let contestScope: { host: string; contestId: string } | null = null;
 let contestClientScope: { host: string; origin: string } | null = null;
 let novaJudgeScope: NovaJudgeScope | null = null;
+let hydroBrowserScope: HydroBrowserScope | null = null;
+let hydroBrowserSessionId = '';
+let hydroBrowserAccessKey = '';
 let novaJudgeClientAccessKey = '';
 let novaJudgeBackendOrigin = '';
 let novaJudgeLoginGeneration = 0;
 let novaJudgeSubmitLogin: SubmitLogin | null = null;
+
+function externalBrowserNavigationAllowed(url: string) {
+  return hydroBrowserScope ? hydroBrowserNavigationAllowed(url, hydroBrowserScope)
+    : Boolean(novaJudgeScope && novaJudgeNavigationAllowed(url, novaJudgeScope));
+}
+
+function externalBrowserFileUrl(url: string) {
+  return hydroBrowserScope ? hydroBrowserFileUrl(url, hydroBrowserScope)
+    : Boolean(novaJudgeScope && novaJudgeFileUrl(url, novaJudgeScope));
+}
 // key: `${sessionId}:${channel}` —— 不同考生（session）的同名画面通道是不同推流，必须按会话隔离
 const rtmpProcesses = new Map<string, ChildProcessWithoutNullStreams>();
 // 由渲染进程画面驱动（canvas → JPEG → ffmpeg stdin）的推流进程，同样按会话隔离
@@ -598,6 +614,9 @@ function isAllowedUrl(url: string, resourceType = '') {
   if (novaJudgeScope) return parsed.origin === novaJudgeScope.origin
     ? novaJudgeRequestAllowed(url, resourceType, novaJudgeScope)
     : ['xhr', 'fetch'].includes(resourceType) && parsed.pathname.startsWith('/api/client/');
+  if (hydroBrowserScope) return parsed.origin === hydroBrowserScope.origin
+    ? hydroBrowserRequestAllowed(url, resourceType, hydroBrowserScope)
+    : ['xhr', 'fetch'].includes(resourceType) && parsed.pathname.startsWith('/api/client/');
   if (contestClientScope?.host === host && parsed.origin === contestClientScope.origin) {
     return contestPageRequestAllowed(url, resourceType, contestClientScope.origin);
   }
@@ -663,7 +682,7 @@ function jsonRequestTimeout(target: URL, options: JsonRequestOptions) {
   ].includes(target.pathname) ? 40_000 : 8000;
 }
 
-function electronNetJsonRequest(target: URL, options: JsonRequestOptions = {}) {
+function electronNetJsonRequest(target: URL, options: JsonRequestOptions = {}, parse = assertOkResponse) {
   const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
   const timeoutMs = jsonRequestTimeout(target, options);
   return new Promise((resolve, reject) => {
@@ -700,7 +719,7 @@ function electronNetJsonRequest(target: URL, options: JsonRequestOptions = {}) {
         if (settled) return;
         const raw = Buffer.concat(chunks).toString('utf8');
         try {
-          const data = assertOkResponse(response.statusCode, parseJsonResponse(raw));
+          const data = parse(response.statusCode, parseJsonResponse(raw));
           finish(() => resolve(data));
         } catch (error) {
           finish(() => reject(error));
@@ -870,7 +889,7 @@ async function jsonRequest(baseUrl: string, requestPath: string, options: JsonRe
 }
 
 function openRestrictedExternalWindow(rawUrl: string) {
-  if (novaJudgeScope) return;
+  if (novaJudgeScope || hydroBrowserScope) return;
   if (screenControlWatcher.isDisplaying) return;
   if (!mainWindow) return;
   const target = referenceLinkUrl(rawUrl);
@@ -1004,17 +1023,18 @@ function createWindow() {
       if (closesClient || opensDeveloperTools || navigatesAway || changesWindowState) event.preventDefault();
     });
     contents.setWindowOpenHandler((details) => {
-      if (contestGuest && novaJudgeScope) {
-        if (novaJudgeNavigationAllowed(details.url, novaJudgeScope)) void contents.loadURL(details.url);
+      if (contestGuest && (novaJudgeScope || hydroBrowserScope)) {
+        if (hydroBrowserScope && externalBrowserFileUrl(details.url)) contents.downloadURL(details.url);
+        else if (externalBrowserNavigationAllowed(details.url)) void contents.loadURL(details.url);
         // File links with target=_blank can download in the existing guest.
-        else if (novaJudgeFileUrl(details.url, novaJudgeScope)) contents.downloadURL(details.url);
+        else if (externalBrowserFileUrl(details.url)) contents.downloadURL(details.url);
         return { action: 'deny' };
       }
       if (contestGuest) openRestrictedExternalWindow(details.url);
       return { action: 'deny' };
     });
     contents.on('will-navigate', (event, url) => {
-      if (contestGuest && novaJudgeScope && novaJudgeFileUrl(url, novaJudgeScope)) {
+      if (contestGuest && externalBrowserFileUrl(url)) {
         event.preventDefault(); contents.downloadURL(url); return;
       }
       if (contestGuest ? !isAllowedUrl(url, 'mainFrame') : !isClientPage(url, rendererFile)) {
@@ -1023,7 +1043,7 @@ function createWindow() {
       }
     });
     contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => {
-      if (contestGuest && novaJudgeScope && isMainFrame && !novaJudgeNavigationAllowed(url, novaJudgeScope)) event.preventDefault();
+      if (contestGuest && (novaJudgeScope || hydroBrowserScope) && isMainFrame && !externalBrowserNavigationAllowed(url)) event.preventDefault();
     });
     contents.on('context-menu', (event) => event.preventDefault());
     if (process.env.PROCTOR_DEV !== '1') {
@@ -1032,7 +1052,7 @@ function createWindow() {
   };
   protectLoginShortcuts(mainWindow.webContents);
   mainWindow.webContents.on('will-attach-webview', (event, preferences, params) => {
-    if (params.partition !== 'persist:proctor-oj' || (params.src !== 'about:blank' && (!(contestClientScope || novaJudgeScope) || !isAllowedUrl(params.src, 'mainFrame')))) {
+    if (params.partition !== 'persist:proctor-oj' || (params.src !== 'about:blank' && (!(contestClientScope || novaJudgeScope || hydroBrowserScope) || !isAllowedUrl(params.src, 'mainFrame')))) {
       event.preventDefault();
       return;
     }
@@ -1086,13 +1106,24 @@ function configureSession(targetSession: Electron.Session) {
   configuredSessions.add(targetSession);
   if (targetSession === session.fromPartition('persist:proctor-oj')) {
     targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
-      callback({ requestHeaders: novaJudgeHeaders(details.url, details.requestHeaders, novaJudgeScope, novaJudgeClientAccessKey) });
+      const headers = novaJudgeHeaders(details.url, details.requestHeaders, novaJudgeScope, novaJudgeClientAccessKey);
+      callback({ requestHeaders: hydroBrowserHeaders(details.url, headers, hydroBrowserScope, hydroBrowserAccessKey) });
+    });
+    targetSession.webRequest.onHeadersReceived((details, callback) => {
+      if (!hydroBrowserScope || new URL(details.url).origin !== hydroBrowserScope.origin) return callback({});
+      const responseHeaders = { ...details.responseHeaders };
+      for (const name of Object.keys(responseHeaders)) {
+        if (name.toLowerCase() === 'set-cookie') responseHeaders[name] = responseHeaders[name].filter(value => !/^sid=/i.test(value));
+      }
+      callback({ responseHeaders });
     });
   }
   targetSession.on('will-download', (event, item, contents) => {
     const embedded = Boolean(contents && mainWindow && contents.hostWebContents?.id === mainWindow.webContents.id
       && targetSession === session.fromPartition('persist:proctor-oj') && !screenControlWatcher.isDisplaying);
-    const permitted = novaJudgeScope
+    const permitted = hydroBrowserScope
+      ? hydroBrowserDownloadAllowed(contents?.getURL() || '', item.getURLChain(), hydroBrowserScope, embedded)
+      : novaJudgeScope
       ? novaJudgeDownloadAllowed(contents?.getURL() || '', item.getURLChain(), novaJudgeScope, embedded)
       : contestClientScope && contestDownloadAllowed(contents?.getURL() || '', item.getURLChain(), contestClientScope.origin, embedded);
     if (!permitted) {
@@ -1136,6 +1167,24 @@ function configureSession(targetSession: Electron.Session) {
   });
 
   targetSession.webRequest.onBeforeRequest((details, callback) => {
+    if (hydroBrowserScope && targetSession === session.fromPartition('persist:proctor-oj')) {
+      const scope = hydroBrowserScope;
+      if (details.url === 'about:blank') return callback({});
+      if (!hydroBrowserRequestAllowed(details.url, details.resourceType, scope)) return callback({ cancel: true });
+      const recordId = hydroBrowserRecordId(details.url, scope);
+      if (!recordId) return callback({});
+      const sid = hydroBrowserSessionId;
+      const key = hydroBrowserAccessKey;
+      if (!sid || !key) return callback({ cancel: true });
+      const recordUrl = new URL(`${scope.basePath}/record/${recordId}`, scope.origin);
+      // Hydro uses bare record IDs in pages and websocket links. Resolve the
+      // record via the native API before opening it in this restricted session.
+      void electronNetJsonRequest(recordUrl, { headers: { accept: 'application/json', cookie: `sid=${sid}`, [HYDRO_PROCTOR_HEADER]: key } }, (status, body) => {
+        return status === 200 && (body as { rdoc?: { contest?: string } } | null)?.rdoc?.contest === scope.contestId;
+      }).then(allowed => callback({ cancel: !allowed || hydroBrowserScope !== scope || hydroBrowserSessionId !== sid }),
+        () => callback({ cancel: true }));
+      return;
+    }
     if (novaJudgeScope && targetSession === session.fromPartition('persist:proctor-oj')) {
       callback({ cancel: details.url !== 'about:blank' && !novaJudgeRequestAllowed(details.url, details.resourceType, novaJudgeScope) });
       return;
@@ -1196,6 +1245,9 @@ app.on('before-quit', (event) => {
       novaJudgeSubmitLogin = null;
       novaJudgeScope = null;
       novaJudgeClientAccessKey = '';
+      hydroBrowserScope = null;
+      hydroBrowserSessionId = '';
+      hydroBrowserAccessKey = '';
       void novaJudgeSubmit.shutdown().finally(() => { submitShutdownComplete = true; app.quit(); });
     }
     return;
@@ -1460,6 +1512,10 @@ handleClient('browser:setContestScope', async (_event, baseUrl: string, contestI
     if (['https:', 'http:'].includes(backend.protocol) && backend.origin === backendOrigin) novaJudgeBackendOrigin = backendOrigin;
   }
   const previousNova = novaJudgeScope;
+  const previousHydro = hydroBrowserScope;
+  hydroBrowserScope = null;
+  hydroBrowserSessionId = '';
+  hydroBrowserAccessKey = '';
   novaJudgeClientAccessKey = '';
   if (platform === 'NOVAJUDGE') {
     const url = new URL(baseUrl);
@@ -1474,7 +1530,16 @@ handleClient('browser:setContestScope', async (_event, baseUrl: string, contestI
     return;
   }
   novaJudgeScope = null;
-  if (previousNova) await session.fromPartition('persist:proctor-oj').clearStorageData();
+  if (platform === 'HYDRO_BROWSER') {
+    const scope = parseHydroBrowserScope(baseUrl, contestId);
+    hydroBrowserScope = scope;
+    contestScope = { host: new URL(scope.origin).hostname.toLowerCase(), contestId };
+    contestClientScope = null;
+    allowedHosts.add(contestScope.host);
+    await session.fromPartition('persist:proctor-oj').clearStorageData();
+    return;
+  }
+  if (previousNova || previousHydro) await session.fromPartition('persist:proctor-oj').clearStorageData();
   const host = hostFromUrl(baseUrl);
   if (host && contestId) {
     allowedHosts.add(host);
@@ -1513,6 +1578,24 @@ handleClient('browser:installNovaJudgeLogin', async (_event, login: unknown) => 
   void novaJudgeSubmit.connect(novaJudgeSubmitLogin);
   return `${scope.origin}/contest/${scope.contestId}`;
 });
+handleClient('browser:installHydroBrowserLogin', async (_event, login: unknown) => {
+  const blocked = () => screenControlWatcher.isDisplaying || windowMode === 'locked';
+  const scope = hydroBrowserScope;
+  if (!scope || blocked()) throw new Error('当前不能登录 HydroOJ');
+  const generation = ++novaJudgeLoginGeneration;
+  const cookie = hydroBrowserCookie(login, scope);
+  const key = hydroBrowserClientKey(login);
+  const target = session.fromPartition('persist:proctor-oj');
+  await target.cookies.set(cookie);
+  if (hydroBrowserScope !== scope || generation !== novaJudgeLoginGeneration || blocked()) {
+    const [installed] = await target.cookies.get({ url: scope.origin, name: cookie.name });
+    if (installed?.value === cookie.value) await target.cookies.remove(scope.origin, cookie.name);
+    throw new Error('考试状态已变化，请稍后重试');
+  }
+  hydroBrowserSessionId = cookie.value;
+  hydroBrowserAccessKey = key;
+  return `${scope.origin}${scope.basePath}/contest/${scope.contestId}`;
+});
 handleClient('novajudge-submit:status', () => novaJudgeSubmit.status);
 handleClient('novajudge-submit:retry', () => {
   if (novaJudgeSubmitLogin && !screenControlWatcher.isDisplaying && windowMode !== 'locked') void novaJudgeSubmit.connect(novaJudgeSubmitLogin);
@@ -1535,6 +1618,9 @@ handleClient('window:mode', async (_event, mode: 'setup' | 'floating' | 'locked'
     cleanupMonitoring();
     novaJudgeScope = null;
     novaJudgeClientAccessKey = '';
+    hydroBrowserScope = null;
+    hydroBrowserSessionId = '';
+    hydroBrowserAccessKey = '';
     await novaJudgeSubmit.shutdown();
     app.exit(0);
     return;

@@ -4,7 +4,7 @@ import { canManageExam } from '@/lib/permissions';
 import { redirect } from 'next/navigation';
 
 type DetailRoute = 'status' | 'login' | 'login-restrictions' | 'qa' | 'print' | 'monitor' | 'screen' | 'settings';
-type SettingsRoute = 'base' | 'problems' | 'candidates' | 'rooms' | 'external-board' | 'federation';
+type SettingsRoute = 'base' | 'problems' | 'candidates' | 'rooms' | 'external-board';
 
 export async function ExamDetailRoute({
   id,

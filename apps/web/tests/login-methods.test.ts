@@ -9,12 +9,11 @@ test('room policy enforces both login modes and requires room assignment', () =>
   assert.throws(() => requireRoomLoginMethod({ loginMode: 'SECOND_CAMERA_QR' }, 'CREDENTIALS'), /改用二维码/);
   assert.throws(() => requireRoomLoginMethod(null, 'CREDENTIALS'), /尚未分配考室/);
 });
-test('four-field login identifies individuals and unique team members', () => {
+test('three-field login derives identity from the registered account and shared accounts identify the captain', () => {
   const c = { name: '张三', studentId: '1', teamMembers: '张三、李四', teamMemberStudentIds: '1、2' };
-  assert.equal(credentialMember(c, '张三', false)?.memberStudentId, '1');
-  assert.equal(credentialMember(c, '李四', false), null);
-  assert.equal(credentialMember(c, '李四', true)?.memberStudentId, '2');
-  assert.equal(credentialMember({ ...c, name: null, teamMembers: '李四、李四' }, '李四', true), null);
+  assert.deepEqual(credentialMember(c, '', false), { memberName: '张三', memberStudentId: '1' });
+  assert.deepEqual(credentialMember(c, '任意旧版姓名', true), { memberName: '张三', memberStudentId: '1' });
+  assert.equal(credentialMember({ ...c, name: null, studentId: null }, '', true)?.memberStudentId, '1');
 });
 test('second-camera tickets expire and cannot be modified', () => {
   process.env.SESSION_SECRET = 'test-only-login-ticket-key';

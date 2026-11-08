@@ -28,7 +28,7 @@ export async function pushExternalBoard(examId: string) {
   const startedAt = Date.now();
   const now = new Date();
   const exam = await prisma.exam.findUnique({ where: { id: examId }, include: {
-    problems: { orderBy: { order: 'asc' } },
+    problems: { orderBy: { order: 'asc' }, select: { id: true, order: true, label: true, title: true, score: true, hydroScore: true, timeLimitMs: true, memoryLimitMb: true } },
     candidates: { select: { id: true, examNumber: true }, orderBy: { id: 'asc' } },
   } });
   if (!exam?.externalBoardEnabled || !exam.externalBoardBaseUrl || !exam.externalBoardEventId || exam.id === await publicTestExamId()) return;
@@ -45,6 +45,7 @@ export async function pushExternalBoard(examId: string) {
   });
   if (!claimed.count) return;
   const controller = new AbortController();
+  let leaseUntil = +now + LEASE_MS;
   worker.externalBoardControllers ??= new Map();
   worker.externalBoardControllers.set(examId, controller);
   const ownsLease = { examId, leaseToken: token };
@@ -57,7 +58,8 @@ export async function pushExternalBoard(examId: string) {
     const problems = nova ? nova.problems : exam.problems.map(externalBoardProblem);
     const configHash = hash([exam.externalBoardBaseUrl, appKey, exam.externalBoardEventId, exam.startAt, exam.endAt,
       exam.platform, exam.platformBaseUrl, exam.platformContestId, exam.novaJudgeApiKey, exam.novaJudgeTimezone,
-      exam.problems.map(p => [p.id, p.order, p.score, p.hydroScore]), exam.candidates]);
+      exam.problems.map(p => exam.platform === 'HYDRO' ? [p.id, p.order, p.label, p.score, p.hydroScore] : [p.id, p.order, p.score, p.hydroScore]), exam.candidates,
+      ...(exam.platform === 'HYDRO' && exam.contestRule === 'LANQIAO' ? ['LANQIAO:latest-submission-v1'] : [])]);
     const problemsHash = hash(problems);
     let state = await prisma.externalBoardSync.findUniqueOrThrow({ where: { examId } });
     if (state.leaseToken !== token) throw new PushStopped();
@@ -78,12 +80,18 @@ export async function pushExternalBoard(examId: string) {
       if (controller.signal.aborted) throw new PushStopped();
       // Recheck the saved switch before EVERY request, including the second
       // request in a tick. No HTTP request runs inside a database transaction.
-      const renewed = await externalBoardTransaction(examId, tx => tx.externalBoardSync.updateMany({ where: {
-        ...ownsLease, leaseUntil: { gt: new Date() },
-        exam: { externalBoardEnabled: true, externalBoardBaseUrl: exam!.externalBoardBaseUrl, externalBoardEventId: exam!.externalBoardEventId, externalBoardApiKey: exam!.externalBoardApiKey, externalBoardIntervalSeconds: exam!.externalBoardIntervalSeconds,
-          platform: exam!.platform, platformBaseUrl: exam!.platformBaseUrl, platformContestId: exam!.platformContestId, novaJudgeApiKey: exam!.novaJudgeApiKey, novaJudgeTimezone: exam!.novaJudgeTimezone },
-      }, data: { leaseUntil: new Date(Date.now() + LEASE_MS) } }));
+      let renewedUntil = new Date();
+      const renewed = await externalBoardTransaction(examId, tx => {
+        renewedUntil = new Date(Date.now() + LEASE_MS);
+        return tx.externalBoardSync.updateMany({ where: {
+          ...ownsLease, leaseUntil: { gt: new Date() },
+          exam: { externalBoardEnabled: true, externalBoardBaseUrl: exam!.externalBoardBaseUrl, externalBoardEventId: exam!.externalBoardEventId, externalBoardApiKey: exam!.externalBoardApiKey, externalBoardIntervalSeconds: exam!.externalBoardIntervalSeconds,
+            platform: exam!.platform, platformBaseUrl: exam!.platformBaseUrl, platformContestId: exam!.platformContestId, novaJudgeApiKey: exam!.novaJudgeApiKey, novaJudgeTimezone: exam!.novaJudgeTimezone,
+            ...(exam!.platform === 'HYDRO' ? { contestRule: exam!.contestRule } : {}) },
+        }, data: { leaseUntil: renewedUntil } });
+      });
       if (!renewed.count || controller.signal.aborted) throw new PushStopped();
+      leaseUntil = +renewedUntil;
       let response: Response;
       try {
         response = await fetch(externalBoardEndpoint(exam!.externalBoardBaseUrl!, exam!.externalBoardEventId!, kind), {
@@ -143,34 +151,45 @@ export async function pushExternalBoard(examId: string) {
         message: complete ? 'NovaJudge 外榜同步完成' : 'NovaJudge 推送成功，剩余记录将在下一次继续推送' });
       return;
     }
-    const rows = await prisma.contestSubmission.findMany({ where: {
+    const references = await prisma.contestSubmission.findMany({ where: {
       examId, createdAt: { gte: exam.startAt, lt: exam.endAt },
       updatedAt: { lt: state.scanUntil! },
-      AND: [{ OR: [{ judgeAt: { not: null } }, { status: 30 }, { manualScore: { not: null } }] }],
+      ...(exam.contestRule === 'LANQIAO' ? {} : { AND: [{ OR: [{ judgeAt: { not: null } }, { status: 30 }, { manualScore: { not: null } }] }] }),
       ...(state.cursorAt ? { OR: [
         { updatedAt: { gt: state.cursorAt } },
         { updatedAt: state.cursorAt, ...(state.cursorId ? { id: { gt: state.cursorId } } : {}) },
       ] } : {}),
-    }, select: {
-      id: true, updatedAt: true, status: true, statusText: true, judgeAt: true, score: true, manualScore: true,
-      lang: true, code: true, time: true, memory: true, createdAt: true,
-      candidate: { select: { examNumber: true } },
-      problem: { select: { id: true, order: true, title: true, score: true, hydroScore: true, timeLimitMs: true, memoryLimitMb: true } },
-    }, orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }], take: BATCH_SIZE });
-    // Bound request size while preserving a single large submission intact.
-    const batch: typeof rows = [];
+    }, select: { id: true, updatedAt: true }, orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }], take: BATCH_SIZE });
+    // Bound allocation before reading code bodies. Keep problem/account metadata
+    // from the same definition used for this batch's published manifest.
+    const byProblem = new Map(exam.problems.map(problem => [problem.id, problem]));
+    const byCandidate = new Map(exam.candidates.map(candidate => [candidate.id, candidate]));
     const payloads: ReturnType<typeof externalBoardSubmission>[] = [];
-    let bytes = 0;
-    for (const row of rows) {
-      const payload = externalBoardSubmission(row, row.problem, row.candidate);
+    let bytes = 0, consumed = 0, last: (typeof references)[number] | undefined;
+    const readUntil = Date.now() + 10_000;
+    for (const ref of references) {
+      if (controller.signal.aborted || Date.now() >= leaseUntil) throw new PushStopped();
+      // Slow individual queries must not multiply into fifty sequential reads
+      // after this worker's lease expires. Unread references retain their cursor.
+      if (Date.now() >= readUntil) break;
+      const row = await prisma.contestSubmission.findFirst({ where: { id: ref.id, examId, updatedAt: ref.updatedAt }, select: {
+        id: true, updatedAt: true, candidateId: true, problemId: true, status: true, statusText: true, judgeAt: true, score: true, manualScore: true,
+        lang: true, code: true, time: true, memory: true, createdAt: true,
+      } });
+      // Deleted/moved revisions do not pin the scan. A changed row is revisited
+      // by its new updatedAt, including the existing overlap on the next scan.
+      if (!row) { consumed++; last = ref; continue; }
+      const problem = byProblem.get(row.problemId), candidate = byCandidate.get(row.candidateId);
+      if (!problem || !candidate) throw new PushStopped(); // Reload the definition before assigning identities.
+      const payload = externalBoardSubmission(row, problem, candidate, exam.contestRule);
       const size = Buffer.byteLength(JSON.stringify(payload));
-      if (batch.length && bytes + size > 1_000_000) break;
-      batch.push(row); payloads.push(payload); bytes += size;
+      if (payloads.length && bytes + size > 1_000_000) break;
+      payloads.push(payload); bytes += size; consumed++; last = ref;
     }
-    if (batch.length) await post('submissions', payloads);
-    const complete = rows.length < BATCH_SIZE && batch.length === rows.length;
-    const last = batch.at(-1);
-    const saved = await externalBoardTransaction(examId, tx => tx.externalBoardSync.updateMany({ where: ownsLease, data: {
+    if (controller.signal.aborted || Date.now() >= leaseUntil) throw new PushStopped();
+    if (payloads.length) await post('submissions', payloads);
+    const complete = references.length < BATCH_SIZE && consumed === references.length;
+    const saved = await externalBoardTransaction(examId, tx => tx.externalBoardSync.updateMany({ where: { ...ownsLease, leaseUntil: { gt: new Date() } }, data: {
       ...(last ? { cursorAt: last.updatedAt, cursorId: last.id } : {}),
       ...(complete ? { syncedThrough: state.scanUntil, scanUntil: null, cursorAt: null, cursorId: null } : {}),
       lastSuccessAt: new Date(), lastError: null,
@@ -178,7 +197,8 @@ export async function pushExternalBoard(examId: string) {
     } }));
     if (saved.count) appendExternalBoardLog({
       ...logTarget, status: 'SUCCESS', problemCount, submissionCount, durationMs: Date.now() - startedAt,
-      message: problemCount || submissionCount ? `推送成功${complete ? '' : '，剩余记录将在下一次继续推送'}` : '同步检查完成，没有新增或更新的提交记录',
+      message: problemCount || submissionCount ? `推送成功${complete ? '' : '，剩余记录将在下一次继续推送'}`
+        : complete ? '同步检查完成，没有新增或更新的提交记录' : '本批检查完成，剩余记录将在下一次继续同步',
     });
   } catch (error) {
     const stopped = error instanceof PushStopped;

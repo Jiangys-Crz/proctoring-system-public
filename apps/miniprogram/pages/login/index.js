@@ -82,18 +82,12 @@ Page({
   async nextStep() {
     const exam = this.data.exams[this.data.examIndex];
     if (!exam) return wx.showToast({ title: '请选择考试', icon: 'none' });
-    if (!this.data.school.trim()) return wx.showToast({ title: '请输入学校', icon: 'none' });
-    if (!(exam.contestType === 'TEAM' && exam.teamAccountMode === 'TEAM_ACCOUNT') && !this.data.college.trim()) return wx.showToast({ title: '请输入学院', icon: 'none' });
-    if (!this.data.name.trim()) return wx.showToast({ title: '请输入姓名', icon: 'none' });
-    if (!this.data.studentId.trim()) return wx.showToast({ title: exam.contestType === 'TEAM' ? '请输入队员学号' : '请输入学号', icon: 'none' });
     if (!this.data.examNumber.trim()) return wx.showToast({ title: '请输入考号', icon: 'none' });
     if (!this.data.password) return wx.showToast({ title: '请输入密码', icon: 'none' });
-    if (exam.contestType === 'TEAM' && !this.data.teamName.trim()) {
-      return wx.showToast({ title: '请输入队伍名称', icon: 'none' });
-    }
+
     this.setData({ verifying: true, message: '' });
     try {
-      await request('/api/client/candidate-verify', {
+      const verified = await request('/api/client/candidate-verify', {
         method: 'POST',
         data: {
           examId: exam.id,
@@ -107,7 +101,7 @@ Page({
           teamName: exam.contestType === 'TEAM' ? this.data.teamName.trim() : undefined
         }
       });
-      this.setData({ step: 2 });
+      this.setData({ step: 2, name: verified.name || '', studentId: verified.studentId || '', school: verified.school || '', college: verified.college || '', teamName: verified.teamName || '' });
     } catch (error) {
       wx.showToast({ title: error.message || '信息不匹配', icon: 'none' });
     } finally {

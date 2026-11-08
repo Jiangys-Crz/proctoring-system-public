@@ -112,7 +112,7 @@ services:
       - "${PROCTOR_CLIENT_WEB_HOST_PORT:-4032}:4032"
 
   media:
-    image: bluenviron/mediamtx:1
+    image: bluenviron/mediamtx:1.21.3
     container_name: cwnupaa-proctor-media
     extra_hosts:
       - "host.docker.internal:host-gateway"

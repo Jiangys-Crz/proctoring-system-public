@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, FileSearch, LoaderCircle, Play, Square } from 'lucide-react';
+import { FileSearch, LoaderCircle, Play, Square } from 'lucide-react';
 import { api } from './api';
 import { codeCheckLanguageLabel, codeCheckPercent, codeCheckSeverity, codeCheckStatusLabels, type CodeCheckData, type CodeCheckLevel } from '@/lib/code-check/types';
 import styles from './ExamCodeCheck.module.css';
@@ -75,18 +75,12 @@ export function ExamCodeCheckClient({ examId }: { examId: string }) {
   const progress = job?.groups ? Math.round(job.completedGroups / job.groups * 100) : 0;
 
   return <div className={`exam-workspace-page ${styles.page}`}>
-    <header className="exam-workspace-header">
-      <div className="return-only-row"><Link className="exam-back" href={`/dashboard/exams/${examId}`}><ArrowLeft size={18} /> 返回比赛详情</Link></div>
-      <div className="exam-workspace-title-row"><h1>比赛代码查重</h1><span>{data?.exam.name}</span></div>
-    </header>
-    <main className={styles.layout}>
+    <main className={styles.layout} aria-label="比赛代码查重">
       <div className={styles.content}>
         {error ? <div className={styles.error} role="alert">{error}</div> : null}
         <section className={styles.card}>
           <h2><FileSearch size={20} /> 比赛代码查重</h2>
-          <p>比较所有选手在同一道编程题、同一语言族下的本地递交代码。C 与 C++ 合并查重，各编译器版本归入对应语言族。仅归一化变量名，忽略格式和注释；关键字、运算符、类型、函数名和常量仍按原值区分。</p>
           <div className={styles.legend}><span className={`${styles.badge} ${styles.high}`}>高 · ≥80%</span><span className={`${styles.badge} ${styles.medium}`}>中 · 50%–79%</span><span className={`${styles.badge} ${styles.low}`}>低 · &lt;50%</span></div>
-          <p className={styles.muted}>保留每对选手历史版本中最相似的一组，包含公共模板。常见算法和较短代码也可能高度相似，请结合匹配片段复核。</p>
           <form className={styles.controls} onSubmit={event => { event.preventDefault(); void start(); }}>
             <label>查重题目<select value={problemId} onChange={event => setProblemId(event.target.value)}><option value="">全部编程题</option>{data?.problems.map(problem => <option key={problem.id} value={problem.id}>{problem.title}</option>)}</select></label>
             <label>查重方式<select value={minTokens} onChange={event => setMinTokens(Number(event.target.value))}><option value={9}>标准（语法单元匹配）</option><option value={5}>高灵敏度（包含更短片段）</option><option value={15}>低灵敏度（侧重更长片段）</option></select></label>
@@ -94,7 +88,6 @@ export function ExamCodeCheckClient({ examId }: { examId: string }) {
             <button className={styles.primary} type="submit" disabled={busy || !data || Boolean(data.activeJob)}>{busy ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}{data?.activeJob ? '查重进行中' : job ? '重新查重' : '开始查重'}</button>
             {data?.activeJob ? <button className={styles.stop} type="button" onClick={() => void stop()} disabled={busy || data.activeJob.status === 'cancelling'}><Square size={15} />{data.activeJob.status === 'cancelling' ? '正在停止…' : '停止查重'}</button> : null}
           </form>
-          <p className={styles.muted}>每次点击只执行一次任务。重新选择题目、方式和提交范围后，点击「重新查重」即可应用；进行中的任务可先停止。只读取本平台保存的编程题递交记录。</p>
           {job ? <div className={styles.job} aria-live="polite">
             <div className={styles.jobHeading}><strong>{codeCheckStatusLabels[job.status]}</strong><span>{job.phase}</span></div>
             {job.groups > 0 ? <div className={styles.progress} aria-label={`已完成 ${progress}%`}><span style={{ width: `${progress}%` }} /></div> : null}
@@ -112,7 +105,6 @@ export function ExamCodeCheckClient({ examId }: { examId: string }) {
         </section>
         {data && data.history.length > 0 ? <section className={styles.card}><h2>最近查重</h2><div className={styles.history}>{data.history.map(item => <button type="button" key={item.id} className={job?.id === item.id ? styles.activeHistory : ''} onClick={() => chooseReport(item.id)}>{time(item.createdAt)} · {codeCheckStatusLabels[item.status]}{item.submissionScope === 'accepted' ? ' · AC' : ''}</button>)}</div></section> : null}
       </div>
-      <aside className={styles.sidebar}><h3>比赛管理</h3><Link href={`/dashboard/exams/${examId}`}>比赛详情</Link><Link href={`/dashboard/exams/${examId}/submissions`}>递交记录</Link><Link href={`/dashboard/exams/${examId}/leaderboard`}>排行榜</Link><Link className={styles.currentNav} href={`/dashboard/exams/${examId}/code-check`} aria-current="page">代码查重</Link><Link href={`/dashboard/exams/${examId}/settings`}>比赛设置</Link></aside>
     </main>
   </div>;
 }

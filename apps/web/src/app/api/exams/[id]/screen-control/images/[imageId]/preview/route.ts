@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { fail, options, parseBody } from '@/lib/http';
-import { requireScreenControlAdmin, screenControlImageResponse, screenControlRouteError } from '@/lib/screen-control-route';
+import { admittedScreenControlImage, requireScreenControlAdmin, screenControlImageResponse, screenControlRouteError } from '@/lib/screen-control-route';
+import { settleReads } from '@/lib/request-admission';
 import { ScreenImageTemplateSchema, unsupportedScreenFields } from '@/lib/screen-control-template';
 import { screenControlTextValues } from '@/lib/screen-control-personalization';
 
@@ -10,12 +11,12 @@ const PreviewSchema = z.object({
   candidateId: z.string().min(1).max(100).optional(),
 }).strict();
 
-export async function POST(request: Request, context: { params: Promise<{ id: string; imageId: string }> }) {
+async function preview(request: Request, context: { params: Promise<{ id: string; imageId: string }> }) {
   try {
     const { id, imageId } = await context.params;
     await requireScreenControlAdmin(id, request);
     const input = await parseBody(request, PreviewSchema, 64 * 1024);
-    const [image, exam] = await Promise.all([
+    const [image, exam] = await settleReads([
       prisma.screenControlImage.findFirst({ where: { id: imageId, group: { examId: id } } }),
       prisma.exam.findUniqueOrThrow({ where: { id }, select: { contestType: true } }),
     ]);
@@ -26,6 +27,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const values = await screenControlTextValues(id, input.candidateId);
     return await screenControlImageResponse(image, values, input.template);
   } catch (error) { return screenControlRouteError(error); }
+}
+
+export async function POST(request: Request, context: { params: Promise<{ id: string; imageId: string }> }) {
+  return admittedScreenControlImage(request, () => preview(request, context));
 }
 
 export const OPTIONS = options;

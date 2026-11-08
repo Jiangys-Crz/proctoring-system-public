@@ -2,15 +2,16 @@ import { z } from 'zod';
 import { proctorSessionEndAt, requireContestSession } from '@/lib/client-contest';
 import { requestHydroContest } from '@/lib/hydro-contest';
 import { calculateLeaderboards } from '@/lib/leaderboards';
-import { readContestLeaderboardData } from '@/lib/contest-leaderboard-data';
+import { admittedLeaderboardRequest } from '@/lib/heavy-read-admission';
+import { readContestLeaderboardData, calculateContestLeaderboard } from '@/lib/contest-leaderboard-data';
 import { isLocalContest } from '@/lib/local-contest';
 import { isPublicTestExam } from '@/lib/public-test';
-import { isScoreboardFrozen, isXcpcScoring } from '@/lib/contest-rules';
+import { effectiveEnd, isScoreboardFrozen, isXcpcScoring } from '@/lib/contest-rules';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 import { isRequestAdmissionError } from '@/lib/request-admission';
 
 const LeaderboardQuerySchema = z.object({
-  sessionId: z.string().min(1),
+  sessionId: z.string().min(1).max(191),
   timePoint: z.number().finite().min(0).max(8.64e15).optional()
 });
 
@@ -27,9 +28,9 @@ type LeaderboardData = {
   }>;
 };
 
-export async function POST(request: Request) {
+async function leaderboard(request: Request) {
   try {
-    const input = await parseBody(request, LeaderboardQuerySchema);
+    const input = await parseBody(request, LeaderboardQuerySchema, 8192);
     const authorized = await requireContestSession(request, input.sessionId, true);
     if (!authorized.ok) return fail(authorized.message, authorized.status);
     if (new Date() >= proctorSessionEndAt(authorized.session)) return ok({ available: false, rows: [] });
@@ -39,12 +40,10 @@ export async function POST(request: Request) {
       const now = new Date(input.timePoint === undefined ? Date.now() : Math.min(Date.now(), input.timePoint));
       const emptyBoard = calculateLeaderboards(exam, exam.problems, [], [], now);
       if (!emptyBoard.available) return ok(emptyBoard);
-      const { candidates, submissions } = await readContestLeaderboardData(exam.id);
-      const objectiveProblemIds = new Set(exam.problems.filter(problem => problem.problemType === 'objective').map(problem => problem.id));
-      const showObjectiveScore = new Date() >= exam.endAt || exam.showObjectiveScore;
-      const visibleSubmissions = submissions.filter(submission =>
-        showObjectiveScore || !objectiveProblemIds.has(submission.problemId));
-      return ok(calculateLeaderboards(exam, exam.problems, candidates, visibleSubmissions, now));
+      const data = await readContestLeaderboardData(exam.id, exam);
+      if (!data.exam.published) return fail('考试尚未发布', 403);
+      if (new Date() >= effectiveEnd(data.exam, authorized.session.candidate.startedAt || authorized.session.startedAt)) return ok({ available: false, rows: [] });
+      return ok(calculateContestLeaderboard(data, input.timePoint));
     }
     // Legacy Hydro summaries have neither submission timestamps nor our freeze
     // boundary. Do not relay an unverifiable live aggregate during an XCPC
@@ -69,3 +68,5 @@ export async function POST(request: Request) {
 }
 
 export const OPTIONS = options;
+
+export async function POST(request: Request) { return admittedLeaderboardRequest(request, () => leaderboard(request)); }

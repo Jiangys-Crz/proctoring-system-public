@@ -68,15 +68,14 @@ try {
   const row = page.getByRole('row').filter({ hasText: active.name });
   assert.equal(await row.getByRole('button', { name: '删除', exact: true }).isDisabled(), true);
   await page.context().clearCookies(); await page.context().addCookies([{ name: 'cwnupaa_proctor_session', value: createSessionToken(owner), url: base }]);
-  await page.goto(base + '/dashboard/recordings');
-  await page.getByRole('button', { name: '删除整场录像' }).waitFor();
-  await page.getByRole('checkbox').first().check();
-  await page.getByRole('button', { name: '删除所选考试录像' }).waitFor();
+  await page.goto(`${base}/dashboard/exams/${exam.id}/recordings`);
+  await page.getByRole('heading', { name: '历史录像' }).waitFor();
+  await page.getByRole('button', { name: '删除本场全部录像' }).waitFor();
   if (process.env.FILE_QA_SCREENSHOT_DIR) await page.screenshot({ path: process.env.FILE_QA_SCREENSHOT_DIR + '/recordings.png', fullPage: true });
   await page.context().clearCookies(); await page.context().addCookies([{ name: 'cwnupaa_proctor_session', value: createSessionToken(viewer), url: base }]);
-  await page.goto(base + '/dashboard/recordings'); await page.getByRole('heading', { name: '历史录像' }).waitFor();
-  await page.getByRole('button', { name: new RegExp(marker) }).waitFor();
-  assert.equal(await page.getByRole('button', { name: '删除整场录像' }).count(), 0);
+  await page.goto(`${base}/dashboard/exams/${exam.id}/recordings`); await page.getByRole('heading', { name: '历史录像' }).waitFor();
+  await page.getByRole('heading', { name: exam.name }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '删除本场全部录像' }).count(), 0);
   assert.deepEqual(errors, []);
 
   assert.equal((await request('/api/recordings', owner, 'DELETE', { alertIds: [alert.id] })).status, 200);

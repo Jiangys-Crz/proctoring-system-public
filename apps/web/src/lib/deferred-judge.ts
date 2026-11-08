@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import { federationChange } from '@/lib/exam-federation-store';
 import { prisma } from './db';
 import { judgeStatistics, requestHydroLanguages, submitHydroJudge } from './hydro-contest';
@@ -13,23 +14,27 @@ async function inChunks<T>(items: T[], size: number, run: (item: T) => Promise<v
   }
 }
 
+function judgeEligibility(now: Date): Prisma.ContestSubmissionWhereInput {
+  return { OR: [
+    { judgeForced: true },
+    { problem: { problemType: { notIn: ['objective', 'submit_answer'] } } },
+    { problem: { problemType: { in: ['objective', 'submit_answer'] } }, exam: { OR: [
+      { contestRule: 'KS' },
+      { AND: [{ showObjectiveScore: true }, { contestRule: { notIn: ['OI', 'LANQIAO', 'KS'] } }] },
+      { endAt: { lte: now } },
+    ] } },
+  ] };
+}
+
 // The database is the durable queue. A lease prevents concurrent web workers
 // from sending the same deferred submission while another worker is active.
 async function dispatchDeferredSubmissions(examId?: string) {
   const now = new Date();
   const stale = new Date(+now - 60_000);
   const pending = await prisma.contestSubmission.findMany({
-    where: { ...(examId ? { examId } : {}), status: { not: 30 }, deferredJudge: true, hydroRecordId: null,
+    where: { ...(examId ? { examId } : {}), status: { not: 30 }, deferredJudge: true, hydroRecordId: null, problem: { sourceDeleted: false },
       AND: [
-        { OR: [
-          { judgeForced: true },
-          { problem: { problemType: { notIn: ['objective', 'submit_answer'] } } },
-          { problem: { problemType: { in: ['objective', 'submit_answer'] } }, exam: { OR: [
-            { contestRule: 'KS' },
-            { AND: [{ showObjectiveScore: true }, { contestRule: { notIn: ['OI', 'LANQIAO', 'KS'] } }] },
-            { endAt: { lte: now } },
-          ] } },
-        ] },
+        judgeEligibility(now),
         { OR: [{ judgeClaimedAt: null }, { judgeClaimedAt: { lt: stale } }] },
       ] },
     // Scan identities only. A burst of large submissions must not keep 100
@@ -44,17 +49,32 @@ async function dispatchDeferredSubmissions(examId?: string) {
     // batches' leases expire before their Hydro request had even finished.
     const claimedAt = new Date(); const writeToken = randomUUID();
     const claim = await prisma.contestSubmission.updateMany({
-      where: { id: item.id, status: { not: 30 }, deferredJudge: true, hydroRecordId: null, OR: [{ judgeClaimedAt: null }, { judgeClaimedAt: { lt: new Date(+claimedAt - 60_000) } }] },
+      where: { id: item.id, status: { not: 30 }, deferredJudge: true, problem: { sourceDeleted: false }, hydroRecordId: null,
+        AND: [judgeEligibility(claimedAt)], OR: [{ judgeClaimedAt: null }, { judgeClaimedAt: { lt: new Date(+claimedAt - 60_000) } }] },
       data: { judgeClaimedAt: claimedAt, federationWriteToken: writeToken },
     });
     if (!claim.count) return;
     try {
       const submission = await prisma.contestSubmission.findFirst({
-        where: { id: item.id, status: { not: 30 }, deferredJudge: true, hydroRecordId: null, judgeClaimedAt: claimedAt, federationWriteToken: writeToken },
+        // An exam can be extended or change score visibility while a long scan
+        // is waiting. Recheck the current policy when claiming AND reading it.
+        where: { id: item.id, status: { not: 30 }, deferredJudge: true, problem: { sourceDeleted: false }, hydroRecordId: null,
+          judgeClaimedAt: claimedAt, federationWriteToken: writeToken, AND: [judgeEligibility(new Date())] },
         select: { id: true, examId: true, lang: true, code: true,
-          exam: { select: { platformBaseUrl: true } }, problem: { select: { hydroProblemId: true, problemType: true } } },
+          exam: { select: { platformBaseUrl: true } }, problem: { select: { hydroDomain: true, hydroProblemId: true, problemType: true } } },
       });
       if (!submission) return;
+      // Exam metadata can precede a bank's large files. An existing mapping is
+      // not proof that its latest judging data has been applied. Read only the
+      // inbox identity, never its potentially large statement/file payload.
+      const bankLocalId = `${submission.problem.hydroDomain}:${submission.problem.hydroProblemId}`;
+      const waiting = await prisma.$queryRaw<Array<{id:string}>>`SELECT bank.id FROM PlatformSyncItem AS bank
+        INNER JOIN PlatformSyncInbox AS inbox ON inbox.id = bank.id
+        WHERE bank.scope = 'bank' AND bank.kind = 'BANK' AND bank.localId = ${bankLocalId}
+        AND (CAST(JSON_UNQUOTE(JSON_EXTRACT(inbox.snapshot, '$.revision')) AS SIGNED) > bank.revision
+          OR (CAST(JSON_UNQUOTE(JSON_EXTRACT(inbox.snapshot, '$.revision')) AS SIGNED) = bank.revision
+            AND BINARY JSON_UNQUOTE(JSON_EXTRACT(inbox.snapshot, '$.writer')) > BINARY bank.writer)) LIMIT 1`;
+      if (waiting.length) throw new Error('题目评测文件正在补传，提交已保留，补齐后自动重试');
       let judgeLanguage = submission.lang;
       if (!['objective', 'submit_answer'].includes(submission.problem.problemType) && availableLanguages.length) {
         if (!availableLanguages.some((language) => language.id === judgeLanguage)) {

@@ -168,6 +168,7 @@ export async function assertReviewMaterials(tx: Prisma.TransactionClient, reques
   if (!room) throw new LoginFlowError('考生尚未分配考室', 403);
   if (!room.requireSecondCamera) return [];
   const login = await tx.loginRequest.findUnique({ where: { id: requestId } });
+  if (login?.syncMaterialsVerified && await tx.clientSession.findFirst({ where: { loginRequestId: requestId, examId, candidateId, syncImported: true } })) return [];
   const grant = await tx.materialUploadGrant.findFirst({ where: { loginRequestId: requestId, candidateId, examId, consumedAt: { not: null } } });
   if (!login || !grant || login.miniProgramDeviceId !== grant.deviceId || login.memberStudentId !== grant.memberStudentId || login.memberName !== grant.memberName) throw new LoginFlowError('登录请求没有有效的本人材料，请重新提交', 400);
   const records = await tx.mediaSegment.findMany({ where: { uploadGrantId: grant.id, candidateId, examId, deletedAt: null, validatedAt: { not: null } } });

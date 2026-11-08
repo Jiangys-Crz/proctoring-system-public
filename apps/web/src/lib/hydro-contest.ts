@@ -84,6 +84,7 @@ export async function requestHydroContestFile(
 
 export type HydroProblemPayload = {
   id: string;
+  docId?: string;
   pid: string;
   title: string;
   content: string;
@@ -132,8 +133,13 @@ export async function requestHydroBridge<T>(
   path: string,
   payload: Record<string, unknown> = {},
   signal?: AbortSignal,
+  expectedConnection?: Pick<HydroSettings, 'baseUrl' | 'apiKey' | 'problemDomainId'>,
 ) {
   const settings = await connectionSettings(exam.platformBaseUrl);
+  if (expectedConnection && (settings.baseUrl !== expectedConnection.baseUrl.replace(/\/$/, '')
+    || settings.apiKey !== expectedConnection.apiKey || settings.problemDomainId !== expectedConnection.problemDomainId)) {
+    throw new Error('保存期间题库连接或域已改变，请恢复原配置后继续保存');
+  }
   const body = JSON.stringify(payload);
   const response = await fetch(hydroUrl(requestBaseUrl(settings), path), {
     method: 'POST',
