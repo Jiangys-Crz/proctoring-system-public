@@ -1,6 +1,13 @@
 import { mediaStreamPath, liveChannels } from './media-read-token';
 import { mediaApiToken } from './media-api-auth';
 
+export function requiredTestMediaReady(channels: ReadonlyArray<{ channel: string; ready: boolean }>) {
+  // A missing optional camera must not block a test, but both required feeds
+  // must be present and ready (an empty/incomplete response cannot pass).
+  return ['DESKTOP_SCREEN', 'MOBILE_CAMERA'].every(required =>
+    channels.some(item => item.channel === required && item.ready));
+}
+
 export async function testMediaState(sessionId: string) {
   const base = (process.env.MEDIA_API_INTERNAL_BASE || 'http://127.0.0.1:9997').replace(/\/$/, '');
   const channels = await Promise.all(liveChannels.map(async channel => {

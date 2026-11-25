@@ -27,15 +27,56 @@ export async function consumeRateLimit(scope: string, limit: number, windowMs = 
   if (bucket.count > limit) throw new UploadSecurityError('操作过于频繁，请稍后再试', 429);
 }
 
-const sharedUploads = globalThis as typeof globalThis & { uploadSlots?: { active: number } };
-const uploadSlots = sharedUploads.uploadSlots ??= { active: 0 };
+type UploadWaiter = (release: () => void) => void;
+const sharedUploads = globalThis as typeof globalThis & { uploadSlots?: { active: number; waiting: UploadWaiter[] } };
+const uploadSlots = sharedUploads.uploadSlots ??= { active: 0, waiting: [] };
+const uploadBusy = () => new UploadSecurityError('上传服务繁忙，请稍后重试', 429);
+
 export function acquireUploadSlot() {
   const configured = Number(process.env.UPLOAD_MAX_CONCURRENT || 4);
   const maximum = Number.isSafeInteger(configured) ? Math.max(1, Math.min(16, configured)) : 4;
-  if (uploadSlots.active >= maximum) throw new UploadSecurityError('上传服务繁忙，请稍后重试', 429);
+  if (uploadSlots.active >= maximum) throw uploadBusy();
   uploadSlots.active++;
+  return releaseUploadSlot();
+}
+
+function releaseUploadSlot() {
   let released = false;
-  return () => { if (!released) { released = true; uploadSlots.active--; } };
+  return () => {
+    if (released) return;
+    released = true;
+    const next = uploadSlots.waiting.shift();
+    if (next) next(releaseUploadSlot());
+    else uploadSlots.active--;
+  };
+}
+
+export async function enqueueRecordingUpload(signal: AbortSignal) {
+  const cancelled = () => new UploadSecurityError('上传已取消，请重试', 408);
+  if (signal.aborted) throw cancelled();
+  try {
+    return acquireUploadSlot();
+  } catch (error) {
+    if (!(error instanceof UploadSecurityError) || error.status !== 429 || uploadSlots.waiting.length >= 48) throw error;
+  }
+  return new Promise<() => void>((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+    };
+    const takeSlot: UploadWaiter = release => { cleanup(); resolve(release); };
+    const fail = (error: UploadSecurityError) => {
+      const index = uploadSlots.waiting.indexOf(takeSlot);
+      if (index === -1) return;
+      uploadSlots.waiting.splice(index, 1);
+      cleanup();
+      reject(error);
+    };
+    const abort = () => fail(cancelled());
+    const timer = setTimeout(() => fail(uploadBusy()), 12_000);
+    uploadSlots.waiting.push(takeSlot);
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }
 
 export async function authorizeAuxiliaryUpload(request: Request) {

@@ -13,7 +13,7 @@ export type ReactionZipEntry = {
 export function streamReactionZip(entries: ReactionZipEntry[], signal?: AbortSignal): ReadableStream<Uint8Array> {
   const ids = new Set<string>();
   for (const entry of entries) {
-    if (!isReactionSubmissionId(entry.submissionId) || ids.has(entry.submissionId.toLowerCase())) throw new Error('Invalid or duplicate submission UUID');
+    if (!isReactionSubmissionId(entry.submissionId) || ids.has(entry.submissionId.toLowerCase())) throw new Error('Invalid or duplicate submission ID');
     if (!Number.isSafeInteger(entry.size) || entry.size <= 0) throw new Error('Invalid MP4 size');
     ids.add(entry.submissionId.toLowerCase());
   }

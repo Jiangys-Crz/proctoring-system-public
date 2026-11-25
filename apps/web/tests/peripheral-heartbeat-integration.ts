@@ -66,10 +66,11 @@ try {
   assert.equal(current.lastPeripheralsFingerprint, changed);
 
   // Apply the admin unlock's persisted state while holding the same session lock.
+  const unlockNonce = randomUUID();
   await withSessionWrite(session.id, async tx => {
     const locked = await tx.clientSession.findUniqueOrThrow({ where: { id: session.id } });
     await tx.clientSession.update({ where: { id: session.id }, data: { lockdown: false, lockdownReason: null, status: 'IN_EXAM',
-      peripheralsBaselineFingerprint: locked.lastPeripheralsFingerprint, unlockNonce: randomUUID() } });
+      peripheralsBaselineFingerprint: locked.lastPeripheralsFingerprint, unlockNonce } });
   });
   const retry = await legacyReport();
   assert.equal((await retry.json()).data.discarded, true);
@@ -77,9 +78,25 @@ try {
   assert.equal(unlocked.lockdown, false);
   assert.equal(unlocked.peripheralsBaselineFingerprint, changed);
   assert.equal(await prisma.alert.count({ where: { sessionId: session.id } }), 1);
+  const event = { id: randomUUID(), action: 'INSERT', deviceId: 'USB\\VID_1234&PID_5678\\SYNTHETIC', inventoryFingerprint: changed };
+  const eventBeat = (events: unknown[]) => heartbeat(request({ sessionId: session.id, deviceId: prefix, side: 'DESKTOP',
+    system: { peripheralUnlockNonce: unlockNonce, peripheralEvents: events } }));
+  const delayed = await Promise.all(Array.from({ length: 12 }, () => eventBeat([{ ...event, unlockNonce: null }])));
+  for (const response of delayed) {
+    assert.equal(response.status, 200);
+    const outcome = (await response.json()).data;
+    assert.equal(outcome.session.lockdown, false);
+    assert.deepEqual(outcome.acceptedPeripheralEventIds, [event.id]);
+  }
+  assert.equal(await prisma.alert.count({ where: { sessionId: session.id } }), 2, 'one distinct historical record is retained');
+  const newFingerprint = `usb-v6:${'d'.repeat(64)}`;
+  const currentChange = await eventBeat([{ ...event, id: randomUUID(), unlockNonce, inventoryFingerprint: newFingerprint }]);
+  const relocked = (await currentChange.json()).data.session;
+  assert.equal(relocked.lockdown, true);
+  assert.equal(relocked.lastPeripheralsFingerprint, newFingerprint);
   assert.equal((await legacyReport(mobile.token)).status, 403);
   assert.equal((await legacyReport('invalid-token')).status, 401);
-  console.log('PASS: 30 concurrent migration/direct reports, 30 concurrent real-change reports, one evidence event, unlock retry, and current desktop authorization.');
+  console.log('PASS: concurrent migration and change reports, evidence, delayed USB events after unlock, fresh USB change and desktop authorization.');
 } finally {
   if (examId) await prisma.exam.delete({ where: { id: examId } });
   await prisma.$disconnect();

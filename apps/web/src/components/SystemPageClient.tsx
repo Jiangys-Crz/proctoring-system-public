@@ -6,6 +6,7 @@ import { PlatformSyncSettings } from './PlatformSyncSettings';
 import { api } from './api';
 import { DesktopReleasePanel } from './DesktopReleasePanel';
 import { LiveApiKeysPanel } from './LiveApiKeysPanel';
+import { ContestEventFeedSettings } from './ContestEventFeedSettings';
 import { ReactionBrandingPanel } from './ReactionBrandingPanel';
 import { HYDRO_SETTINGS_VERSION, publicHydroSettings, type HydroConnectionSettings, type HydroSettingsResponse } from '@/lib/hydro-settings-contract';
 import type { HydroConnectionCheckResult } from '@/lib/hydro-connection-check';
@@ -55,7 +56,7 @@ export function SystemPageClient() {
   const [externalSettings, setExternalSettings] = useState<ExternalLoginSettings>(externalFallback);
   const [hydroSettings, setHydroSettings] = useState<HydroSettings>(hydroFallback);
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(fallback);
-  const [openPanel, setOpenPanel] = useState<'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding' | 'sync' | null>('hydro');
+  const [openPanel, setOpenPanel] = useState<'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'event-feed' | 'branding' | 'sync' | null>('hydro');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState('');
   const [isError, setIsError] = useState(false);
@@ -87,7 +88,10 @@ export function SystemPageClient() {
   }, []);
 
   useEffect(() => {
-    const openLinkedPanel = () => { if (window.location.hash === '#reaction-branding') setOpenPanel('branding'); };
+    const openLinkedPanel = () => {
+      if (window.location.hash === '#reaction-branding') setOpenPanel('branding');
+      if (window.location.hash === '#contest-event-feed') setOpenPanel('event-feed');
+    };
     openLinkedPanel(); window.addEventListener('hashchange', openLinkedPanel);
     return () => window.removeEventListener('hashchange', openLinkedPanel);
   }, []);
@@ -213,7 +217,7 @@ export function SystemPageClient() {
     }
   }
 
-  function panelHeader(panel: 'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'branding' | 'sync', title: string) {
+  function panelHeader(panel: 'hydro' | 'external' | 'storage' | 'desktop' | 'live' | 'event-feed' | 'branding' | 'sync', title: string) {
     const open = openPanel === panel;
     return (
       <button className="collapse-header" onClick={() => setOpenPanel(open ? null : panel)}>
@@ -236,6 +240,11 @@ export function SystemPageClient() {
       <section className="card form">
         {panelHeader('live', '直播 API Key 管理')}
         {openPanel === 'live' && <LiveApiKeysPanel />}
+      </section>
+
+      <section className="card form" id="contest-event-feed">
+        {panelHeader('event-feed', 'NovaJudge Event Feed 凭据')}
+        {openPanel === 'event-feed' && <ContestEventFeedSettings />}
       </section>
 
       <section className="card form" id="reaction-branding">

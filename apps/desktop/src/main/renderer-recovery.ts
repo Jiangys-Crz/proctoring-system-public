@@ -29,7 +29,7 @@ export class RendererRecoveryStore {
           'memberName', 'miniProgramOfflineAt', 'peripheralsBaselineFingerprint', 'lastPeripheralsFingerprint', 'updatedAt']) },
       candidate: { id: input.candidate.id, ...recoveryFields(input.candidate, ['name', 'examNumber', 'teamName', 'teamMembers', 'seatNo']) },
       exam: { id: input.exam.id, ...recoveryFields(input.exam, ['name', 'platform', 'platformBaseUrl', 'platformContestId',
-        'rules', 'startAt', 'endAt', 'durationMinutes', 'contestRule', 'flexible']) },
+        'rules', 'startAt', 'latestStartAt', 'endAt', 'durationMinutes', 'contestRule', 'flexible', 'updatedAt']) },
       requirements: input.requirements && recoveryFields(input.requirements, ['roomName', 'requireFrontCamera', 'requireSecondCamera',
         'isPublicTest', 'saveFullRecording', 'saveIncidentRecording']), baselineFingerprint: input.baselineFingerprint,
       pairCode: input.pairCode, pairPollToken: input.pairPollToken

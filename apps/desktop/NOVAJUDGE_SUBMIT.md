@@ -6,7 +6,7 @@
 
 此功能同时要求：
 
-- 运行系统为 macOS 或 Windows（Windows PowerShell 5.1 及以上）。
+- 运行系统为 macOS 或 Windows。Windows 脚本需要 PowerShell 3.0 和 .NET Framework 4.5 或更高版本。
 - 运行时版本服务实际选择的 `releaseChannel` 为 `intranet`。
 - 当前考试的后台地址与版本服务选定的后台地址完全一致。
 - NovaJudge 登录属于当前考试范围，且返回监考专用凭据。
@@ -29,7 +29,7 @@ Windows 主进程通过隐藏窗口的 `powershell.exe -NoProfile -NonInteractiv
 
 监考程序在 Windows 上需要管理员权限；同一账号的 UAC 提升可以正常使用。
 如果用另一个管理员账号完成授权，准备阶段会拒绝把凭据写入错误的用户目录，并提示使用同一 Windows 账号。
-系统须安装 Windows PowerShell 5.1。新版 Windows 安装向导会在替换旧客户端前，按需离线准备
+Win8 包含 PowerShell 3.0，Win8.1 包含 PowerShell 4.0。新版 Windows 安装向导会在替换旧客户端前，按需离线准备
 Win7 SP1 的 .NET 和 WMF 5.1；如提示重启，重启后须重新运行安装包。详见
 [Windows 7 环境准备](WINDOWS7_PREREQUISITES.md)。
 

@@ -1,28 +1,29 @@
-import { resumedSessionStatus } from '@/lib/session-resume';
+import { cheatingLockReason, formatLockReason, peripheralLockReason, resumedSessionStatus } from '@/lib/session-resume';
 import { isRetiredDesktopCredential } from '@/lib/retired-desktop-credential';
 import { createHash } from 'node:crypto';
 import { ClientHeartbeatSchema, isBrowserExam, type ClientHeartbeatInput } from '@cwnupaa/proctor-shared';
 import type { AlertType, CandidateStatus } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
-import { publicClientSession, verifyClientTokenForSession } from '@/lib/client-auth';
+import { clientSessionTokenFromRequest, publicClientSession, verifyClientTokenForSession } from '@/lib/client-auth';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 import { effectiveEnd } from '@/lib/contest-rules';
+import { clientExamTiming } from '@/lib/client-exam-timing';
 import { createAlertOnce } from '@/lib/alert-dedup';
 import { MonitorAlertState, USB_SCAN_FAILURE_MESSAGE } from '@/lib/monitor-alert-state';
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
 import { revokedClientSessionResponse } from '@/lib/client-session-response';
 import { recordingEventsForSession } from '@/lib/recording-policy';
 import { claimCandidateStatusRecheck, refreshCandidateAlertStatus } from '@/lib/alert-acknowledgement';
+import { stopTerminalSessionMedia } from '@/lib/session-media-lifecycle';
 
-function abnormalMessages(input: ClientHeartbeatInput, requirements: { requireFrontCamera: boolean; requireMiniProgram: boolean }) {
+function abnormalMessages(input: ClientHeartbeatInput, requirements: { requireMiniProgram: boolean }) {
   const messages: Array<{ type: AlertType; message: string }> = [];
   if (input.side === 'MINIPROGRAM') {
     if (requirements.requireMiniProgram && input.capture?.mobileCameraOk === false) messages.push({ type: 'MOBILE_CAMERA_LOST', message: '浏览器第二机位采集或推流异常' });
     return messages;
   }
   if (input.capture?.screenOk === false) messages.push({ type: 'SCREEN_CAPTURE_LOST', message: '电脑屏幕采集异常' });
-  if (requirements.requireFrontCamera && input.capture?.desktopCameraOk === false) messages.push({ type: 'CAMERA_CAPTURE_LOST', message: '电脑摄像头采集异常' });
   if (input.system?.processes?.length) messages.push({ type: 'PROCESS_POLICY', message: `发现不允许的进程：${input.system.processes.join('、')}` });
   if (input.system?.networkRemotes?.length) messages.push({ type: 'NETWORK_POLICY', message: `发现外部域名活动（来源见括号）：${input.system.networkRemotes.join('、')}` });
   if (input.system?.vmSignals?.length) messages.push({ type: 'VIRTUAL_MACHINE', message: `疑似虚拟机环境：${input.system.vmSignals.join('、')}` });
@@ -35,6 +36,7 @@ class HeartbeatError extends Error {
 
 export async function POST(request: Request) {
   try {
+    if (!clientSessionTokenFromRequest(request)) return fail('缺少客户端会话令牌', 401);
     const input = await parseBody(request, ClientHeartbeatSchema, 64 * 1024);
     const selected = input.sessionId
       ? { id: input.sessionId }
@@ -49,6 +51,7 @@ export async function POST(request: Request) {
       const session = await tx.clientSession.findUnique({ where: { id: selected.id }, include: {
         candidate: { select: { startedAt: true, abnormal: true, status: true } },
         exam: { select: {
+          id: true, updatedAt: true,
           platform: true,
           startAt: true, latestStartAt: true, endAt: true, durationMinutes: true, contestRule: true, flexible: true,
           requireFrontCamera: true, requireMiniProgram: true, saveFullRecording: true, saveIncidentRecording: true, reactionEnabled: true
@@ -75,6 +78,7 @@ export async function POST(request: Request) {
         saveFullRecording: !publicTest && session.exam.saveFullRecording,
         saveIncidentRecording: !publicTest && session.exam.saveIncidentRecording };
       const effectiveEndAt = effectiveEnd(session.exam, session.candidate.startedAt || session.startedAt);
+      const examTiming = clientExamTiming(session.exam);
       const heartbeatData = input.side === 'DESKTOP'
         ? { lastDesktopSeenAt: now, desktopOfflineAt: null }
         : { lastMiniProgramSeenAt: now, miniProgramOfflineAt: null };
@@ -85,14 +89,21 @@ export async function POST(request: Request) {
         const item = { ...sessionRow, ...data };
         // An old, expired session must not finish a newer login by the same candidate.
         if (session.status !== 'FINISHED') await tx.candidate.update({ where: { id: session.candidateId }, data: { status: 'FINISHED' } });
-        return { publicTest, browserExam: isBrowserExam(session.exam.platform), session: { ...publicClientSession(item), effectiveEndAt: effectiveEndAt.toISOString() }, requirements, alertsCreated: 0 };
+        return { publicTest, browserExam: isBrowserExam(session.exam.platform), mediaNeedsStop: session.liveMediaStoppedAt === null,
+          session: { ...publicClientSession(item), effectiveEndAt: effectiveEndAt.toISOString() }, examTiming, requirements, alertsCreated: 0 };
       }
-      const messages: Array<{ type: AlertType; message: string; id?: string }> = publicTest ? [] : abnormalMessages(input, { requireFrontCamera, requireMiniProgram: requireSecondCamera });
-      const peripheralScanFailed = !publicTest && input.side === 'DESKTOP' && input.system?.peripheralScanOk === false;
+      const messages: Array<{ type: AlertType; message: string; id?: string; historical?: boolean }> = publicTest ? [] : abnormalMessages(input, { requireMiniProgram: requireSecondCamera });
+      const observedUnlockNonce = input.system?.peripheralUnlockNonce;
+      const currentPeripheralSample = !publicTest && input.side === 'DESKTOP'
+        && (observedUnlockNonce === undefined || observedUnlockNonce === (session.unlockNonce ?? null));
+      const incomingFingerprint = currentPeripheralSample ? input.system?.peripheralsFingerprint?.trim() : undefined;
+      const invalidFingerprint = Boolean(incomingFingerprint && incomingFingerprint.length > 191);
+      const peripheralScanOk = currentPeripheralSample ? invalidFingerprint ? false : input.system?.peripheralScanOk : undefined;
+      const peripheralScanFailed = peripheralScanOk === false;
       if (peripheralScanFailed) messages.push({ type: 'PERIPHERAL_CHANGED', message: USB_SCAN_FAILURE_MESSAGE });
-      const fingerprint = !publicTest && input.side === 'DESKTOP' && !peripheralScanFailed ? input.system?.peripheralsFingerprint?.trim() : undefined;
+      let fingerprint = peripheralScanFailed ? undefined : incomingFingerprint;
       const previousBaseline = session.peripheralsBaselineFingerprint;
-      const upgradedPeripheralScan = Boolean(
+      const changesFingerprintFormat = Boolean(
         fingerprint && previousBaseline && (
           /^[0-9a-f]{64}$/.test(previousBaseline) && /^(?:usb-v[3456]|mac-usb-v2|mac-usb-v3):[0-9a-f]{64}$/.test(fingerprint)
           || /^mac-usb-v2:[0-9a-f]{64}$/.test(previousBaseline) && /^mac-usb-v3:[0-9a-f]{64}$/.test(fingerprint)
@@ -100,25 +111,38 @@ export async function POST(request: Request) {
           || /^usb-v[34]:[0-9a-f]{64}$/.test(previousBaseline) && /^usb-v5:[0-9a-f]{64}$/.test(fingerprint)
           || /^usb-v[345]:[0-9a-f]{64}$/.test(previousBaseline) && /^usb-v6:[0-9a-f]{64}$/.test(fingerprint)
         ) &&
-        session.lastPeripheralsFingerprint === previousBaseline && !session.lockdown
+        session.lastPeripheralsFingerprint === previousBaseline
       );
+      // Keep a manual lock and its baseline intact until the proctor unlocks
+      // it. A change of fingerprint format is not an observed USB transition.
+      if (changesFingerprintFormat && session.lockdown) fingerprint = undefined;
+      const upgradedPeripheralScan = changesFingerprintFormat && !session.lockdown;
       const baselineFingerprint = upgradedPeripheralScan ? fingerprint : previousBaseline;
       const peripheralChanged = Boolean(fingerprint && baselineFingerprint && fingerprint !== baselineFingerprint);
       const newPeripheralChange = peripheralChanged && fingerprint !== session.lastPeripheralsFingerprint;
       const acceptedPeripheralEventIds: string[] = [];
-      const usbMessages: Array<{ type: AlertType; message: string; id: string }> = [];
+      const usbMessages: Array<{ type: AlertType; message: string; id: string; historical: boolean }> = [];
+      let watcherFingerprint: string | undefined;
       if (input.side === 'DESKTOP') for (const event of input.system?.peripheralEvents || []) {
         if (acceptedPeripheralEventIds.includes(event.id)) continue;
         acceptedPeripheralEventIds.push(event.id);
         if (publicTest) continue;
         const id = 'usb_event_' + createHash('sha256').update(`${session.id}:${event.id}`).digest('hex');
         if (await tx.alert.findFirst({ where: { sessionId: session.id, id } })) continue;
-        usbMessages.push({ id, type: 'PERIPHERAL_CHANGED', message: `检测到 USB 外设${event.action === 'INSERT' ? '接入' : '移除'}：${event.deviceId}` });
+        const historical = event.unlockNonce !== undefined && event.unlockNonce !== (session.unlockNonce ?? null);
+        if (!historical && event.inventoryFingerprint) watcherFingerprint = event.inventoryFingerprint;
+        usbMessages.push({ id, type: 'PERIPHERAL_CHANGED', historical, message: `检测到 USB 外设${event.action === 'INSERT' ? '接入' : '移除'}：${event.deviceId}` });
       }
       messages.push(...usbMessages);
+      const currentUsbEvent = usbMessages.find(event => !event.historical);
+      // If the watcher confirms a persistent change first, retain that
+      // inventory so a proctor can approve it before the next regular scan.
+      // A watcher event never replaces a conflicting fresh fingerprint.
+      const retainedFingerprint = watcherFingerprint && (!fingerprint || fingerprint === session.lastPeripheralsFingerprint)
+        ? watcherFingerprint : fingerprint;
 
       const peripheralMessage = peripheralChanged ? `检测到外设接入或移除，原始指纹 ${baselineFingerprint}，当前指纹 ${fingerprint}` : '';
-      if (newPeripheralChange && !usbMessages.length && !(session.lockdown && session.lockdownReason?.startsWith('检测到 USB 外设'))) messages.push({ type: 'PERIPHERAL_CHANGED', message: peripheralMessage });
+      if (newPeripheralChange && !currentUsbEvent && !(session.lockdown && session.lockdownReason?.startsWith('检测到 USB 外设'))) messages.push({ type: 'PERIPHERAL_CHANGED', message: peripheralMessage });
       const firstStartedAt = session.candidate.startedAt || session.startedAt;
       const recoveredStatus = session.status === 'OFFLINE' && input.side === 'DESKTOP'
         ? resumedSessionStatus(session, firstStartedAt)
@@ -126,14 +150,15 @@ export async function POST(request: Request) {
       // Scanner availability is a diagnostic, not evidence of a physical USB
       // change. A slow/failed OS inventory must never trap a student's desktop.
       // Real device transitions and explicit proctor locks still require unlock.
-      const shouldLockdown = usbMessages.length > 0 || newPeripheralChange || session.lockdown;
+      const shouldLockdown = Boolean(currentUsbEvent || newPeripheralChange || session.lockdown);
       const monitorState = new MonitorAlertState(session.monitoringAlertState);
       if (!publicTest) {
         if (input.side === 'DESKTOP') {
           monitorState.observe('CLIENT_OFFLINE', true, now);
-          monitorState.observe('USB_SCAN_FAILED', input.system?.peripheralScanOk, now);
+          monitorState.observe('USB_SCAN_FAILED', peripheralScanOk, now);
           monitorState.observe('SCREEN_CAPTURE_LOST', input.capture?.screenOk, now);
-          monitorState.observe('CAMERA_CAPTURE_LOST', !requireFrontCamera || input.capture?.desktopCameraOk, now);
+          // Retire the old mandatory-camera condition; capture telemetry remains truthful.
+          monitorState.observe('CAMERA_CAPTURE_LOST', true, now);
           monitorState.observe('PROCESS_POLICY', input.system?.processes ? input.system.processes.length === 0 : undefined, now);
           monitorState.observe('NETWORK_POLICY', input.system?.networkRemotes ? input.system.networkRemotes.length === 0 : undefined, now);
           monitorState.observe('VIRTUAL_MACHINE', input.system?.vmSignals ? input.system.vmSignals.length === 0 : undefined, now);
@@ -156,14 +181,15 @@ export async function POST(request: Request) {
         const data = {
           examId: session.examId, candidateId: session.candidateId, sessionId: session.id,
           type: item.type, severity: item.type === 'PERIPHERAL_CHANGED' ? 5 : item.type === 'VIRTUAL_MACHINE' ? 3 : 4,
-          message: item.message, ...(item.id ? { id: item.id } : {})
+          message: item.message, ...(item.id ? { id: item.id } : {}),
+          ...(item.historical ? { acknowledgedAt: now } : {})
         };
         // USB changes already have a stricter fingerprint transition guard. A
         // second real change after an accepted baseline needs its own evidence.
         const result = item.type === 'PERIPHERAL_CHANGED' && item.message !== USB_SCAN_FAILURE_MESSAGE
           ? await createAlertOnce(tx, data, now, { evidence, bypassCooldown: true })
           : await monitorState.report(tx, data, { now, evidence });
-        if (result.created) alertsCreated += 1;
+        if (result.created && !item.historical) alertsCreated += 1;
       }
       const data = {
         ...heartbeatData,
@@ -171,12 +197,13 @@ export async function POST(request: Request) {
         status: shouldLockdown ? 'LOCKED' as const : recoveredStatus,
         startedAt: firstStartedAt,
         updatedAt: now,
-        ...(fingerprint ? {
-          peripheralsBaselineFingerprint: baselineFingerprint || fingerprint,
-          lastPeripheralsFingerprint: fingerprint
+        ...(retainedFingerprint ? {
+          peripheralsBaselineFingerprint: baselineFingerprint || retainedFingerprint,
+          lastPeripheralsFingerprint: retainedFingerprint
         } : {}),
-        ...(usbMessages.length ? { lockdown: true, lockdownReason: usbMessages[0].message }
-          : newPeripheralChange ? { lockdown: true, lockdownReason: peripheralMessage } : {})
+        ...((!session.lockdown || !peripheralLockReason(session.lockdownReason)) && (currentUsbEvent || newPeripheralChange)
+          ? { lockdown: true, lockdownReason: formatLockReason(currentUsbEvent?.message || peripheralMessage,
+            session.lockdown ? cheatingLockReason(session.lockdownReason) : null) } : {})
       };
       // We already hold this row's write lock and have its complete scalar
       // snapshot. MySQL cannot RETURNING, so update() would select it again.
@@ -225,13 +252,14 @@ export async function POST(request: Request) {
           }
         }
       }
-      return { publicTest, browserExam: isBrowserExam(session.exam.platform), session: { ...publicClientSession(refreshed), effectiveEndAt: effectiveEndAt.toISOString() }, requirements, alertsCreated, acceptedPeripheralEventIds };
+      return { publicTest, browserExam: isBrowserExam(session.exam.platform), session: { ...publicClientSession(refreshed), effectiveEndAt: effectiveEndAt.toISOString() }, examTiming, requirements, alertsCreated, acceptedPeripheralEventIds };
     }, { signal: request.signal });
     if ('revoked' in result) return revokedClientSessionResponse();
     if ('desktopReplaced' in result) return Response.json({ ok: false, code: 'CLIENT_DESKTOP_REPLACED', message: '当前电脑连接已被新电脑替换，请在新电脑继续考试' }, {
       status: 401, headers: { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }
     });
-    const { publicTest, browserExam, ...response } = result;
+    const { publicTest, browserExam, mediaNeedsStop, ...response } = result;
+    if (mediaNeedsStop) await stopTerminalSessionMedia([selected.id]);
     const recordingEvents = publicTest || response.requirements?.saveIncidentRecording !== true ? [] : await recordingEventsForSession(selected.id);
     const retry = browserExam && input.side === 'DESKTOP' ? await prisma.oJLoginTicket.findFirst({
       where: { sessionId: selected.id, status: 'ISSUED' },

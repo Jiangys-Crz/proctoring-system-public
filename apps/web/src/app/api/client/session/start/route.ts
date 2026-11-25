@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isPublicTestExam } from '@/lib/public-test';
-import { testMediaState } from '@/lib/test-media-state';
+import { requiredTestMediaReady, testMediaState } from '@/lib/test-media-state';
 import { publicClientSession, verifyClientTokenForSession } from '@/lib/client-auth';
 import { requireContestSession } from '@/lib/client-contest';
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
       if (!session.miniProgramDeviceId || !session.miniProgramTokenHash || !session.lastMiniProgramSeenAt
         || session.lastMiniProgramSeenAt.getTime() < Date.now() - 20_000) return fail('测试考试必须连接手机第二机位，请先扫码并保持手机页面开启', 409);
       const channels = await testMediaState(session.id);
-      if (!channels.every(channel => channel.ready)) return fail('请等待屏幕、电脑摄像头和手机第二机位全部通过推流检测后再开始', 409);
+      if (!requiredTestMediaReady(channels)) return fail('请等待屏幕和手机第二机位通过推流检测后再开始，电脑前置摄像头为可选项', 409);
     }
     const now = new Date();
     const existingStart = session.startedAt;

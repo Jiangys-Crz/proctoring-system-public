@@ -1,3 +1,4 @@
+import { candidateLoginIpEnabled } from '@/lib/room-login-ip';
 import { admittedLogin } from '@/lib/request-admission';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -10,6 +11,7 @@ import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from 
 import { assertLoginIp, desktopRequestIp } from '@/lib/login-ip';
 import { consumeCandidatePasswordAttempt } from '@/lib/login-attempts';
 import { UploadSecurityError } from '@/lib/upload-security';
+import { restrictHydroBrowserAccount } from '@/lib/hydro-browser';
 
 const Credentials = z.object({
   examCode: z.string().trim().regex(/^\d{10}$/), name: z.string().trim().max(191).default(''),
@@ -77,7 +79,7 @@ async function handlePost(request: Request) {
     const timingError = candidateLoginError(exam, candidate.startedAt, now, false, candidate.lateStartAllowedAt);
     if (timingError) throw new LoginFlowError(timingError, 403);
     if (!pairing) throw new LoginFlowError('登录配对已使用或过期，请重新提交登录');
-    assertLoginIp(exam.ipLoginRestrictionEnabled, candidate.loginIp, desktopRequestIp(request));
+    assertLoginIp(await candidateLoginIpEnabled(prisma, exam.id, candidate.id), candidate.loginIp, desktopRequestIp(request));
     if (pairing.claimedAt && pairing.loginRequestId) {
       const completed = await prisma.loginRequest.findUnique({
         where: { id: pairing.loginRequestId },
@@ -85,12 +87,12 @@ async function handlePost(request: Request) {
       });
       const existingSession = completed?.candidateId === candidate.id ? completed.clientSessions[0] : null;
       if (completed && completed.status !== 'REJECTED' && existingSession && !existingSession.revokedAt && existingSession.status !== 'FINISHED') {
+        await restrictHydroBrowserAccount(exam, candidate);
         return ok({ requiresSecondCamera: false, id: completed.id, sessionId: existingSession.id });
       }
     }
     if (pairing.expiresAt <= now || pairing.claimedAt) throw new LoginFlowError('登录配对已使用或过期，请重新提交登录');
     if (!pairing.screenOk) throw new LoginFlowError('请先完成电脑屏幕检测');
-    if (room!.requireFrontCamera && !pairing.desktopCameraOk) throw new LoginFlowError('所在考室要求电脑前置摄像头，请返回客户端完成摄像头实测后重新生成登录配对', 400);
     if (room!.requireSecondCamera && !await isPublicTestExam(exam.id)) {
       const credentialTicket = signCredentialTicket({
         purpose: 'desktop-login-materials', pairCode: pairing.pairCode, examId: exam.id, candidateId: candidate.id,

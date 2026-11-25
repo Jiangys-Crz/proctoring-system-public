@@ -8,6 +8,7 @@ import { mediaStreamPath, type LiveChannel } from './media-read-token';
 import { fail, toErrorMessage } from './http';
 import { deleteLiveWebRtcResource, liveWebRtcResource } from './live-webrtc';
 import { browserIceAnswer } from './browser-ice';
+import { readContestLiveBody } from './contest-live-body';
 
 export type LiveStreamParams = { examCode: string; examNumber: string; camera: string; stream?: string[] };
 const channels: Record<string, LiveChannel> = { '1': 'DESKTOP_SCREEN', '2': 'DESKTOP_CAMERA', '3': 'MOBILE_CAMERA' };
@@ -34,16 +35,16 @@ export async function serveLiveStream(request: Request, params: LiveStreamParams
   try {
     const parsed = parseLiveStreamRequest(request, params), keyId = await authorizeLiveApiKey(parsed.key);
     const session = await prisma.clientSession.findFirst({ where: { exam: { examCode: params.examCode }, candidate: { examNumber: params.examNumber, exam: { examCode: params.examCode } }, revokedAt: null,
-      status: { in: ['APPROVED', 'IN_EXAM', 'LOCKED', 'OFFLINE'] } }, orderBy: { createdAt: 'desc' }, select: { id: true, examId: true, candidateId: true, status: true, revokedAt: true } });
+      status: { in: ['APPROVED', 'IN_EXAM', 'LOCKED', 'OFFLINE'] } }, orderBy: { createdAt: 'desc' }, select: { id: true, examId: true, candidateId: true, startedAt: true, status: true, revokedAt: true } });
     if (!session || !await canPublishChannel(session, parsed.channel)) throw new AuthError('该机位暂无可用直播', 404);
     if (request.method === 'GET') return new URL(request.url).searchParams.has('check') ? new Response(null, { status: 204, headers }) : playerPage();
     const base = (process.env.MEDIA_WHIP_INTERNAL_BASE || 'http://127.0.0.1:8889').replace(/\/+$/, ''), streamPath = mediaStreamPath(session.id, parsed.channel);
     const token = createLiveApiReadToken(keyId, session.id, parsed.channel);
     if (request.method === 'POST') {
       if (!request.headers.get('content-type')?.startsWith('application/sdp')) throw new AuthError('直播协商必须使用 application/sdp', 415);
-      const body = await request.text(); if (body.length > 65536) throw new AuthError('直播协商请求过大', 413);
+      const body = (await readContestLiveBody(request, 65536)).toString('utf8');
       if (!body.trim().startsWith('v=0')) throw new AuthError('直播协商数据无效', 400);
-      const response = await fetch(`${base}${streamPath}/whep`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/sdp' }, body, cache: 'no-store', signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]) });
+      const response = await fetch(`${base}${streamPath}/whep`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/sdp' }, body, cache: 'no-store', redirect: 'error', signal: AbortSignal.any([request.signal, AbortSignal.timeout(15000)]) });
       if (!response.ok) return new Response(null, { status: response.status, headers });
       created = liveWebRtcResource(response.headers.get('location') || '', base, streamPath);
       createdTarget = { sessionId: session.id, channel: parsed.channel };
@@ -65,10 +66,10 @@ export async function serveLiveStream(request: Request, params: LiveStreamParams
     let body: string | undefined;
     if (request.method === 'PATCH') {
       if (!request.headers.get('content-type')?.startsWith('application/trickle-ice-sdpfrag')) throw new AuthError('候选地址格式不正确', 415);
-      body = await request.text(); if (body.length > 65536) throw new AuthError('候选地址请求过大', 413);
+      body = (await readContestLiveBody(request, 65536)).toString('utf8');
     }
     const response = await fetch(`${base}${streamPath}/whep/${parsed.resource}`, { method: request.method,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/trickle-ice-sdpfrag', 'if-match': '*' }, body, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/trickle-ice-sdpfrag', 'if-match': '*' }, body, cache: 'no-store', redirect: 'error', signal: AbortSignal.any([request.signal, AbortSignal.timeout(8000)]) });
     if (request.method === 'DELETE' && (response.ok || response.status === 404)) await prisma.liveWebRtcConnection.deleteMany({ where: { id: parsed.resource, keyId } });
     return new Response(response.status === 204 ? null : await response.text(), { status: response.status, headers });
   } catch (error) {

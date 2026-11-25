@@ -85,6 +85,7 @@ export async function requireClientSession<T extends boolean | 'contest-summary'
 
 export function publicClientSession<T extends Partial<ClientSession> | null | undefined>(session: T) {
   if (!session) return session;
-  const { desktopTokenHash: _desktopTokenHash, miniProgramTokenHash: _miniProgramTokenHash, monitoringAlertState: _monitoringAlertState, ...safeSession } = session;
+  const { desktopTokenHash: _desktopTokenHash, miniProgramTokenHash: _miniProgramTokenHash, monitoringAlertState: _monitoringAlertState,
+    liveMediaStoppedAt: _liveMediaStoppedAt, liveMediaRechecked: _liveMediaRechecked, ...safeSession } = session;
   return safeSession;
 }

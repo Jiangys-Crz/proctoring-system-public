@@ -1,8 +1,20 @@
 # Reaction 判题前后名次的依据
 
+NovaJudge 与 Hydro 原生 XCPC 使用各自的排名规则。Hydro 通过独立 `hydro-ccs-api` 保存来源端名次；本平台本地 Hydro 评测考试及旧版无历史证据的录像仍保存 `HYDRO_OBSERVED_RESULT / UNAVAILABLE`，视频隐藏数字名次。
+
 `Reaction.rankContext` 保存不可变的原片名次上下文：`beforeRank`、`afterRank`、`status`、`source`、`observedAt` 和 `provenance`。只有来源、考试/比赛、准确队伍 username、Submission 和原始 verdict 都匹配且状态为 `AVAILABLE`，视频才显示数字。无法验证时隐藏，不拿当前排行榜冒充历史名次。
 
-## 实时事件的观察顺序
+## Hydro 原生 XCPC
+
+独立插件 `hydro-ccs-api 1.x` 在持久提交判题事件前，计算应用该事件之前与之后的原生 XCPC 名次，并在 `x_hydro_rank` 中绑定比赛、真实提交用户名、CCS 队伍 ID、提交、判题、verdict、前后状态 SHA-256 和持久事件 token。Recorder 校验绑定后保存为 `HYDRO_CCS_OBSERVED_ORDER`，视频可显示前后数字名次。旧内置接口已保存的名次上下文保持不变。
+
+规则按 Hydro `RULES.acm.stat`：首次 AC 相对秒数加每个此前有效错误尝试的 1200 秒罚时，解题数降序、累计秒数升序，并列使用竞赛排名。CE、格式错误、取消不计错误罚时；等待与 SE 等其他状态按 Hydro 实现计入。同秒提交使用原生 journal 顺序，打星队不占正式名次。已有 journal 时以其中的判题状态为准，避免 Record 与 journal 非原子更新导致提前改变榜单。
+
+初次快照的历史判题标为 `CCS_INITIAL_SNAPSHOT`，打星队或不确定的 journal 顺序标为 `UNRANKED_OR_JOURNAL_ORDER_UNAVAILABLE`，均隐藏名次。插件每 2 秒观察一次；同批变更的次序是持久 CCS 观察顺序，不是数据库实际完成顺序。重连重放相同 token 时复用来源端原上下文，重判不覆盖原片名次。
+
+内部来源为未封榜管理员视图，直播使用独立的封榜视图。接口、持久存储和直播工具分钟计分差异见 [Hydro CCS](hydro-ccs.md)。以下快照重建和历史回填专用于 NovaJudge。
+
+## NovaJudge 实时事件的观察顺序
 
 Recorder 每次连接先通过服务端 CCS 授权读取完整静态 Event Feed，保存 contests、teams、problems、submissions、judgements 检查点，完成后才允许计算排名。初始化或断线补数据期间的名次标记 `UNAVAILABLE`。重新连接的初始提交不会重复创建 Reaction；当前快照中已消失的实体从排名检查点中移除，显式 delete 记录删除标记。
 

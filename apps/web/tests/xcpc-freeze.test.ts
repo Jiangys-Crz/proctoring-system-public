@@ -17,7 +17,7 @@ const exam = { id: 'freeze-exam', published: true, platformContestId: 'local', c
   problems: [{ id: 'problem', order: 0, title: 'A', problemType: 'default', scorePercent: 100, score: 100, hydroScore: 100 }] };
 const ownerToken = createClientSessionToken();
 const session = { id: 'freeze-session', examId: exam.id, candidateId: 'owner', status: 'IN_EXAM',
-  desktopTokenHash: ownerToken.tokenHash, revokedAt: null, exam, candidate: { id: 'owner', startedAt: null } };
+  desktopTokenHash: ownerToken.tokenHash, approvedAt: exam.startAt, revokedAt: null, exam, candidate: { id: 'owner', startedAt: null } };
 const run = (id: string, candidateId = 'other', createdAt = new Date(+freeze + 1), status = 1) => ({
   id, candidateId, actorKey: candidateId, problemId: 'problem', candidateExamNumber: candidateId, candidateName: candidateId, teamName: null,
   status, statusText: status === 1 ? 'Accepted' : 'Judge detail must stay private', score: 100, totalTestCases: 10, passedTestCases: 10,

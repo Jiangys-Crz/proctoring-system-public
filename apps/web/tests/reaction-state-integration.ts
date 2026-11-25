@@ -55,7 +55,7 @@ async function main() {
     keys.push(`${prefix}/${name}.txt`);
     const object = await storeBuffer(marker, { prefix, filename: `${name}.txt`, stableName: true, contentType: 'text/plain' });
     return prisma.mediaSegment.create({ data: { examId: exam.id, candidateId: owner, channel, objectPath: object.objectPath,
-      startedAt: at(from), endedAt: at(to), durationSeconds: to - from, byteSize: marker.length, validatedAt: at(to),
+      startedAt: at(from), endedAt: at(to), receivedAt: at(to), durationSeconds: to - from, byteSize: marker.length, validatedAt: at(to),
       reactionCache: cache, clockOffsetMs: 0, clockUncertaintyMs: 5 } });
   }
 
@@ -125,6 +125,23 @@ async function main() {
   assert.equal((await prisma.mediaSegment.findUniqueOrThrow({ where: { id: existingFull.id } })).deletedAt, null);
   assert.equal(await storedObjectExists(existingFull.objectPath, marker.length), true);
   pass('60-second cleanup and pending protection', '120-second pending sources survive; unreferenced old cache physically removed; full recording preserved');
+
+  await acceptReactionEvent(exam, submit('late-upload', -180), at(-177));
+  const late = await result('late-upload');
+  await prisma.reaction.update({ where: { id: late.id }, data: {
+    status: 'MISSING', error: 'VIDEO_INTERVAL_MISSING', finalizedAt: at(-100), windowEnd: at(-160),
+    judgementObservedAt: at(-170), originalVerdict: 'AC',
+  } });
+  const lateScreen = await addSegment('late-screen', -181, -171, 'DESKTOP_SCREEN');
+  await prisma.mediaSegment.update({ where: { id: lateScreen.id }, data: { receivedAt: at(-1) } });
+  await maintainReactionCache(exam.id);
+  const recovered = await result('late-upload');
+  assert.equal(recovered.status, 'TAIL');
+  assert.equal(+recovered.windowEnd!, +at(-160));
+  assert.equal(recovered.originalVerdict, 'AC');
+  assert.equal(await prisma.reactionSegment.count({ where: { reactionId: late.id, segmentId: lateScreen.id } }), 1);
+  assert.equal((await prisma.mediaSegment.findUniqueOrThrow({ where: { id: lateScreen.id } })).deletedAt, null);
+  await prisma.reaction.delete({ where: { id: late.id } });
 
   const finalEvent: CcsEvent = { type: 'judgements', op: 'update', data: { id: 'j1', submission_id: 's1', judgement_type_id: 'AC', end_time: at(-115).toISOString() } };
   await acceptReactionEvent(exam, finalEvent, at(0));

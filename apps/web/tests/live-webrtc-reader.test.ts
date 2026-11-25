@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-function fixture(post: (url: string, init: any) => Promise<Response>) {
+function fixture(post: (url: string, init: any) => Promise<Response>, onReset?: () => void) {
   const requests: { method: string; url: string; body?: string }[] = [];
   const peers: any[] = [];
   class Peer {
@@ -31,7 +31,8 @@ function fixture(post: (url: string, init: any) => Promise<Response>) {
     }
   });
   vm.runInContext(source, context);
-  return { isPlaying: (context as any).isProctorWebRtcPlaying, requests, peers, reader: (context as any).createProctorWebRtcReader({ url: '/api/media/whep?sessionId=qa&channel=DESKTOP_SCREEN' }) };
+  return { isPlaying: (context as any).isProctorWebRtcPlaying, requests, peers,
+    reader: (context as any).createProctorWebRtcReader({ url: '/api/media/whep?sessionId=qa&channel=DESKTOP_SCREEN', onReset }) };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -77,5 +78,29 @@ test('closed-connection placeholder frames never count as a live feed', async ()
     f.peers[0].connectionState = 'connected'; assert.equal(f.isPlaying(f.reader, video), true);
     assert.equal(f.isPlaying(f.reader, { ...video, videoWidth: 2, videoHeight: 2 }), false);
     f.reader.close(); assert.equal(f.isPlaying(f.reader, video), false);
+  } finally { f.reader.close(); }
+});
+
+test('an ended video track clears the old frame immediately while transient mutes preserve playback', async () => {
+  let resets = 0;
+  const f = fixture(async () => new Response('v=0\r\n', { status: 201,
+    headers: { location: '/api/media/whep?resource=qa-resource' } }), () => { resets++; });
+  try {
+    await tick();
+    const peer = f.peers[0];
+    const audio = Object.assign(new EventTarget(), { kind: 'audio' });
+    const video = Object.assign(new EventTarget(), { kind: 'video' });
+    peer.ontrack({ track: audio });
+    peer.ontrack({ track: video });
+    audio.dispatchEvent(new Event('ended'));
+    video.dispatchEvent(new Event('mute'));
+    assert.equal(resets, 0);
+    video.dispatchEvent(new Event('ended'));
+    assert.equal(resets, 1);
+    assert.equal(peer.connectionState, 'closed');
+    video.dispatchEvent(new Event('ended'));
+    assert.equal(resets, 1);
+    await tick();
+    assert.equal(f.requests.at(-1)?.method, 'DELETE');
   } finally { f.reader.close(); }
 });

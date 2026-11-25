@@ -27,7 +27,6 @@ export async function saveExternalBoardSettings(examId: string, input: ExternalB
   const saved = await externalBoardTransaction(examId, async tx => {
     const current = await tx.exam.findUnique({ where: { id: examId }, select: { ...externalBoardSelect, platform: true } });
     if (!current) throw new ExternalBoardSettingsError('考试不存在', 404);
-    if (current.platform === 'HYDRO_BROWSER') throw new ExternalBoardSettingsError('本场考试的榜单由 HydroOJ 管理', 400);
     const merged = configSchema.parse({ ...current, ...input });
     const config = {
       externalBoardEnabled: merged.externalBoardEnabled,
@@ -44,6 +43,9 @@ export async function saveExternalBoardSettings(examId: string, input: ExternalB
       ...(targetChanged ? { configHash: null, problemsHash: null, syncedThrough: null, scanUntil: null, cursorAt: null, cursorId: null, lastSuccessAt: null } : {}),
       leaseToken: null, leaseUntil: null, nextAttemptAt: null, lastError: null,
     } });
+    // Re-enabling or changing a destination explicitly replays remote results,
+    // including unchanged ones whose previous payload hash still matches.
+    if (targetChanged) await tx.novaJudgeBoardRecord.deleteMany({ where: { examId } });
     const logMessage =
       current.externalBoardEnabled !== config.externalBoardEnabled
         ? config.externalBoardEnabled ? `已开启推送，将立即同步，之后每 ${config.externalBoardIntervalSeconds} 秒推送一次` : '已关闭推送，停止后续同步'

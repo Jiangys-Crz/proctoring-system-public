@@ -15,7 +15,7 @@
     "dev:desktop:watch": "pnpm --filter @cwnupaa/proctor-desktop dev:watch",
     "build:desktop": "pnpm --filter @cwnupaa/proctor-desktop build",
     "dist:desktop:mac": "pnpm --filter @cwnupaa/proctor-desktop dist:mac",
-    "dist:desktop:win": "pnpm --filter @cwnupaa/proctor-desktop dist:win",
+    "dist:desktop:win": "node apps/desktop/wx/package-win.mjs",
     "db:generate": "pnpm --filter @cwnupaa/proctor-web db:generate",
     "db:push": "pnpm --filter @cwnupaa/proctor-web db:push",
     "db:seed": "pnpm --filter @cwnupaa/proctor-web db:seed",

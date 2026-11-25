@@ -4,6 +4,8 @@ import { ScreenImageTemplateSchema } from './screen-control-template';
 export const SCREEN_CONTROL_INTERVAL_MS = 5_000;
 export const SCREEN_CONTROL_MAX_GROUPS = 50;
 export const SCREEN_CONTROL_MAX_IMAGES = 30;
+export const SCREEN_CONTROL_PARTICIPANT_WIDTH = 1920;
+export const SCREEN_CONTROL_PARTICIPANT_HEIGHT = 1080;
 export const SCREEN_CONTROL_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const SCREEN_CONTROL_MAX_GROUP_BYTES = 80 * 1024 * 1024;
 export const SCREEN_CONTROL_MAX_PIXELS = 25_000_000;
@@ -21,10 +23,13 @@ export const UpdateScreenControlGroupSchema = z.object({
 // Offset-bearing dates avoid silently interpreting a schedule in the server's timezone.
 const DateSchema = z.iso.datetime({ offset: true });
 export const CreateScreenControlDisplaySchema = z.object({
-  groupId: z.string().min(1),
+  groupId: z.string().min(1).optional(),
+  showParticipantCard: z.boolean().default(false),
+  participantCardOnly: z.boolean().default(false),
   startsAt: DateSchema.optional(),
   endsAt: DateSchema.nullable().optional(),
-}).strict();
+}).strict().refine(value => value.participantCardOnly ? value.groupId === undefined : Boolean(value.groupId),
+  '请选择图片组，或单独推送参赛信息图');
 export const ScreenControlActionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('STOP'), displayId: z.string().min(1).optional() }).strict(),
   z.object({ action: z.literal('CANCEL'), displayId: z.string().min(1) }).strict(),
@@ -32,6 +37,12 @@ export const ScreenControlActionSchema = z.discriminatedUnion('action', [
 
 export class ScreenControlError extends Error {
   constructor(message: string, public status = 400) { super(message); }
+}
+
+export function validateScreenDisplayImageCount(imageCount: number, showParticipantCard: boolean) {
+  if (showParticipantCard && imageCount >= SCREEN_CONTROL_MAX_IMAGES) {
+    throw new ScreenControlError(`含参赛信息图的展示最多选择 ${SCREEN_CONTROL_MAX_IMAGES - 1} 张原图`);
+  }
 }
 
 export interface ScreenDisplayTiming {

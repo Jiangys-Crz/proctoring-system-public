@@ -24,7 +24,9 @@ project.private.config.json
 /.cache/caddy-build/
 /apps/desktop/build/ffmpeg/**/ffmpeg.exe
 /apps/desktop/build/ffmpeg/**/ffmpeg
+/apps/desktop/build/legacy-electron/
 /apps/desktop/build/windows-prerequisites/
+/apps/desktop/build/wx-mac/
 /apps/mobile/android/.gradle/
 /apps/mobile/android/.kotlin/
 /apps/mobile/android/app/build/

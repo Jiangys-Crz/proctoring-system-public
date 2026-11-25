@@ -69,8 +69,9 @@
           if (!controller.stopped) timer = setTimeout(next, 0);
           const save = Promise.resolve().then(() => {
             if (!chunks.length) return;
-            const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
-            return options.onSave(blob, `${options.channel}-${uploadId}.webm`, {
+            const blob = new Blob(chunks, { type: recorder.mimeType || chunks[0].type || 'video/webm' });
+            const extension = /^video\/mp4(?:;|$)/i.test(blob.type) ? 'mp4' : 'webm';
+            return options.onSave(blob, `${options.channel}-${uploadId}.${extension}`, {
               sessionId: options.sessionId, channel: options.channel, uploadId, startedAt, endedAt,
               ...(Number.isFinite(context.clockOffsetMs) ? { clockOffsetMs: String(clockOffsetMs), clockUncertaintyMs: String(context.clockUncertaintyMs) } : {})
             }, context);

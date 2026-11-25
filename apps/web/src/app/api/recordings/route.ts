@@ -4,7 +4,7 @@ import { assertReleaseRequestOrigin } from '@/lib/desktop-releases';
 import { publicTestExamId } from '@/lib/public-test';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
-import { canAccessCandidate, canAccessExam } from '@/lib/permissions';
+import { canAccessCandidate, canAccessExam, candidateRoomScope, proctoredCandidateIds } from '@/lib/permissions';
 import { publicObjectUrl } from '@/lib/storage';
 import { options, fail, ok, toErrorMessage, parseBody, RequestParseError } from '@/lib/http';
 import { evidenceForAlerts } from '@/lib/alert-evidence';
@@ -103,7 +103,7 @@ export async function GET(request: Request) {
       : { OR: [
           { exam: { createdById: user.id } },
           { exam: { administrators: { some: { userId: user.id } } } },
-          { rooms: { some: { room: { proctors: { some: { userId: user.id } } } } } }
+          examId ? candidateRoomScope(examId, user.id) : { id: { in: await proctoredCandidateIds(user.id) } }
         ] };
     const examScope = user.role === 'SUPER_ADMIN'
       ? {}

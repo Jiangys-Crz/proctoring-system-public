@@ -1,13 +1,13 @@
 import { AuthError, requireUser } from '@/lib/auth';
 import { fail, options, toErrorMessage } from '@/lib/http';
 import { authorizeMediaRead } from '@/lib/media-read-access';
-import { createMediaReadToken, type LiveChannel } from '@/lib/media-read-token';
+import { createMediaReadToken, liveChannels, mediaStreamPath, type LiveChannel } from '@/lib/media-read-token';
 import { browserIceAnswer } from '@/lib/browser-ice';
+import { readContestLiveBody } from '@/lib/contest-live-body';
+import { deleteLiveWebRtcResource, liveWebRtcResource, liveWebRtcResourceProof, verifyLiveWebRtcResourceProof } from '@/lib/live-webrtc';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const channels = ['DESKTOP_SCREEN', 'DESKTOP_CAMERA', 'MOBILE_CAMERA'] as const;
 
 function mediaBase() {
   return (process.env.MEDIA_WHIP_INTERNAL_BASE || 'http://127.0.0.1:8889').replace(/\/+$/, '');
@@ -18,32 +18,34 @@ function requestParams(request: Request) {
   return {
     sessionId: url.searchParams.get('sessionId') || '',
     channel: url.searchParams.get('channel') || '',
-    resource: url.searchParams.get('resource') || ''
+    resource: url.searchParams.get('resource') || '',
+    proof: url.searchParams.get('proof') || ''
   };
 }
 
 function readPath(sessionId: string, channel: string) {
-  return `/live/${encodeURIComponent(`${sessionId}_${channel}`)}/whep`;
+  return `${mediaStreamPath(sessionId, channel)}/whep`;
 }
 
 function safeResourcePath(value: string, sessionId: string, channel: string) {
   if (!value) return '';
   try {
-    const pathname = new URL(value, mediaBase()).pathname;
-    return pathname.startsWith(`${readPath(sessionId, channel)}/`) ? pathname : '';
+    const id = liveWebRtcResource(value, mediaBase(), mediaStreamPath(sessionId, channel));
+    return `${readPath(sessionId, channel)}/${id}`;
   } catch {
     return '';
   }
 }
 
 async function authorize(request: Request) {
-  const { sessionId, channel, resource } = requestParams(request);
-  if (!sessionId || !channels.includes(channel as (typeof channels)[number])) {
+  const { sessionId, channel, resource, proof } = requestParams(request);
+  if (!sessionId || !liveChannels.includes(channel as LiveChannel)) {
     return { ok: false as const, response: fail('直播参数不正确', 400) };
   }
   const user = await requireUser(request);
-  await authorizeMediaRead(user, sessionId, channel, request.method === 'POST');
-  return { ok: true as const, sessionId, channel, resource, token: createMediaReadToken(user.id, sessionId, channel as LiveChannel) };
+  await authorizeMediaRead(user, sessionId, channel, request.method !== 'DELETE');
+  return { ok: true as const, sessionId, channel, resource, proof, viewerId: user.id,
+    token: createMediaReadToken(user.id, sessionId, channel as LiveChannel) };
 }
 
 function responseHeaders(upstream: Response) {
@@ -56,12 +58,13 @@ function responseHeaders(upstream: Response) {
 }
 
 export async function POST(request: Request) {
+  let created: { id: string; sessionId: string; channel: string } | undefined;
   try {
     const auth = await authorize(request);
     if (!auth.ok) return auth.response;
     const contentType = request.headers.get('content-type') || '';
     if (!contentType.toLowerCase().startsWith('application/sdp')) return fail('WHEP 请求体必须是 application/sdp', 415);
-    const offer = await request.text();
+    const offer = (await readContestLiveBody(request, 65536)).toString('utf8');
     if (!offer.trim().startsWith('v=0')) return fail('WHEP SDP offer 无效', 400);
 
     const upstream = await fetch(`${mediaBase()}${readPath(auth.sessionId, auth.channel)}`, {
@@ -69,21 +72,31 @@ export async function POST(request: Request) {
       headers: { 'content-type': 'application/sdp', accept: 'application/sdp', authorization: `Bearer ${auth.token}` },
       body: offer,
       cache: 'no-store',
-      signal: AbortSignal.timeout(15_000)
+      redirect: 'error',
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(15_000)])
     });
     const headers = responseHeaders(upstream);
     const location = upstream.headers.get('location');
     if (upstream.ok && location) {
       const resource = safeResourcePath(location, auth.sessionId, auth.channel);
       if (resource) {
+        created = { id: resource.split('/').at(-1)!, sessionId: auth.sessionId, channel: auth.channel };
+        const current = await requireUser(request);
+        await authorizeMediaRead(current, auth.sessionId, auth.channel);
         const local = new URL(request.url);
         local.searchParams.set('resource', resource);
+        local.searchParams.set('proof', liveWebRtcResourceProof(resource, auth.viewerId));
         headers.set('location', `${local.pathname}${local.search}`);
       }
     }
     const body = await upstream.text();
     return new Response(upstream.ok ? browserIceAnswer(body) : body, { status: upstream.status, headers });
   } catch (error) {
+    if (created) {
+      await deleteLiveWebRtcResource(created.id, created.sessionId, created.channel).catch(cleanupError => {
+        console.error('Failed to close unissued WHEP reader', cleanupError);
+      });
+    }
     if (error instanceof AuthError) return fail(error.message, error.status);
     return fail(toErrorMessage(error), 502);
   }
@@ -95,10 +108,12 @@ export async function DELETE(request: Request) {
     if (!auth.ok) return auth.response;
     const path = safeResourcePath(auth.resource, auth.sessionId, auth.channel);
     if (!path) return fail('WHEP 资源地址无效或已过期', 400);
+    if (!verifyLiveWebRtcResourceProof(auth.proof, path, auth.viewerId)) return fail('无权操作该观看连接', 403);
     const upstream = await fetch(`${mediaBase()}${path}`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${auth.token}`, ...(request.headers.get('if-match') ? { 'if-match': request.headers.get('if-match')! } : {}) },
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(8_000)
     });
     return new Response(upstream.status === 204 ? null : await upstream.text(), { status: upstream.status, headers: responseHeaders(upstream) });
@@ -114,12 +129,17 @@ export async function PATCH(request: Request) {
     if (!auth.ok) return auth.response;
     const path = safeResourcePath(auth.resource, auth.sessionId, auth.channel);
     if (!path) return fail('WHEP 资源地址无效或已过期', 400);
+    if (!verifyLiveWebRtcResourceProof(auth.proof, path, auth.viewerId)) return fail('无权操作该观看连接', 403);
     if (!request.headers.get('content-type')?.startsWith('application/trickle-ice-sdpfrag')) return fail('候选地址格式不正确', 415);
-    const body = await request.text();
-    if (body.length > 65536) return fail('候选地址请求过大', 413);
+    const body = (await readContestLiveBody(request, 65536)).toString('utf8');
+    // PATCH reaches an already-open peer. The media server doesn't negotiate
+    // playback authorization again, so recheck after awaiting the request body.
+    const current = await requireUser(request);
+    if (current.id !== auth.viewerId) return fail('无权操作该观看连接', 403);
+    await authorizeMediaRead(current, auth.sessionId, auth.channel);
     const upstream = await fetch(`${mediaBase()}${path}`, {
       method: 'PATCH', headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/trickle-ice-sdpfrag', 'if-match': '*' },
-      body, cache: 'no-store', signal: AbortSignal.timeout(8000),
+      body, cache: 'no-store', redirect: 'error', signal: AbortSignal.any([request.signal, AbortSignal.timeout(8000)]),
     });
     return new Response(upstream.status === 204 ? null : await upstream.text(), { status: upstream.status, headers: responseHeaders(upstream) });
   } catch (error) {

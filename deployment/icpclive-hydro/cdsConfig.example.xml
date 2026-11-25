@@ -1,0 +1,9 @@
+<cds>
+  <contest id="691000000000000000000001"
+           path="/srv/cds/contests/hydro-xcpc"
+           recordReactions="false">
+    <ccs url="https://hydro.example/api/ccs/contests/691000000000000000000001"
+         user="ccs"
+         password="REPLACE_WITH_HYDRO_CCS_PASSWORD" />
+  </contest>
+</cds>

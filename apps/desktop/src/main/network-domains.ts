@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { DomainWindow, normalizeDomain, parseDnsCapture, parseTsharkDomains, parseWindowsDnsCache } from './network-domain-data';
 import { requestMacCapturePermission } from './capture-permission';
 import type { NetworkDomainStatus } from '../shared/types';
-import { windowsPowerShell, windowsSystemCommand } from './windows-system-command';
+import { windowsPowerShell, windowsSystemCommand, windowsUtf8Output } from './windows-system-command';
 
 const observations = new DomainWindow();
 let status: NetworkDomainStatus = { state: 'idle', message: '尚未检测整机外部域名采集能力' };
@@ -14,9 +14,9 @@ let cacheTimer: NodeJS.Timeout | null = null;
 let starting: Promise<NetworkDomainStatus> | null = null;
 let generation = 0;
 
-function run(command: string, args: string[]) {
+function run(command: string, args: string[], timeout = 6000) {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, { timeout: 6000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
+    execFile(command, args, { timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
       if (error) reject(error); else resolve(stdout);
     });
   });
@@ -69,7 +69,14 @@ async function startCapture(command: string, args: string[], tshark: boolean, cu
       if (!child.killed) child.kill();
       captures.delete(child);
       if (!ready) reject(error);
-      else if (generation === current) status = { state: 'unavailable', message: '网络采集中断，请点击“网络检测”重新申请或检测权限。', permissionRequired: /permission|permitted|denied/i.test(error.message) };
+      else if (generation === current) {
+        status = { state: 'unavailable', message: '网络采集中断，请点击“网络检测”重新申请或检测权限。', permissionRequired: /permission|permitted|denied/i.test(error.message) };
+        if (process.platform === 'win32') {
+          void startWindowsCache(current).catch(() => {
+            if (generation === current) status = windowsCacheUnavailable();
+          });
+        }
+      }
     };
     child.on('error', fail);
     child.on('exit', () => fail(new Error(stderr.trim().slice(-600) || '采集程序已退出')));
@@ -104,23 +111,25 @@ async function startCapture(command: string, args: string[], tshark: boolean, cu
 }
 
 async function startWindowsCache(current: number) {
-  const script = "Get-DnsClientCache -ErrorAction Stop | Where-Object { $_.Type -in 1,28,5 -and $_.Status -eq 0 } | Select-Object -ExpandProperty Entry | ConvertTo-Json -Compress";
+  const script = `${windowsUtf8Output}; Get-DnsClientCache -ErrorAction Stop | Where-Object { $_.Type -in 1,28,5 -and $_.Status -eq 0 } | Select-Object -ExpandProperty Entry | ConvertTo-Json -Compress`;
   let previous = new Set<string>();
   let first = true;
   let useLegacyIpconfig = /^6\.1(?:\.|$)/.test(release());
   const readNames = async () => {
     if (!useLegacyIpconfig) {
       try {
-        const output = await run(windowsPowerShell(), ['-NoProfile', '-NonInteractive', '-Command', script]);
-        const parsed = output.trim() ? JSON.parse(output) : [];
-        return (Array.isArray(parsed) ? parsed : [parsed]).map((name) => normalizeDomain(String(name))).filter(Boolean);
+        const output = await run(windowsPowerShell(), ['-NoProfile', '-NonInteractive', '-Command', script], 12000);
+        const parsed = output.trim() ? JSON.parse(output.trim().replace(/^\uFEFF/, '')) : [];
+        const names = parsed == null ? [] : Array.isArray(parsed) ? parsed : [parsed];
+        if (!names.every((name: unknown) => typeof name === 'string')) throw new Error('系统 DNS 缓存返回格式无效');
+        return names.map((name: string) => normalizeDomain(name)).filter(Boolean);
       } catch {
         // Windows 7 does not provide Get-DnsClientCache. Its ipconfig output is
         // localized, so parse only colon-delimited values that are valid domains.
         useLegacyIpconfig = true;
       }
     }
-    return parseWindowsDnsCache(await run(windowsSystemCommand('ipconfig.exe'), ['/displaydns']));
+    return parseWindowsDnsCache(await run(windowsSystemCommand('ipconfig.exe'), ['/displaydns'], 12000));
   };
   const poll = async () => {
     if (generation !== current) return;
@@ -129,16 +138,47 @@ async function startWindowsCache(current: number) {
     if (!first) observations.add([...names].filter((domain) => !previous.has(domain)).map((domain) => ({ domain, source: 'DNS 缓存新增' })));
     previous = names;
     first = false;
+    status = { state: 'limited', message: '网络检测可用（系统 DNS 缓存）' };
   };
   await poll(); // Existing cached names predate monitoring and must never be reported as new visits.
   if (generation !== current) return;
   const tick = async () => {
     try { await poll(); }
-    catch { if (generation === current) status = { state: 'unavailable', message: '无法读取系统 DNS 缓存；请检查权限或安装 Wireshark/Npcap 后重试。' }; }
+    catch {
+      if (generation === current) {
+        // A recovered read establishes a fresh baseline: names collected during
+        // an unknown outage must not become retrospective cheating evidence.
+        first = true;
+        previous.clear();
+        status = windowsCacheUnavailable();
+      }
+    }
     if (generation === current) cacheTimer = setTimeout(tick, 3000);
   };
   cacheTimer = setTimeout(tick, 3000);
-  status = { state: 'limited', message: '网络检测已授权' };
+}
+
+function windowsCacheUnavailable(): NetworkDomainStatus {
+  return { state: 'unavailable', message: '系统 DNS 缓存读取失败，请重新检测，并检查 DNS Client 服务或安全软件是否拦截了系统检测命令。' };
+}
+
+async function startTshark(tshark: string, current: number) {
+  const listing = await run(tshark, ['-D']);
+  if (generation !== current) return;
+  const interfaces = listing.split(/\r?\n/).filter((line) => !/extcap|sshdump|ciscodump|randpkt|udpdump|wifidump/i.test(line))
+    .map((line) => line.match(/^\d+\. (\S+)/)?.[1]).filter((name): name is string => Boolean(name));
+  if (!interfaces.length) throw new Error('未找到可采集的网络接口');
+  const selected = process.platform === 'darwin'
+    ? interfaces.filter((name) => Object.hasOwnProperty.call(networkInterfaces(), name))
+    : interfaces.includes('any') ? ['any'] : interfaces;
+  if (!selected.length) throw new Error('没有可用的本机网络接口');
+  await startCapture(tshark, [
+    ...selected.flatMap((name) => ['-i', name]), '-p', '-n', '-l',
+    '-f', `${localSourceFilter()} and (port 53 or tcp or udp port 443)`,
+    '-Y', '(dns.flags.response == 0) or tls.handshake.extensions_server_name or http.host',
+    '-T', 'fields', '-e', 'dns.qry.name', '-e', 'tls.handshake.extensions_server_name', '-e', 'http.host'
+  ], true, current);
+  if (generation === current) status = { state: 'ready', message: '网络检测已授权' };
 }
 
 export function getNetworkDomainStatus(): NetworkDomainStatus { return { ...status }; }
@@ -162,35 +202,18 @@ export async function startNetworkDomainMonitor(): Promise<NetworkDomainStatus> 
   const pending = (async () => {
     try {
       const tshark = tsharkPath();
-      let packetCaptureStarted = false;
-      if (tshark) try {
-        const listing = await run(tshark, ['-D']);
-        if (generation !== current) return getNetworkDomainStatus();
-        const interfaces = listing.split(/\r?\n/).filter((line) => !/extcap|sshdump|ciscodump|randpkt|udpdump|wifidump/i.test(line))
-          .map((line) => line.match(/^\d+\. (\S+)/)?.[1]).filter((name): name is string => Boolean(name));
-        if (!interfaces.length) throw new Error('未找到可采集的网络接口');
-        const selected = process.platform === 'darwin'
-          ? interfaces.filter((name) => Object.hasOwnProperty.call(networkInterfaces(), name))
-          : interfaces.includes('any') ? ['any'] : interfaces;
-        if (!selected.length) throw new Error('没有可用的本机网络接口');
-        await startCapture(tshark, [
-          ...selected.flatMap((name) => ['-i', name]), '-p', '-n', '-l',
-          '-f', `${localSourceFilter()} and (port 53 or tcp or udp port 443)`,
-          '-Y', '(dns.flags.response == 0) or tls.handshake.extensions_server_name or http.host',
-          '-T', 'fields', '-e', 'dns.qry.name', '-e', 'tls.handshake.extensions_server_name', '-e', 'http.host'
-        ], true, current);
-        if (generation === current) status = { state: 'ready', message: '网络检测已授权' };
-        packetCaptureStarted = true;
-      } catch (error) {
-        if (generation !== current) return getNetworkDomainStatus();
-        // A broken optional Wireshark/Npcap installation must not suppress
-        // the same built-in fallback used when Wireshark is absent.
-        console.warn('[network-domains] Wireshark unavailable; trying built-in capture', error instanceof Error ? error.message : String(error));
-        for (const child of captures) if (!child.killed) child.kill();
-        captures.clear();
+      if (tshark) {
+        try {
+          await startTshark(tshark, current);
+          return getNetworkDomainStatus();
+        } catch (error) {
+          if (generation !== current) return getNetworkDomainStatus();
+          // Use the platform's built-in fallback if Wireshark cannot start.
+          console.warn('[network-domains] Wireshark unavailable; trying built-in capture', error instanceof Error ? error.message : String(error));
+          for (const child of captures) if (!child.killed) child.kill();
+          captures.clear();
+        }
       }
-      if (generation !== current) return getNetworkDomainStatus();
-      if (packetCaptureStarted) return getNetworkDomainStatus();
       if (process.platform === 'win32') {
         await startWindowsCache(current);
       } else {
@@ -224,7 +247,7 @@ export async function startNetworkDomainMonitor(): Promise<NetworkDomainStatus> 
       if (generation === current) {
         stopNetworkDomainMonitor();
         const permissionRequired = /permission|permitted|denied|权限/i.test(error instanceof Error ? error.message : String(error));
-        status = {
+        status = process.platform === 'win32' ? windowsCacheUnavailable() : {
           state: 'unavailable', permissionRequired,
           message: permissionRequired
             ? '缺少网络检测权限，点击此卡片发起系统授权。'

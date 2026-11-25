@@ -5,6 +5,15 @@ import { ReactionPresentationSchema, reactionPresentationFromJson, validateReact
 import { UploadSecurityError } from './upload-security';
 import { resolveReactionTeamName } from './reaction-team-name';
 import { getReactionExportSummary } from './reaction-export';
+import { hydroReactionConnection, reactionSource, supportsReaction } from './reaction-source';
+import { getHydroSettings } from './settings';
+import { hydroCcsConnection } from './reaction-hydro-credentials';
+
+async function checkReactionCredentials(exam: { id: string; platform: string; platformBaseUrl: string; platformContestId: string }) {
+  if (exam.platform === 'NOVAJUDGE') ccsCredential(exam);
+  else if (reactionSource(exam) === 'HYDRO_CONTEST') hydroCcsConnection(exam);
+  else hydroReactionConnection(exam, await getHydroSettings());
+}
 
 export const ReactionConfigSchema = z.object({
   enabled: z.boolean(), bufferSeconds: z.number().int().min(10).max(600).default(60),
@@ -29,9 +38,9 @@ export async function updateReactionConfig(examId: string, input: unknown) {
   await prisma.$transaction(async tx => {
     await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${examId} FOR UPDATE`;
     const exam = await tx.exam.findUniqueOrThrow({ where: { id: examId } });
-    if (exam.platform !== 'NOVAJUDGE') throw new Error('仅 NovaJudge 考试支持自动 Reaction');
+    if (!supportsReaction(exam.platform)) throw new Error('该考试平台不支持自动 Reaction');
     if (enabled && exam.recordingsDeletedAt) throw new Error('本场录像已删除，不能开启 Reaction');
-    if (enabled) ccsCredential(exam);
+    if (enabled) await checkReactionCredentials(exam);
     // A newly enabled session must ignore submissions made while disabled.
     // Keep the existing cutover when saving an already enabled configuration,
     // and retain prior reactions/checkpoints for audit and replay deduplication.
@@ -52,7 +61,7 @@ export async function queueReactionGeneration(examId: string, reactionIds?: stri
 export async function getReactionAdminData(examId: string) {
   const exam = await prisma.exam.findUniqueOrThrow({ where: { id: examId }, include: { reactionConfig: true } });
   const c = exam.reactionConfig;
-  let credentialsConfigured = false; try { ccsCredential(exam); credentialsConfigured = true; } catch { /* presence only */ }
+  let credentialsConfigured = false; try { await checkReactionCredentials(exam); credentialsConfigured = true; } catch { /* presence only */ }
   const [items, buffer, recent, processedSubmissions, savedVideos, missingOrFailed, candidates, teamEvents, exportSummary] = await Promise.all([
     prisma.reaction.findMany({ where: { examId }, orderBy: { createdAt: 'desc' }, take: 200 }),
     prisma.mediaSegment.aggregate({ where: { examId, reactionCache: true, deletedAt: null }, _count: true, _sum: { byteSize: true } }),
@@ -66,7 +75,7 @@ export async function getReactionAdminData(examId: string) {
   const candidatesByTeam = new Map(candidates.map(candidate => [candidate.examNumber, candidate]));
   const eventsByTeam = new Map(teamEvents.map(event => [event.remoteId, event]));
   const teamName = (teamId: string) => resolveReactionTeamName({ examId, teamId, candidate: candidatesByTeam.get(teamId), teamEvent: eventsByTeam.get(teamId) });
-  return { exam: { id: exam.id, name: exam.name, platform: exam.platform, schools: [...new Set(candidates.map(item => item.school?.trim()).filter((value): value is string => Boolean(value)))].sort() },
+  return { exam: { id: exam.id, name: exam.name, platform: exam.platform, reactionSource: supportsReaction(exam.platform) ? reactionSource(exam) : null, schools: [...new Set(candidates.map(item => item.school?.trim()).filter((value): value is string => Boolean(value)))].sort() },
     exportSummary,
     candidates: candidates.map(item => ({ teamId: item.examNumber, teamName: teamName(item.examNumber), schoolName: item.school || null })),
     config: { enabled: exam.reactionEnabled, bufferSeconds: c?.bufferSeconds ?? 60, beforeSeconds: c?.beforeSeconds ?? 3, afterSeconds: c?.afterSeconds ?? 10, maxPendingSeconds: c?.maxPendingSeconds ?? 1800, maxStorageBytes: Number(c?.maxStorageBytes ?? 21474836480), retentionDays: c?.retentionDays ?? 30, autoGenerate: c?.autoGenerate ?? false, uploadGraceSeconds: c?.uploadGraceSeconds ?? 30, presentation: reactionPresentationFromJson(c?.presentation, examId), credentialsConfigured },

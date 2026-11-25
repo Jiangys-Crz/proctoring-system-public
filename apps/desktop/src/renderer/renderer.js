@@ -9,6 +9,7 @@ const state = {
   pairPollContext: null,
   sessionServerOrigin: '',
   serverClock: null,
+  recoveryPayload: undefined,
   sessionRevoked: false,
   loginContextVersion: 0,
   loginResetting: false,
@@ -25,6 +26,8 @@ const state = {
   heartbeatTimer: 0,
   pairTimer: 0,
   clockTimer: 0,
+  startPromptKey: '',
+  startingExamSession: null,
   uploadFlushTimer: 0,
   uploadFlushBusy: false,
   uploadFlushRetryAt: 0,
@@ -61,6 +64,10 @@ const state = {
   peripheralSnapshot: null,
   peripheralSnapshotRequest: null,
   peripheralSnapshotSchedule: null,
+  usbEventSnapshot: null,
+  usbEventRequest: null,
+  peripheralUnlockObserved: null,
+  reactionClockRequest: null,
   securityAlertObservation: null,
   alertFlushRequest: null,
   captureRecoveryTimer: 0,
@@ -71,8 +78,12 @@ const state = {
   mediaProbeResults: {},
   mediaProbeRequests: new Map(),
   permissionRefreshRequest: null,
+  permissionCardsRequest: null,
+  permissionSnapshot: null,
+  verifiedSystemStatus: null,
   networkAccessProbe: null,
   serverCheckRequestId: 0,
+  serverCheckPending: null,
   systemReady: false,
   allPermissionsGranted: false,
   credentialMaterials: false,
@@ -117,7 +128,7 @@ window.proctorDesktopMicrophone = window.createProctorMicrophoneCapture?.({
       });
     }
   },
-  onUnavailable: message => { if (state.session && !state.finishedScreenVisible) warnCandidate(`电脑麦克风：${message}。请检查麦克风连接和系统权限。`, 'desktop-microphone'); }
+  onUnavailable: message => { console.info('[optional-microphone]', message); }
 });
 window.proctorDesktopVoice = window.createProctorDesktopVoice?.({
   context: () => state.session?.id && state.session.status !== 'FINISHED' && state.sessionToken && !state.finishedScreenVisible && !state.requirements?.isPublicTest
@@ -138,6 +149,7 @@ const examNoticeInbox = window.createProctorNoticeInbox({
   read: identity => api(`/api/client/qa?sessionId=${encodeURIComponent(identity.sessionId)}`),
   acknowledge: (identity, id) => api('/api/client/qa', { method: 'POST', body: JSON.stringify({ action: 'ack-announcement', sessionId: identity.sessionId, announcementId: id }) }),
   render: ({ current, confirming, error }) => {
+    if (current) closeStartConfirmation();
     $('examNoticeModal').classList.toggle('hidden', !current);
     $('examNoticeTitle').textContent = current?.candidateId ? '发给你的公告' : '考试公告';
     $('examNoticeContent').textContent = current?.content || '';
@@ -149,6 +161,7 @@ const examNoticeInbox = window.createProctorNoticeInbox({
 let warningTimer = 0;
 let permissionRequestTarget = '';
 let permissionRefreshOnFocus = false;
+let permissionWindowBlurred = false;
 let permissionFocusTimer = 0;
 let lastPermissionTarget = '';
 let setupActionActive = false;
@@ -184,17 +197,36 @@ function configureCaptureProfile(os) {
 
 async function saveRendererRecovery() {
   if (!window.proctorApi.saveRendererRecovery) return;
-  try {
-    if (!state.session || state.session.status === 'FINISHED' || state.sessionRevoked || !state.sessionToken) {
-      await window.proctorApi.saveRendererRecovery(null);
-      return;
+  const active = state.session && state.session.status !== 'FINISHED' && !state.sessionRevoked && state.sessionToken;
+  const fields = (source, keys) => source && Object.fromEntries(keys.map(key => [key, source[key]]));
+  const payload = active ? {
+    serverUrl: state.serverUrl, sessionServerOrigin: state.sessionServerOrigin, sessionToken: state.sessionToken,
+    session: fields(state.session, [
+      'id', 'examId', 'candidateId', 'status', 'approvedAt', 'startedAt', 'effectiveEndAt', 'endedAt',
+      'revokedAt', 'lockdown', 'lockdownReason', 'memberName', 'miniProgramOfflineAt', 'unlockNonce',
+      'peripheralsBaselineFingerprint', 'lastPeripheralsFingerprint', 'updatedAt'
+    ]),
+    candidate: fields(state.candidate, ['id', 'name', 'examNumber', 'teamName', 'teamMembers', 'seatNo']),
+    exam: fields(state.exam, ['id', 'name', 'platform', 'platformBaseUrl', 'platformContestId', 'rules',
+      'startAt', 'latestStartAt', 'endAt', 'durationMinutes', 'contestRule', 'flexible', 'updatedAt']),
+    requirements: fields(state.requirements, [
+      'roomName', 'requireFrontCamera', 'requireSecondCamera', 'isPublicTest', 'saveFullRecording', 'saveIncidentRecording'
+    ]),
+    baselineFingerprint: state.baselineFingerprint, pairCode: state.pairCode, pairPollToken: state.pairPollToken
+  } : null;
+  const previous = state.recoveryPayload;
+  if (payload === previous || (payload && previous && Object.entries(payload).every(([key, value]) => {
+    if (value && typeof value === 'object') {
+      const before = previous[key];
+      return before && Object.entries(value).every(([field, next]) => field === 'updatedAt' || before[field] === next);
     }
-    await window.proctorApi.saveRendererRecovery({
-      serverUrl: state.serverUrl, sessionServerOrigin: state.sessionServerOrigin, sessionToken: state.sessionToken,
-      session: state.session, candidate: state.candidate, exam: state.exam, requirements: state.requirements,
-      baselineFingerprint: state.baselineFingerprint, pairCode: state.pairCode, pairPollToken: state.pairPollToken
-    });
+    return previous[key] === value;
+  }))) return;
+  state.recoveryPayload = payload;
+  try {
+    await window.proctorApi.saveRendererRecovery(payload);
   } catch (error) {
+    if (state.recoveryPayload === payload) state.recoveryPayload = undefined;
     // Recovery is a crash fallback. Failure to cache must not prevent the
     // current authenticated session from heartbeating or applying a lock.
     console.warn('[renderer-recovery-save]', errorMessage(error));
@@ -224,7 +256,7 @@ async function restoreRendererRecovery(saved) {
     if (contextVersion !== state.loginContextVersion) return;
     if (!state.finishedScreenVisible) {
       await ensureScreenCapture();
-      if (state.requirements?.requireFrontCamera) await ensureCameraCapture();
+      if (state.requirements?.requireFrontCamera) void startOptionalCameraCapture();
       if (contextVersion !== state.loginContextVersion) return;
       startSegmentRecorders();
       void startRtmpStreams();
@@ -248,12 +280,17 @@ function apiUrl(path) {
 
 function synchronizeExamClock(data, origin) {
   const value = typeof data?.serverNow === 'string' ? Date.parse(data.serverNow) : NaN;
-  if (Number.isFinite(value)) state.serverClock = { origin, serverAt: value, observedAt: performance.now() };
+  const previous = state.serverClock?.origin === origin ? state.serverClock : null;
+  if (Number.isFinite(value) && (!previous || value > previous.serverAt)) {
+    state.serverClock = { origin, serverAt: value, observedAt: performance.now(), lastRead: previous?.lastRead ?? value };
+  }
 }
 
 function examServerNow() {
   const clock = state.serverClock;
-  return clock?.origin === state.serverUrl ? clock.serverAt + Math.max(0, performance.now() - clock.observedAt) : Date.now();
+  if (clock?.origin !== state.serverUrl) return Date.now();
+  clock.lastRead = Math.max(clock.lastRead, clock.serverAt + Math.max(0, performance.now() - clock.observedAt));
+  return clock.lastRead;
 }
 
 function acceptSessionSnapshot(snapshot) {
@@ -267,6 +304,27 @@ function acceptSessionSnapshot(snapshot) {
     if (Number.isFinite(previousAt) && (!Number.isFinite(incomingAt) || incomingAt < previousAt)) return false;
   }
   state.session = { ...(current?.id === snapshot.id ? current : {}), ...snapshot };
+  if (state.session.unlockNonce && (current?.id !== snapshot.id || current.unlockNonce !== state.session.unlockNonce)) {
+    state.peripheralUnlockObserved = {
+      sessionId: snapshot.id, nonce: state.session.unlockNonce, at: globalThis.performance?.now()
+    };
+  }
+  return true;
+}
+
+function acceptExamTiming(timing, sessionId) {
+  if (!timing || !state.exam || state.session?.id !== sessionId || timing.examId !== state.exam.id ||
+      state.session.examId !== timing.examId) return false;
+  const updated = Date.parse(timing.updatedAt), previous = Date.parse(state.exam.updatedAt);
+  const start = Date.parse(timing.startAt), end = Date.parse(timing.endAt), latest = Date.parse(timing.latestStartAt);
+  if (![updated, start, end, latest].every(Number.isFinite) || start >= end || latest < start || latest > end ||
+      !Number.isFinite(timing.durationMinutes) || timing.durationMinutes <= 0 ||
+      typeof timing.flexible !== 'boolean' || !['KS', 'IOI', 'OI', 'GPLT', 'LANQIAO', 'XCPC', 'ACM'].includes(timing.contestRule) ||
+      Number.isFinite(previous) && updated < previous) return false;
+  // The running clock reads state.exam on every tick. Keep the session,
+  // drafts, capture and browser in place when an administrator changes time.
+  state.exam = { ...state.exam, startAt: timing.startAt, latestStartAt: timing.latestStartAt, endAt: timing.endAt,
+    durationMinutes: timing.durationMinutes, flexible: timing.flexible, contestRule: timing.contestRule, updatedAt: timing.updatedAt };
   return true;
 }
 
@@ -403,18 +461,6 @@ async function probeServerAccess(path = '/api/health', serverUrl = state.serverU
   return [...mainProbes, rendererProbe];
 }
 
-function formatConnectionProbe(probe) {
-  const mark = probe.ok ? '可用' : '失败';
-  const detail = probe.ok ? `${probe.elapsedMs}ms` : `${probe.elapsedMs}ms，${probe.message || '未知错误'}`;
-  return `${probe.channel}: ${mark} (${detail})`;
-}
-
-async function buildConnectionDiagnostics(serverUrl = state.serverUrl) {
-  const probes = await probeServerAccess('/api/health', serverUrl);
-  if (serverUrl === state.serverUrl) state.networkAccessProbe = probes;
-  return probes.map(formatConnectionProbe).join('；');
-}
-
 async function allowCurrentServerHost() {
   const host = new URL(state.serverUrl).hostname;
   if (host) await window.proctorApi.setAllowedHosts([host]);
@@ -536,7 +582,8 @@ function browserNavigationAllowed(url) {
     if (isNovaJudgeExam()) {
       const origin = new URL(state.exam.platformBaseUrl).origin;
       const prefix = `/contest/${state.exam.platformContestId}`;
-      return parsed.origin === origin && (parsed.pathname === prefix || parsed.pathname.startsWith(`${prefix}/`));
+      return parsed.origin === origin && (parsed.pathname === prefix || parsed.pathname.startsWith(`${prefix}/`)
+        || parsed.pathname === '/api/contests/' + state.exam.platformContestId + '/editorial');
     }
     const candidateOrigin = contestWebsiteOrigin();
     if (candidateOrigin && parsed.origin === candidateOrigin) {
@@ -585,37 +632,51 @@ async function api(path, options = {}) {
   return fetchJsonFromRenderer(path, options);
 }
 
+let uploadDbConnection = null;
 function openUploadDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open('cwnupaa-proctor-offline', 2);
+  if (uploadDbConnection) return uploadDbConnection;
+  const connecting = new Promise((resolve, reject) => {
+    const nativeHost = Boolean(window.chrome?.webview);
+    const request = indexedDB.open('cwnupaa-proctor-offline', nativeHost ? 3 : 2);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('uploads')) {
         db.createObjectStore('uploads', { keyPath: 'id' });
       }
       if (!db.objectStoreNames.contains('alerts')) db.createObjectStore('alerts', { keyPath: 'id' });
+      if (nativeHost && !db.objectStoreNames.contains('migration-receipts')) db.createObjectStore('migration-receipts');
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      const release = () => {
+        if (uploadDbConnection === connecting) uploadDbConnection = null;
+      };
+      db.onversionchange = () => { release(); db.close(); };
+      db.onclose = release;
+      if (uploadDbConnection === connecting) resolve(db);
+      else db.close();
+    };
     request.onerror = () => reject(request.error || new Error('离线队列打开失败'));
+    request.onblocked = () => reject(new Error('离线队列正在被另一个窗口使用'));
   });
+  uploadDbConnection = connecting;
+  void connecting.catch(() => {
+    if (uploadDbConnection === connecting) uploadDbConnection = null;
+  });
+  return connecting;
 }
 
 async function withUploadStore(mode, callback, storeName = 'uploads') {
   const db = await openUploadDb();
-  try {
-    return await new Promise((resolve, reject) => {
-      const transaction = db.transaction(storeName, mode);
-      const store = transaction.objectStore(storeName);
-      const request = callback(store);
-      // Request success precedes the durable IndexedDB transaction commit.
-      transaction.oncomplete = () => resolve(request.result);
-      transaction.onabort = () => reject(transaction.error || new Error('离线录像保存事务已取消'));
-      transaction.onerror = () => reject(transaction.error || new Error('离线录像保存失败'));
-      request.onerror = () => reject(request.error || new Error('离线队列读写失败'));
-    });
-  } finally {
-    db.close();
-  }
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, mode);
+    const request = callback(transaction.objectStore(storeName));
+    // Request success precedes the durable IndexedDB transaction commit.
+    transaction.oncomplete = () => resolve(request.result);
+    transaction.onabort = () => reject(transaction.error || new Error('离线录像保存事务已取消'));
+    transaction.onerror = () => reject(transaction.error || new Error('离线录像保存失败'));
+    request.onerror = () => reject(request.error || new Error('离线队列读写失败'));
+  });
 }
 
 async function queueUpload(blob, filename, fields, sessionToken = state.sessionToken, serverUrl = state.serverUrl) {
@@ -640,31 +701,30 @@ async function deleteQueuedUpload(id) {
   await withUploadStore('readwrite', (store) => store.delete(id));
 }
 
-async function listQueuedUploads() {
-  const serverUrl = state.serverUrl, sessionId = state.session?.id;
+async function listQueuedUploads(serverUrl, sessionId) {
   const db = await openUploadDb();
-  try {
-    return await new Promise((resolve, reject) => {
-      const items = [];
-      const transaction = db.transaction('uploads', 'readonly');
-      const store = transaction.objectStore('uploads');
-      const cursor = store.openKeyCursor();
-      transaction.oncomplete = () => resolve(items);
-      transaction.onabort = () => reject(transaction.error || new Error('离线录像队列读取失败'));
-      transaction.onerror = () => reject(transaction.error || new Error('离线录像队列读取失败'));
-      cursor.onsuccess = () => {
-        const entry = cursor.result;
-        if (!entry || items.length >= 8) return;
-        if ((state.uploadRetryAt.get(String(entry.primaryKey)) || 0) > Date.now()) { entry.continue(); return; }
-        const request = store.get(entry.primaryKey);
-        request.onsuccess = () => {
-          const item = request.result;
-          if (item && (item.serverUrl ? item.serverUrl === serverUrl : item.fields?.sessionId === sessionId)) items.push(item);
-          entry.continue();
-        };
+  return new Promise((resolve, reject) => {
+    const items = [];
+    const transaction = db.transaction('uploads', 'readonly');
+    const store = transaction.objectStore('uploads');
+    const cursor = store.openKeyCursor();
+    transaction.oncomplete = () => resolve(items);
+    transaction.onabort = () => reject(transaction.error || new Error('离线录像队列读取失败'));
+    transaction.onerror = () => reject(transaction.error || new Error('离线录像队列读取失败'));
+    cursor.onsuccess = () => {
+      const entry = cursor.result;
+      if (!entry) return;
+      if ((state.uploadRetryAt.get(String(entry.primaryKey)) || 0) > Date.now()) { entry.continue(); return; }
+      const request = store.get(entry.primaryKey);
+      request.onsuccess = () => {
+        const item = request.result;
+        if (item && (item.serverUrl ? item.serverUrl === serverUrl : sessionId && item.fields?.sessionId === sessionId)) {
+          items.push(item);
+        }
+        if (items.length < 8) entry.continue();
       };
-    });
-  } finally { db.close(); }
+    };
+  });
 }
 
 async function uploadBlob(blob, filename, fields, sessionToken = state.sessionToken, serverUrl = state.serverUrl) {
@@ -738,19 +798,25 @@ function uploadLiveFrames() {
 
 async function flushUploadQueue() {
   if (state.uploadFlushBusy || performance.now() < state.uploadFlushRetryAt) return;
+  const serverUrl = state.serverUrl;
+  const sessionId = state.session?.id;
+  const contextVersion = state.loginContextVersion;
+  const isCurrent = () => serverUrl === state.serverUrl && sessionId === state.session?.id
+    && contextVersion === state.loginContextVersion;
   state.uploadFlushBusy = true;
   try {
-    const disk = await listQueuedUploads().catch(() => []);
+    const disk = await listQueuedUploads(serverUrl, sessionId).catch(() => []);
     const diskIds = new Set([...disk.map((item) => item.id), ...state.uploadRecent.keys()]);
     const queued = [...new Map([...disk, ...state.uploadRecent.values(), ...state.uploadFallback.values()].map((item) => [item.id, item])).values()];
-    const priority = item => item.fields?.sessionId === state.session?.id && (!item.serverUrl || item.serverUrl === state.serverUrl)
+    const priority = item => item.fields?.sessionId === sessionId && (!item.serverUrl || item.serverUrl === serverUrl)
       && (state.uploadRecent.has(item.id) || state.uploadFallback.has(item.id)) ? 0 : 1;
     queued.sort((a, b) => priority(a) - priority(b) || a.createdAt - b.createdAt);
     let attempts = 0;
     for (const item of queued) {
+      if (!isCurrent()) break;
       // Never send a saved session token to a different configured server.
-      if (item.serverUrl && item.serverUrl !== state.serverUrl) continue;
-      if (!item.serverUrl && item.fields?.sessionId !== state.session?.id) continue;
+      if (item.serverUrl && item.serverUrl !== serverUrl) continue;
+      if (!item.serverUrl && (!sessionId || item.fields?.sessionId !== sessionId)) continue;
       if ((state.uploadRetryAt.get(item.id) || 0) > Date.now()) continue;
       if (attempts++ >= 8) break;
       try {
@@ -760,15 +826,21 @@ async function flushUploadQueue() {
             state.uploadFallback.delete(item.id);
           }).catch(() => {});
         }
-        const token = item.fields?.sessionId === state.session?.id ? state.sessionToken : item.sessionToken;
-        await uploadBlob(item.blob, item.filename, item.fields || {}, token, item.serverUrl || state.serverUrl);
+        // Saving the in-memory fallback can finish after switching backend or
+        // session. Leave it on disk for the right connection to pick up.
+        if (!isCurrent()) break;
+        const token = item.fields?.sessionId === sessionId ? state.sessionToken : item.sessionToken;
+        await uploadBlob(item.blob, item.filename, item.fields || {}, token, serverUrl);
         state.uploadFallback.delete(item.id);
         if (diskIds.has(item.id)) await deleteQueuedUpload(item.id);
         state.uploadRecent.delete(item.id);
         state.uploadRetryAt.delete(item.id);
-        state.uploadFlushRetryAt = 0;
-        state.uploadFlushFailures = 0;
+        if (isCurrent()) {
+          state.uploadFlushRetryAt = 0;
+          state.uploadFlushFailures = 0;
+        }
       } catch (error) {
+        if (!isCurrent()) break;
         const message = errorMessage(error);
         state.uploadRetryAt.set(item.id, Date.now() + (/补传窗口已关闭|令牌无效|考试已结束|客户端会话不存在/.test(message) ? 60_000 : 10_000));
         // An expired token is not permission to destroy unuploaded evidence.
@@ -792,10 +864,21 @@ function ensureUploadFlushTimer() {
   }, 10000);
 }
 
-async function checkServerConnection() {
-  const serverUrl = state.serverUrl;
+function checkServerConnection() {
+  const { serverUrl, loginContextVersion } = state;
+  const pending = state.serverCheckPending;
+  if (pending && pending.serverUrl === serverUrl && pending.loginContextVersion === loginContextVersion) return pending.task;
+  const task = runServerConnectionCheck(serverUrl, loginContextVersion).finally(() => {
+    if (state.serverCheckPending?.task === task) state.serverCheckPending = null;
+  });
+  state.serverCheckPending = { serverUrl, loginContextVersion, task };
+  return task;
+}
+
+async function runServerConnectionCheck(serverUrl, loginContextVersion) {
   const requestId = ++state.serverCheckRequestId;
-  const current = () => serverUrl === state.serverUrl && requestId === state.serverCheckRequestId;
+  const current = () => serverUrl === state.serverUrl && requestId === state.serverCheckRequestId
+    && loginContextVersion === state.loginContextVersion;
   const box = $('serverStatusText').parentElement;
   box.classList.remove('ok', 'bad');
   $('serverStatusText').textContent = `连接检测中：${state.serverUrl}`;
@@ -808,8 +891,9 @@ async function checkServerConnection() {
   } catch (error) {
     if (!current()) return false;
     state.networkAccessProbe = null;
-    await buildConnectionDiagnostics(serverUrl).catch(() => null);
+    const probes = await probeServerAccess('/api/health', serverUrl).catch(() => null);
     if (!current()) return false;
+    state.networkAccessProbe = probes;
     if (!networkAccessOk()) {
       box.classList.add('bad');
       $('serverStatusText').textContent = '连接失败';
@@ -831,13 +915,17 @@ async function checkServerConnection() {
 async function saveServerUrlFromInput() {
   try {
     const nextServer = normalizeServerUrl($('serverUrlInput').value);
+    const channel = window.PROCTOR_RELEASE_CHANNEL;
+    if (['public', 'intranet'].includes(channel)
+        && new URL(nextServer).origin !== new URL(window.PROCTOR_DEFAULT_SERVER_URL).origin) {
+      throw new Error(`${channel === 'intranet' ? '内网' : '公网'}客户端只能连接配置的监考后台，请使用对应网络的安装包。`);
+    }
     if (new URL(nextServer).origin !== new URL(state.serverUrl).origin) {
       await resetWaitingLogin('服务器已更换，请重新登录。');
     }
-    if (nextServer !== state.serverUrl) { state.systemReady = false; state.mediaReady = false; state.mediaProbeResults = {}; }
+    if (nextServer !== state.serverUrl) { state.systemReady = false; state.mediaReady = false; state.mediaProbeResults = {}; state.screenCaptureProbe = null; }
     state.serverUrl = nextServer;
     localStorage.setItem('proctorServerUrl', state.serverUrl);
-    await checkServerConnection();
     await refreshPermissionStatus('服务器地址已保存。').catch(() => null);
   } catch (error) {
     const box = $('serverStatusText').parentElement;
@@ -849,6 +937,7 @@ async function saveServerUrlFromInput() {
 }
 
 function setOnly(id) {
+  if (id !== 'examPanel') closeStartConfirmation();
   if (id !== 'examPanel' && id !== 'waitingPanel') { examNoticeInbox.clear(); $('appealModal').classList.add('hidden'); }
   ['setupPanel', 'loginPanel', 'waitingPanel', 'examPanel', 'finishedPanel'].forEach((item) => $(item).classList.toggle('hidden', item !== id));
   document.body.classList.toggle('novaJudgeMode', id === 'examPanel' && isBrowserExam());
@@ -914,7 +1003,7 @@ function renderClientUpdate(status) {
       state.mobileReconnectPairCode = ''; state.mobileReconnectPairExpiresAt = 0;
       state.mobileReconnectQrContext = null; state.mobileReconnectQrGenerating = false;
       state.loginStepReached = false; state.networkAccessProbe = null;
-      state.systemReady = false; state.mediaReady = false; state.mediaProbeResults = {};
+      state.systemReady = false; state.mediaReady = false; state.mediaProbeResults = {}; state.screenCaptureProbe = null;
       state.serverUrl = origin;
       localStorage.removeItem('proctorServerUrl');
       setOnly('setupPanel');
@@ -947,8 +1036,13 @@ function renderNovaJudgeSubmit(status) {
   $('submitCliMessage').textContent = status.message;
   $('submitCliRetry').classList.toggle('hidden', status.phase !== 'error');
 }
-async function ensureLatestClient(retry = false) {
-  try { renderClientUpdate(await (retry || !state.session ? window.proctorApi.checkClientUpdate() : window.proctorApi.getClientUpdateStatus())); }
+async function ensureLatestClient(mode = 'login') {
+  try {
+    const status = mode === 'retry' || !state.session
+      ? await window.proctorApi.checkClientUpdate(mode === 'startup')
+      : await window.proctorApi.getClientUpdateStatus();
+    renderClientUpdate(status);
+  }
   catch (error) { renderClientUpdate({ phase: 'error', required: true, message: errorMessage(error), currentVersion: state.desktopInfo?.clientVersion, percent: 0 }); }
   return !state.clientUpdate.required;
 }
@@ -1081,6 +1175,10 @@ async function runWithButtonBusy(buttonId, busyText, task) {
 
 function showActionError(buttonId, error) {
   $('loginStatus').textContent = '';
+  if (buttonId === 'refreshPairBtn') {
+    $('loginStatus').textContent = window.proctorUserMessage(error, '二维码刷新失败，请重试');
+    return;
+  }
   showError(error, buttonId === 'credentialSubmitBtn' || buttonId === 'qrLoginBtn'
     ? '登录未完成，请稍后重试或联系监考老师'
     : '操作未完成，请稍后重试');
@@ -1176,7 +1274,7 @@ function stopStream(stream) {
 
 function setPreviewStatus(id, text) {
   const target = $(id);
-  if (target) target.textContent = text;
+  if (target && target.textContent !== text) target.textContent = text;
 }
 
 function setPreviewStream(videoId, stream) {
@@ -1405,7 +1503,9 @@ async function captureElectronScreenWithoutSource() {
 }
 
 async function captureElectronScreen() {
-  const sources = await permissionProbe('桌面源', () => window.proctorApi.getDesktopSources());
+  const sources = await permissionProbe('桌面源', () => window.chrome?.webview
+    ? window.proctorApi.getDesktopSources(false)
+    : window.proctorApi.getDesktopSources());
   const screenSources = sources.filter((item) => item.id?.startsWith('screen:'));
   const candidates = screenSources;
   if (!candidates.length) throw new Error('未发现可采集的屏幕源');
@@ -1689,6 +1789,16 @@ async function ensureCameraCapture() {
   return ensureCaptureOnce('camera', acquireCameraCapture);
 }
 
+async function startOptionalCameraCapture() {
+  const generation = state.monitoringGeneration, sessionId = state.session?.id;
+  try {
+    const ready = await ensureCameraCapture();
+    if (!ready || generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
+    startSegmentRecorders();
+    void startRtmpStreams();
+  } catch (error) { console.warn('[optional-camera]', errorMessage(error)); }
+}
+
 async function acquireCameraCapture(generation) {
   if (cameraCaptureLive()) return true;
   if (state.session && performance.now() < (state.cameraCaptureRetryAt || 0)) return false;
@@ -1714,8 +1824,8 @@ async function acquireCameraCapture(generation) {
     if (generation !== state.monitoringGeneration || state.finishedScreenVisible) return false;
     state.cameraCaptureRetryAt = performance.now() + 15_000;
     updateLocalPreviews();
-    setCheck('cameraCheck', false, '摄像头采集：未获取画面');
-    showError(error, '摄像头画面获取失败，请检查摄像头后重试');
+    setCheck('cameraCheck', null, '前置摄像头：不可用，已跳过');
+    console.warn('[optional-camera]', errorMessage(error));
     return false;
   }
 }
@@ -1747,11 +1857,10 @@ function renderCapabilityPanel(permissions, capabilities) {
     camera: cameraAuthorized(permissions), cameraDetail: state.mediaProbeResults.camera?.reason,
     microphone: mediaAuthorized(permissions, 'microphone'), microphoneDetail: state.mediaProbeResults.microphone?.reason
   });
-  state.allPermissionsGranted = rows.every((row) => row.granted);
-  if (rows.some(row => !['screen', 'camera', 'microphone'].includes(row.key) && !row.granted)) state.systemReady = false;
+  state.allPermissionsGranted = rows.every((row) => row.optional || row.granted);
   $('capabilityPanel').innerHTML = rows.map((row) => {
     const busy = permissionRequestTarget === row.key;
-    return `<div class="capability ${row.granted ? 'ok' : 'bad'}${busy ? ' loading' : ''}" role="button" tabindex="0" aria-disabled="${Boolean(permissionRequestTarget)}" aria-busy="${busy}" data-permission="${escapeHtml(row.key)}"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.label)}</span>${row.detail ? `<small>${escapeHtml(row.detail)}</small>` : ''}</div>`;
+    return `<div class="capability ${row.granted ? 'ok' : row.optional ? '' : 'bad'}${busy ? ' loading' : ''}" role="button" tabindex="0" aria-disabled="${Boolean(permissionRequestTarget)}" aria-busy="${busy}" data-permission="${escapeHtml(row.key)}"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.label)}</span>${row.detail ? `<small>${escapeHtml(row.detail)}</small>` : ''}</div>`;
   }).join('');
   updateSetupButtons();
 }
@@ -1787,7 +1896,7 @@ async function requestCameraPermission(permissions) {
 
 async function requestMicrophonePermission(permissions) {
   if (!permissions?.media || permissions.media.microphone === 'granted') return true;
-  setPermissionHint('正在申请麦克风权限。考试录制和语音对话需要麦克风访问权限。');
+  setPermissionHint('正在申请麦克风权限。有可用麦克风时采集声音，没有或未授权时可继续考试。');
   if (permissions.platform === 'darwin') {
     const granted = await window.proctorApi.askMacMediaAccess('microphone').catch(() => false);
     if (!granted) await window.proctorApi.openMacPrivacyPane('microphone').catch(() => false);
@@ -1853,8 +1962,13 @@ function permissionContextKey() {
   return `${state.serverUrl}:${state.monitoringGeneration}:${state.loginContextVersion}:${state.session?.id || ''}`;
 }
 
-function refreshPermissionStatus(extraMessage = '') {
+function refreshPermissionStatus(extraMessage = '', reuseRecent = false) {
   const scope = permissionContextKey();
+  const previous = state.permissionSnapshot;
+  if (reuseRecent && state.permissionRefreshRequest?.scope !== scope && previous?.scope === scope && Date.now() - previous.checkedAt < 10_000 && networkAccessOk()
+      && previous.capabilities?.peripheralsFingerprint && Array.isArray(previous.capabilities.vmSignals)) {
+    return Promise.resolve(previous);
+  }
   let request = state.permissionRefreshRequest;
   if (!request || request.scope !== scope) {
     request = { scope, promise: null };
@@ -1877,7 +1991,6 @@ function permissionProbe(label, operation, timeoutMs = 15_000) {
 }
 
 async function readPermissionStatus(scope) {
-  const serverUrl = state.serverUrl;
   let host = '';
   try {
     host = new URL(state.serverUrl).hostname;
@@ -1885,19 +1998,16 @@ async function readPermissionStatus(scope) {
     host = '';
   }
   const recentFrame = state.screenCaptureProbe?.verifiedFrame && Date.now() - state.screenCaptureProbe.verifiedAt < 5000 ? state.screenCaptureProbe : null;
-  const [permissions, scannedCapabilities, networkProbes, screenProbe, domainStatus] = await Promise.all([
+  const [permissions, scannedCapabilities, , screenProbe, domainStatus] = await Promise.all([
     permissionProbe('系统权限', () => window.proctorApi.getSystemPermissionStatus()),
     permissionProbe('系统组件', () => window.proctorApi.getSecurityCapabilities(host ? [host] : []), 30_000).catch(error => ({ diagnostic: errorMessage(error) })),
-    probeServerAccess('/api/health', serverUrl).catch((error) => [
-      { channel: 'local-network', ok: false, elapsedMs: 0, message: errorMessage(error) }
-    ]),
+    checkServerConnection(),
     (recentFrame ? Promise.resolve(recentFrame) : permissionProbe('屏幕源', () => window.proctorApi.testScreenCapture())).catch(error => ({ ok: false, sourceCount: 0, reason: errorMessage(error) })),
     permissionProbe('网络采集', () => window.proctorApi.startNetworkDomainMonitor(), 30_000).catch(error => ({ state: 'unavailable', message: errorMessage(error) }))
   ]);
   if (scope !== permissionContextKey()) throw new Error('客户端状态已改变，请重新检测');
   const capabilities = scannedCapabilities && { ...scannedCapabilities,
     networkDomainStatus: domainStatus, networkScan: ['ready', 'limited'].includes(domainStatus.state) };
-  if (serverUrl === state.serverUrl) state.networkAccessProbe = networkProbes;
   setCheck(
     'serverCheck',
     networkAccessOk(),
@@ -1905,11 +2015,45 @@ async function readPermissionStatus(scope) {
       ? '本地网络：已授权，监考服务器可访问'
       : `本地网络：未授权或不可达；${networkAccessDetail()}`
   );
-  state.screenCaptureProbe = screenProbe;
+  state.screenCaptureProbe = screenProbe.ok && state.mediaReady && state.screenCaptureProbe?.verifiedFrame
+    ? state.screenCaptureProbe : screenProbe;
+  if (state.systemReady) {
+    const missingSystem = window.proctorPermissionRows(permissions, capabilities, { network: networkAccessOk() })
+      .some(row => !['screen', 'camera', 'microphone'].includes(row.key) && !row.granted);
+    if (scannedCapabilities && !scannedCapabilities.diagnostic && (missingSystem || capabilities?.vmSignals?.length)) state.systemReady = false;
+  }
+  if (!state.screenCaptureProbe?.verifiedFrame || !screenAuthorized(permissions)) state.mediaReady = false;
 
   setActionVisibility(permissions.platform, permissions, capabilities);
   renderCapabilityPanel(permissions, capabilities);
-  return { permissions, capabilities };
+  const snapshot = { scope, permissions, capabilities, checkedAt: Date.now() };
+  state.permissionSnapshot = snapshot;
+  return snapshot;
+}
+
+function refreshPermissionCards(message = '') {
+  const scope = permissionContextKey();
+  let request = state.permissionCardsRequest;
+  if (!request || request.scope !== scope) {
+    request = { scope, promise: null };
+    state.permissionCardsRequest = request;
+    request.promise = permissionProbe('设备权限状态', () => window.proctorApi.getSystemPermissionStatus(), 2_000)
+      .then(permissions => {
+        if (scope !== permissionContextKey()) return;
+        const snapshot = state.permissionSnapshot;
+        const capabilities = snapshot?.scope === scope ? snapshot.capabilities : null;
+        if (snapshot?.scope === scope) snapshot.permissions = permissions;
+        if (state.mediaReady && !screenAuthorized(permissions)) state.mediaReady = false;
+        if (state.systemReady && permissions.platform === 'darwin' && permissions.accessibility === false) state.systemReady = false;
+        setActionVisibility(permissions.platform, permissions, capabilities);
+        renderCapabilityPanel(permissions, capabilities);
+      }).finally(() => {
+        if (state.permissionCardsRequest === request) state.permissionCardsRequest = null;
+      });
+  }
+  return request.promise.then(() => {
+    if (message && scope === permissionContextKey()) setPermissionHint(message);
+  });
 }
 
 function formatDuration(ms) {
@@ -1945,11 +2089,15 @@ async function detectSystemPermissions() {
   const current = () => !state.loginResetting && !state.session && scope === permissionContextKey();
   state.systemReady = false;
   state.mediaReady = false;
+  state.verifiedSystemStatus = null;
+  permissionRefreshOnFocus = false;
+  permissionWindowBlurred = false;
+  clearTimeout(permissionFocusTimer);
   updateSetupButtons();
   setCheck('systemCheck', null, '系统检查：正在检测权限');
   setCheck('screenCheck', null, '屏幕检测：等待系统权限完成');
-  setCheck('cameraCheck', null, '摄像头采集：等待系统权限完成');
-  const status = await refreshPermissionStatus();
+  setCheck('cameraCheck', null, '音视频设备：等待检测');
+  const status = await refreshPermissionStatus('', true);
   if (!current()) throw new Error('客户端状态已改变，请重新检测');
   const { permissions, capabilities } = status;
 
@@ -2005,6 +2153,7 @@ async function detectSystemPermissions() {
   }
 
   if (!current()) throw new Error('客户端状态已改变，请重新检测');
+  state.verifiedSystemStatus = { scope, permissions, capabilities };
   state.systemReady = true;
   const incomplete = [!capabilities?.processScan && '进程检测', !capabilities?.networkScan && '域名检测', !capabilities?.hardwareScan && '外设检测', !capabilities?.vmScan && '虚拟机检测', !capabilities?.activeWindow && '活动窗口检测'].filter(Boolean);
   setCheck('systemCheck', incomplete.length ? null : true, incomplete.length ? `系统检查：${incomplete.join('、')}不可用，详见权限列表` : '系统检查：基础检测可用，域名采集范围详见权限列表');
@@ -2032,7 +2181,7 @@ async function probeMediaDevice(target) {
       if (target === 'camera') await waitForVideoFrame(stream);
       else if (!stream.getAudioTracks().some(track => track.readyState === 'live' && track.enabled)) throw new Error('麦克风未提供可用音频轨道');
       if (!current()) throw new Error('客户端状态已改变，请重新检测');
-      state.mediaProbeResults[target] = { ok: true, observedAt: Date.now() };
+      state.mediaProbeResults[target] = { scope, ok: true, observedAt: Date.now() };
       return true;
     } catch (error) {
       const details = ['NotFoundError', 'DevicesNotFoundError'].includes(error?.name) ? `${label}未连接或未被系统识别`
@@ -2053,13 +2202,14 @@ async function probeMediaDevice(target) {
 }
 
 async function detectMedia() {
-  if (state.loginResetting || !state.systemReady || state.session) {
+  const scope = permissionContextKey();
+  const system = state.verifiedSystemStatus;
+  if (state.loginResetting || !state.systemReady || system?.scope !== scope || state.session) {
     setCheck('systemCheck', false, '系统检查：请先完成系统检测，考试期间不能重新执行登录检测');
     updateSetupButtons();
     return false;
   }
 
-  const scope = permissionContextKey();
   const current = () => !state.loginResetting && !state.session && scope === permissionContextKey();
   stopStream(state.cameraStream);
   stopStream(state.screenStream);
@@ -2070,79 +2220,75 @@ async function detectMedia() {
   updateSetupButtons();
 
   setCheck('screenCheck', null, '屏幕检测：正在检测');
-  setCheck('cameraCheck', null, '摄像头采集：正在检测');
+  setCheck('cameraCheck', null, '音视频设备：正在检测');
   const screenProbe = await probeScreenCaptureFrame();
   if (!current()) throw new Error('客户端状态已改变，请重新检测');
   state.screenCaptureProbe = screenProbe;
   const screenOk = screenProbe.ok === true;
   // OS permission flags do not prove that hardware is still connected or
   // available. Exercise real capture on every login, including after a test.
-  let cameraOk = false, microphoneOk = false, mediaError = '';
+  let cameraOk = false, microphoneOk = false;
   for (const target of ['camera', 'microphone']) {
     if (!current()) throw new Error('客户端状态已改变，请重新检测');
-    try { await probeMediaDevice(target); if (target === 'camera') cameraOk = true; else microphoneOk = true; }
-    catch (error) { mediaError += `${target === 'camera' ? '摄像头' : '麦克风'}：${errorMessage(error)}；`; }
+    const previous = state.mediaProbeResults[target];
+    try {
+      if (previous?.scope !== scope || !previous.ok || Date.now() - previous.observedAt >= 10_000) await probeMediaDevice(target);
+      if (target === 'camera') cameraOk = true; else microphoneOk = true;
+    }
+    catch { /* Optional device failures remain visible in the permission cards. */ }
   }
   if (!current()) throw new Error('客户端状态已改变，请重新检测');
-  // The server resolves the room after identity verification. Camera failure
-  // is reported accurately, but cannot block rooms that do not require it.
-  state.mediaReady = screenOk && microphoneOk;
+  // Front camera and microphone are optional in every room. Keep their real
+  // probe results for diagnostics; only screen readiness gates media setup.
+  state.mediaReady = screenOk;
   setCheck('screenCheck', screenOk, screenOk ? '屏幕检测：已获取画面' : `屏幕检测：${state.screenCaptureProbe.reason || '未获取画面'}`);
-  setCheck('cameraCheck', cameraOk && microphoneOk, cameraOk && microphoneOk ? '摄像头与麦克风：实测通过' : `${mediaError || '摄像头或麦克风采集失败'}${!cameraOk && microphoneOk ? '仅可继续登录不要求电脑前置摄像头的考室；系统测试要求前置摄像头。' : ''}`);
-  let refreshError = '';
-  const refreshed = await refreshPermissionStatus().catch(error => { refreshError = errorMessage(error); return null; });
+  setCheck('cameraCheck', true, [
+    cameraOk ? '前置摄像头：实测通过' : '前置摄像头：不可用，已跳过',
+    microphoneOk ? '麦克风：实测通过' : '麦克风：不可用，已跳过'
+  ].join('；'));
+  // Read OS flags again after device prompts without repeating the network,
+  // hardware and VM checks that passed in this setup session.
+  await refreshPermissionCards().catch(() => {
+    if (current()) renderCapabilityPanel(system.permissions, system.capabilities);
+  });
   if (!current()) throw new Error('客户端状态已改变，请重新检测');
-  const missingSystem = refreshed ? window.proctorPermissionRows(refreshed.permissions, refreshed.capabilities, {
-    network: networkAccessOk(), screen: false, camera: false, microphone: false
-  }).filter(row => !['screen', 'camera', 'microphone'].includes(row.key) && !row.granted) : [];
-  const signals = refreshed?.capabilities?.vmSignals;
-  if (!refreshed || missingSystem.length || !Array.isArray(signals) || signals.length) {
-    state.systemReady = false;
-    state.mediaReady = false;
-    const reason = !refreshed ? refreshError || '系统状态刷新失败'
-      : missingSystem.length ? missingSystem.map(row => `${row.title}（${row.detail || row.label}）`).join('；')
-        : !Array.isArray(signals) ? '虚拟机检测结果不完整' : `疑似虚拟机 ${signals.join('、')}`;
-    setCheck('systemCheck', false, `系统检查：${reason}`);
-  }
   updateSetupButtons();
   return state.mediaReady;
 }
 
 async function requestDesktopPair() {
   if (state.loginResetting) throw new Error('正在清理上次登录，请稍后重试');
-  const serverUrl = state.serverUrl;
-  const generation = state.monitoringGeneration;
-  const contextVersion = state.loginContextVersion;
+  const scope = permissionContextKey();
   const activeSession = () => state.session && state.session.status !== 'FINISHED';
+  const current = () => !state.loginResetting && scope === permissionContextKey() && !activeSession();
   if (activeSession()) throw new Error('已有考试会话，请先结束当前会话');
-  // A prior test/login only proves the environment at that moment. Recheck
-  // current system components as well as media before issuing every pairing.
-  if (!await detectSystemPermissions()) throw new Error('当前权限或检测组件不可用，请按检测结果处理后重试');
-  if (!await detectMedia()) throw new Error(state.systemReady
-    ? '当前屏幕或麦克风实测失败，请返回检测页查看原因并重试'
-    : '检测期间系统状态发生变化，请返回检测页查看原因并重试');
+  if (!state.systemReady || state.verifiedSystemStatus?.scope !== scope) throw new Error('请返回检测页完成系统检测');
+  if (!state.mediaReady || !state.screenCaptureProbe?.verifiedFrame || !state.desktopInfo) throw new Error('请返回检测页完成屏幕与音视频检测');
   const permissions = await window.proctorApi.getSystemPermissionStatus();
-  if (!state.systemReady || !screenSourceUsable() || !screenAuthorized(permissions) || !mediaAuthorized(permissions, 'microphone')) throw new Error('检测期间权限或设备状态发生变化，请重新检测后登录');
-  if (!state.desktopInfo) state.desktopInfo = await window.proctorApi.getDesktopInfo();
-  configureCaptureProfile(state.desktopInfo.os);
-  const fingerprint = await window.proctorApi.confirmPeripheralBaseline();
-  if (state.loginResetting || state.loginContextVersion !== contextVersion || state.serverUrl !== serverUrl || state.monitoringGeneration !== generation || activeSession()) {
-    throw new Error('客户端状态已改变，请重新生成登录二维码');
+  if (!current()) throw new Error('客户端状态已改变，请重新生成登录二维码');
+  if (!state.systemReady || permissions?.platform === 'darwin' && permissions.accessibility === false) {
+    state.systemReady = false;
+    state.mediaReady = false;
+    throw new Error('系统权限已变化，请返回检测页重新检测');
   }
+  if (!screenAuthorized(permissions) || ['denied', 'restricted'].includes(permissions?.media?.screen)) {
+    state.mediaReady = false;
+    throw new Error('屏幕录制权限已变化，请返回检测页重新检测');
+  }
+  const fingerprint = await window.proctorApi.confirmPeripheralBaseline();
+  if (!current()) throw new Error('客户端状态已改变，请重新生成登录二维码');
   if (!/^(?:usb-v[456]|mac-usb-v3):[0-9a-f]{64}$/.test(fingerprint)) throw new Error('设备检测未完成，请重新检测');
   state.baselineFingerprint = fingerprint;
   const pair = await api('/api/client/pair', {
     method: 'POST',
     body: JSON.stringify({
       ...state.desktopInfo,
-      screenOk: screenSourceUsable(),
+      screenOk: true,
       desktopCameraOk: state.mediaProbeResults.camera?.ok === true && !['denied', 'restricted'].includes(permissions?.media?.camera),
       peripheralsFingerprint: fingerprint
     })
   });
-  if (state.loginResetting || state.loginContextVersion !== contextVersion || state.serverUrl !== serverUrl || state.monitoringGeneration !== generation || activeSession()) {
-    throw new Error('客户端状态已改变，请重新生成登录二维码');
-  }
+  if (!current()) throw new Error('客户端状态已改变，请重新生成登录二维码');
   if (!pair.pollToken) throw new Error('服务器缺少安全配对凭证，请更新监考后台');
   state.pairPollContext = null;
   state.pairPollBusy = false;
@@ -2152,7 +2298,7 @@ async function requestDesktopPair() {
 }
 
 async function enterLogin() {
-  if (!(await ensureLatestClient())) return;
+  if (state.clientUpdate.phase !== 'current' && !(await ensureLatestClient())) return;
   clearInterval(state.pairTimer);
   $('loginStatus').textContent = '';
   $('credentialForm').classList.add('hidden');
@@ -2160,13 +2306,20 @@ async function enterLogin() {
   selectLoginMethod('qr');
   updateSetupButtons();
   setOnly('loginPanel');
-  await createPair();
+  await createPair({ versionChecked: true });
 }
 
-async function createPair() {
-  if (!(await ensureLatestClient())) return;
+async function createPair({ versionChecked = false } = {}) {
+  if (!versionChecked && state.clientUpdate.phase !== 'current' && !(await ensureLatestClient())) return;
+  $('loginStatus').textContent = '';
   state.credentialMaterials = false;
-  const pair = await requestDesktopPair();
+  let pair;
+  try {
+    pair = await requestDesktopPair();
+  } catch (error) {
+    if (/下载最新版客户端|请先将监考客户端更新/.test(errorMessage(error))) await ensureLatestClient('retry');
+    throw error;
+  }
   await showPair(pair);
 }
 
@@ -2175,14 +2328,6 @@ async function showPair(pair, credentialTicket = '') {
   const current = () => !state.loginResetting && contextVersion === state.loginContextVersion && serverUrl === state.serverUrl
     && pair.pairCode === state.pairCode && pollToken === state.pairPollToken && !state.session && !state.finishedScreenVisible;
   if (!current()) return;
-  const candidateOrigin = mobileWebsiteOrigin();
-  if (!candidateOrigin) throw new Error('无法确定考生浏览器页面地址');
-  const candidateUrl = new URL(mobileWebsiteUrl());
-  candidateUrl.searchParams.set('apiBase', mobileApiBase());
-  candidateUrl.searchParams.set('pairCode', pair.pairCode);
-  if (pair.recoverySecret) { candidateUrl.searchParams.set('reconnect', '1'); candidateUrl.hash = new URLSearchParams({ recoverySecret: pair.recoverySecret }).toString(); }
-  if (pair.qrLoginSecret) candidateUrl.hash = new URLSearchParams({ testSecret: pair.qrLoginSecret }).toString();
-  if (credentialTicket) candidateUrl.hash = new URLSearchParams({ credentialTicket }).toString();
   $('pairTitle').textContent = credentialTicket ? '完成第二机位材料' : '二维码登录';
   $('pairCode').textContent = pair.pairCode;
   $('pairHint').textContent = `有效期至 ${new Date(pair.expiresAt).toLocaleTimeString()}`;
@@ -2190,31 +2335,41 @@ async function showPair(pair, credentialTicket = '') {
   selectLoginMethod('qr');
   setOnly('loginPanel');
   const pairQr = $('pairQr');
+  pairQr.onerror = null;
   pairQr.removeAttribute('src');
   $('pairStatus').textContent = '正在生成登录二维码';
+  clearInterval(state.pairTimer);
+  state.pairTimer = window.setInterval(pollPair, 2500);
+  const showQrFailure = (error) => {
+    if (!current()) return;
+    console.error('登录二维码生成失败', error);
+    pairQr.onerror = null;
+    pairQr.removeAttribute('src');
+    $('pairStatus').textContent = credentialTicket || pair.recoverySecret
+      ? '二维码暂时无法显示，请返回后重新登录。'
+      : '二维码暂时无法显示，可在考生网页输入上方 6 位配对码，或重试刷新二维码。';
+  };
   try {
+    if (!mobileWebsiteOrigin()) throw new Error('无法确定考生浏览器页面地址');
+    const candidateUrl = new URL(mobileWebsiteUrl());
+    candidateUrl.searchParams.set('apiBase', mobileApiBase());
+    candidateUrl.searchParams.set('pairCode', pair.pairCode);
+    if (pair.recoverySecret) { candidateUrl.searchParams.set('reconnect', '1'); candidateUrl.hash = new URLSearchParams({ recoverySecret: pair.recoverySecret }).toString(); }
+    if (pair.qrLoginSecret) candidateUrl.hash = new URLSearchParams({ testSecret: pair.qrLoginSecret }).toString();
+    if (credentialTicket) candidateUrl.hash = new URLSearchParams({ credentialTicket }).toString();
     const dataUrl = await window.proctorApi.createQrDataUrl(candidateUrl.toString());
     if (!current()) return;
-    const image = new Image();
-    image.src = dataUrl;
-    if (typeof image.decode === 'function') await image.decode();
-    if (!current()) return;
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) throw new Error('二维码图像数据无效');
+    pairQr.onerror = () => showQrFailure(new Error('二维码图像无法加载'));
     pairQr.src = dataUrl;
     $('pairStatus').textContent = credentialTicket ? '账号密码已验证。所在考室要求第二机位，请扫码拍摄并提交审核材料。' : '请使用手机扫码，登录方式将按考生所在考室设置校验。';
   } catch (error) {
-    if (!current()) return;
-    console.error('登录二维码生成失败', error);
-    pairQr.removeAttribute('src');
-    $('pairStatus').textContent = '二维码暂时无法显示，请在考生网页输入上方 6 位配对码。';
-    showError(error, '二维码生成失败，请稍后重试');
+    showQrFailure(error);
   }
-  if (!current()) return;
-  clearInterval(state.pairTimer);
-  state.pairTimer = window.setInterval(pollPair, 2500);
 }
 
 async function submitCredentialLogin() {
-  if (!(await ensureLatestClient())) return;
+  if (state.clientUpdate.phase !== 'current' && !(await ensureLatestClient())) return;
   if (!$('credentialForm').reportValidity()) return;
   const pair = await requestDesktopPair();
   const result = await api('/api/client/credential-login', {
@@ -2282,7 +2437,7 @@ async function pollPair() {
     }
     $('pairStatus').textContent = result.testLogin ? '登录成功，正在进入' : '登录请求已提交，等待监考审核';
     $('waitingHint').textContent = state.requirements.requireFrontCamera
-      ? '正在采集电脑屏幕和前置摄像头，并上传请求登录阶段录像。请勿触碰显示器及电脑。'
+      ? '正在采集电脑屏幕；前置摄像头可用时自动采集并推流，录像按考试设置保存。请勿触碰显示器及电脑。'
       : '正在采集电脑屏幕，并上传请求登录阶段录像。请勿触碰显示器及电脑。';
     if (!result.testLogin) setOnly('waitingPanel');
     const contestOrigin = contestWebsiteOrigin();
@@ -2314,10 +2469,22 @@ async function pollPair() {
     }
   } catch (error) {
     if (contextVersion !== state.loginContextVersion || state.pairCode !== pairCode || state.pairPollToken !== pollToken || state.serverUrl !== serverUrl) return;
-    if (/\[(?:PAIRING_EXPIRED|PAIRING_INVALID)\]/.test(errorMessage(error)) && state.pairCode === pairCode && state.pairPollToken === pollToken && state.serverUrl === serverUrl) {
+    if (/\[(?:PAIRING_EXPIRED|PAIRING_INVALID)\]/.test(errorMessage(error))) {
       const message = errorMessage(error).replace(/\[(?:PAIRING_EXPIRED|PAIRING_INVALID)\]\s*/, '');
-      await resetWaitingLogin(message);
-      setPermissionHint(message);
+      if (state.session || state.loginRequest || state.credentialMaterials) {
+        await resetWaitingLogin(message);
+        setPermissionHint(message);
+      } else {
+        clearInterval(state.pairTimer);
+        state.pairTimer = 0;
+        state.pairCode = '';
+        state.pairPollToken = '';
+        $('pairCode').textContent = '------';
+        $('pairQr').onerror = null;
+        $('pairQr').removeAttribute('src');
+        $('pairHint').textContent = '';
+        $('pairStatus').textContent = message;
+      }
       return;
     }
     if (lastPairError !== errorMessage(error)) showError(error, '登录后的考试页面暂未加载，正在自动重试');
@@ -2349,6 +2516,8 @@ async function startSubmittedMonitoring(session, requirements) {
   state.peripheralSnapshot = null;
   state.peripheralSnapshotRequest = null;
   state.peripheralSnapshotSchedule = null;
+  state.usbEventSnapshot = null;
+  state.usbEventRequest = null;
   let screenOk = false;
   try {
     // Keep the authenticated connection alive while devices or drivers are
@@ -2357,9 +2526,8 @@ async function startSubmittedMonitoring(session, requirements) {
     if (generation !== state.monitoringGeneration || state.finishedScreenVisible) return;
     screenOk = await ensureScreenCapture();
     if (generation !== state.monitoringGeneration || state.finishedScreenVisible) return;
-    await window.proctorDesktopMicrophone?.acquire?.();
-    if (generation !== state.monitoringGeneration || state.finishedScreenVisible) return;
-    if (state.requirements?.requireFrontCamera) await ensureCameraCapture();
+    void window.proctorDesktopMicrophone?.acquire?.();
+    if (state.requirements?.requireFrontCamera) void startOptionalCameraCapture();
     else {
       stopStream(state.cameraStream);
       state.cameraStream = null;
@@ -2370,7 +2538,7 @@ async function startSubmittedMonitoring(session, requirements) {
     // WebRTC 推流异步启动，不阻塞心跳上报。
     void startRtmpStreams();
     setCheck('screenCheck', screenCaptureLive() ? true : screenOk, screenCaptureLive() ? state.requirements?.isPublicTest ? '屏幕检测：正在进行测试推流，不保存录像' : '屏幕检测：1080p/30fps 实时采集中，录像按考试设置保存' : '屏幕检测：等待重新采集');
-    if (state.requirements?.requireFrontCamera) setCheck('cameraCheck', cameraCaptureLive(), cameraCaptureLive() ? '摄像头采集：以获取画面' : '摄像头采集：等待重新采集');
+    if (state.requirements?.requireFrontCamera) setCheck('cameraCheck', cameraCaptureLive() ? true : null, cameraCaptureLive() ? '前置摄像头：已获取画面' : '前置摄像头：未获取画面，不影响继续考试');
   } finally {
     if (generation === state.monitoringGeneration) state.monitoringStarting = false;
   }
@@ -2402,6 +2570,7 @@ function resetWaitingLogin(message) {
 async function clearWaitingLogin(message) {
   $('app').inert = false;
   permissionRefreshOnFocus = false;
+  permissionWindowBlurred = false;
   lastPermissionTarget = '';
   clearTimeout(permissionFocusTimer);
   clearInterval(state.clockTimer);
@@ -2410,6 +2579,7 @@ async function clearWaitingLogin(message) {
   state.pairTimer = 0;
   stopRecorders();
   stopMonitoringTimers();
+  state.recoveryPayload = undefined;
   await window.proctorApi.saveRendererRecovery?.(null).catch(error => console.warn('[renderer-recovery-clear]', errorMessage(error)));
   await window.proctorApi.setWindowMode('setup').catch(() => {});
   await window.proctorApi.releaseScreenControl().catch(() => {});
@@ -2431,7 +2601,17 @@ async function clearWaitingLogin(message) {
   state.contestPageRetryAt = 0;
   state.finishedScreenVisible = false;
   state.pairCode = '';
+  state.systemReady = false;
+  state.mediaReady = false;
+  state.verifiedSystemStatus = null;
+  state.permissionSnapshot = null;
+  state.mediaProbeResults = {};
+  state.screenCaptureProbe = null;
+  state.loginStepReached = false;
+  state.credentialMaterials = false;
   $('pairCode').textContent = '------';
+  $('pairQr').onerror = null;
+  $('pairQr').removeAttribute('src');
   $('pairStatus').textContent = message || '登录请求已取消';
   $('waitingHint').textContent = '请勿触碰显示器及电脑。审核通过后将显示考试信息。';
   $('rejectBox').classList.add('hidden');
@@ -2453,6 +2633,7 @@ async function showFinishedScreen(message) {
   state.pairTimer = 0;
   stopRecorders();
   stopMonitoringTimers();
+  state.recoveryPayload = undefined;
   await window.proctorApi.saveRendererRecovery?.(null).catch(error => console.warn('[renderer-recovery-clear]', errorMessage(error)));
   await window.proctorApi.stopRtmpStreams().catch(() => {});
   await window.proctorApi.stopRtmpPipes().catch(() => {});
@@ -2537,7 +2718,7 @@ function scheduleContestPageRetry(generation = state.contestLoadGeneration) {
 }
 
 function openContestHome() {
-  if (!state.exam || state.finishedScreenVisible) return;
+  if (!state.exam || !state.session || state.loginResetting || state.finishedScreenVisible) return;
   const browser = isBrowserExam();
   if (browser && (!state.session?.startedAt || state.session.status !== 'IN_EXAM' || state.session.lockdown)) return;
   const url = contestWebsiteUrl();
@@ -2548,7 +2729,8 @@ function openContestHome() {
   if (state.contestPageLoading || state.contestPageLoaded || performance.now() < state.contestPageRetryAt) return;
   const generation = ++state.contestLoadGeneration;
   const sessionId = state.session.id;
-  const current = () => generation === state.contestLoadGeneration && state.session?.id === sessionId && !state.finishedScreenVisible;
+  const current = () => generation === state.contestLoadGeneration && state.session?.id === sessionId
+    && !state.loginResetting && !state.finishedScreenVisible;
   $('examStatus').textContent = browser ? `正在自动登录 ${isHydroBrowserExam() ? 'HydroOJ' : 'NovaJudge'} 比赛` : '已打开项目内置比赛网页，题目由本项目发布，HydroOJ 负责判题。';
   if (browser) {
     showBrowserLogin('loading');
@@ -2568,6 +2750,10 @@ function openContestHome() {
   const waitForAttached = () => new Promise((resolve, reject) => {
     let attempts = 0;
     const check = () => {
+      if (!current()) {
+        resolve();
+        return;
+      }
       attempts += 1;
       try {
         if (typeof view.getWebContentsId !== 'function' || view.getWebContentsId() > 0) {
@@ -2587,6 +2773,7 @@ function openContestHome() {
   });
   view.classList.remove('hidden');
   const loading = waitForAttached().then(async () => {
+    if (!current()) return;
     let target = url;
     if (browser) {
       const login = await api('/api/client/oj-cookie', { method: 'POST', body: JSON.stringify({ sessionId }) });
@@ -2594,8 +2781,9 @@ function openContestHome() {
       target = await (isHydroBrowserExam() ? window.proctorApi.installHydroBrowserLogin(login) : window.proctorApi.installNovaJudgeLogin(login));
     }
     if (!current()) return;
+    const restoreLegacyDrafts = state.session?.status === 'IN_EXAM' && Boolean(state.session.startedAt) && !state.session.lockdown;
     const navigation = typeof view.loadURL === 'function'
-      ? view.loadURL(target, browser ? {} : { extraHeaders })
+      ? view.loadURL(target, browser ? {} : { extraHeaders, restoreLegacyDrafts })
       : Promise.resolve().then(() => { view.src = target; });
     let timer;
     try {
@@ -2634,6 +2822,9 @@ function openContestHome() {
 }
 
 function refreshContestPage() {
+  // While native login or navigation is in progress, the guest can still
+  // report about:blank. Reuse that load instead of starting another login.
+  if (state.contestPageLoading || state.loginResetting || state.finishedScreenVisible) return;
   const view = $('ojView');
   const currentUrl = typeof view.getURL === 'function' ? view.getURL() : '';
   if (currentUrl && currentUrl !== 'about:blank' && browserNavigationAllowed(currentUrl)) {
@@ -2641,7 +2832,6 @@ function refreshContestPage() {
     return;
   }
   state.contestPageLoaded = false;
-  state.contestPageLoading = false;
   state.contestPageRetryAt = 0;
   openContestHome();
 }
@@ -2651,15 +2841,47 @@ window.proctorApi.onRefreshShortcut(() => {
     refreshContestPage();
     return;
   }
-  void checkServerConnection()
-    .then(() => refreshPermissionStatus())
-    .then(() => updateSetupButtons())
-    .catch((error) => showError(error, '页面刷新失败，请稍后重试'));
+  if (state.loginStepReached) {
+    void checkServerConnection().then(() => refreshPermissionCards()).catch(() => {});
+    return;
+  }
+  void refreshPermissionStatus().catch((error) => showError(error, '页面刷新失败，请稍后重试'));
 });
 
 function contestParentUrl() {
   try {
     const url = new URL($('ojView').getURL());
+    if (isNovaJudgeExam() && browserNavigationAllowed(url.href)
+      && url.pathname === '/api/contests/' + state.exam.platformContestId + '/editorial') return contestWebsiteUrl() + '/editorial';
+    if (isHydroBrowserExam()) {
+      // Hydro problem and record pages live outside /contest/:id. Removing a
+      // path segment would visit /p or an unscoped /record and trigger login
+      // recovery after the main process rejects that navigation.
+      const home = new URL(contestWebsiteUrl());
+      const basePath = new URL(state.exam.platformBaseUrl).pathname.replace(/\/+$/, '');
+      const contestId = state.exam.platformContestId;
+      if (url.origin !== home.origin || url.searchParams.getAll('tid').some(id => id !== contestId)) return '';
+      const path = basePath === '' || basePath === '/d/system'
+        ? url.pathname.replace(/^\/d\/system(?=\/)/, '')
+        : url.pathname.startsWith(basePath + '/') ? url.pathname.slice(basePath.length) : '';
+      const route = path.replace(/\/+$/, '');
+      const contest = `/contest/${contestId}`;
+      const contestPage = route.startsWith(contest + '/') ? route.slice(contest.length + 1) : '';
+      // Hydro can redirect /scoreboard straight back to its default XCPCIO view.
+      const scoreboardEntry = /^scoreboard(?:\/(?:xcpcio|leagueboard|league-xcpcio))?$/.test(contestPage);
+      const problem = /^\/p\/([\w.-]+)(\/(?:submit|file\/[^/]+))?$/.exec(route);
+      if (problem && url.searchParams.get('tid') === contestId) {
+        home.pathname = problem[2] ? `${basePath}/p/${problem[1]}` : `${basePath}${contest}/problems`;
+        if (problem[2]) home.searchParams.set('tid', contestId);
+      } else if (route === contest || scoreboardEntry || url.pathname.startsWith('/fs/') || /^\/record\/[a-f\d]{24}$/.test(route)
+        || (route === '/record' && url.searchParams.get('tid') === contestId)
+        || /^(?:print|clarification|file\/(?:public|private)\/[^/]+|domjudge-ui(?:\/(?:samples|booklet\.pdf))?)$/.test(contestPage)) {
+        home.pathname += '/problems';
+      } else if (/^scoreboard\/[\w-]+$/.test(contestPage) || /^domjudge-ui\/runs\/-?\d+\/[1-9]\d*$/.test(contestPage)) {
+        home.pathname += '/scoreboard';
+      } else return '';
+      return home.toString();
+    }
     const path = url.pathname.replace(/\/+$/, '');
     url.pathname = path.slice(0, path.lastIndexOf('/')) || '/';
     if (!browserNavigationAllowed(url.toString())) return '';
@@ -2681,7 +2903,10 @@ function updateBrowserHistoryButtons() {
 function navigateContestHistory(direction) {
   const view = $('ojView');
   try {
-    if (direction === 'back' && contestParentUrl()) view.src = contestParentUrl();
+    if (direction === 'back') {
+      const parent = contestParentUrl();
+      if (parent) view.src = parent;
+    }
     if (direction === 'forward' && view.canGoForward?.()) view.goForward();
   } finally {
     window.setTimeout(updateBrowserHistoryButtons, 0);
@@ -2717,6 +2942,7 @@ function installWebviewGuards() {
     openContestHome();
   };
   const updateVisibleUrl = (event) => {
+    if (event.isMainFrame === false) return;
     try {
       const visibleUrl = new URL(event.url);
       visibleUrl.search = '';
@@ -2754,25 +2980,43 @@ function installWebviewGuards() {
 
 function startClock() {
   clearInterval(state.clockTimer);
+  const label = $('timeLabel'), time = $('timeValue');
+  const timer = $('examStartTimer'), waiting = $('examStartWaitingMessage');
+  const digits = ['examStartHours', 'examStartMinutes', 'examStartSeconds'].map($);
+  const start = $('startBtn'), finish = $('finishBtn');
+  const text = (element, value) => { if (element.textContent !== value) element.textContent = value; };
+  let previousSeconds = null;
   const updateClock = () => {
-    if (!state.contestPageLoading && !state.contestPageLoaded && contestWebsiteUrl()) openContestHome();
+    if (!state.contestPageLoading && !state.contestPageLoaded &&
+        performance.now() >= state.contestPageRetryAt && contestWebsiteUrl()) openContestHome();
     const now = examServerNow();
     const startAt = new Date(state.exam.startAt).getTime();
     const activeStatus = ['IN_EXAM', 'LOCKED', 'FINISHED'].includes(state.session.status);
     if (!state.session.startedAt && !activeStatus) {
-      $('timeLabel').textContent = '考试总时长';
-      $('timeValue').textContent = formatDuration(Number(state.exam.durationMinutes || 0) * 60_000);
-      $('timeValue').parentElement?.classList.remove('urgent');
+      text(label, '考试总时长');
+      text(time, formatDuration(Number(state.exam.durationMinutes || 0) * 60_000));
+      time.parentElement?.classList.remove('urgent');
       if (isBrowserExam()) {
-        const remaining = Math.max(0, startAt - now);
-        $('novaJudgeCountdown').textContent = remaining > 0 ? `距开考还有 ${formatDuration(remaining)}` : '考试已开始，请确认开始考试';
-        $('startBtn').disabled = now < startAt || now >= new Date(state.exam.endAt).getTime() || state.session.lockdown;
-        $('startBtn').classList.remove('hidden'); $('finishBtn').classList.add('hidden');
+        const remaining = Math.max(0, Math.ceil((startAt - now) / 1000));
+        timer.classList.toggle('hidden', !(remaining > 0));
+        waiting.classList.toggle('hidden', remaining > 0);
+        if (remaining > 0 && remaining !== previousSeconds) {
+          const values = [Math.floor(remaining / 3600), Math.floor(remaining % 3600 / 60), remaining % 60];
+          digits.forEach((digit, index) => text(digit, String(values[index]).padStart(2, '0')));
+          previousSeconds = remaining;
+        } else if (remaining === 0) {
+          text(waiting, now >= Date.parse(state.exam.endAt) ? '考试已结束' : '已到开考时间，请确认开始考试');
+        }
+        const disabled = !canStartBrowserExam(now);
+        if (start.disabled !== disabled) start.disabled = disabled;
+        start.classList.remove('hidden'); finish.classList.add('hidden');
+        if (disabled) closeStartConfirmation();
+        else openStartConfirmation(true);
         return;
       }
       // 开始考试由内置考试网页的概览页统一处理，避免出现两套入口。
-      $('startBtn').classList.add('hidden');
-      $('finishBtn').classList.add('hidden');
+      start.classList.add('hidden');
+      finish.classList.add('hidden');
       return;
     }
     const started = state.session.startedAt ? new Date(state.session.startedAt).getTime() : startAt;
@@ -2784,11 +3028,12 @@ function startClock() {
         : Math.min(started + state.exam.durationMinutes * 60000, new Date(state.exam.endAt).getTime());
     const finished = state.session.status === 'FINISHED' || now >= end;
     const remaining = Math.max(0, end - now);
-    $('timeLabel').textContent = finished ? '考试已结束' : '考试剩余时间';
-    $('timeValue').textContent = finished ? '00:00:00' : formatDuration(remaining);
-    $('timeValue').parentElement?.classList.toggle('urgent', !finished && remaining <= 10 * 60_000);
-    $('startBtn').classList.add('hidden');
-    $('finishBtn').classList.toggle('hidden', finished);
+    closeStartConfirmation();
+    text(label, finished ? '考试已结束' : '考试剩余时间');
+    text(time, finished ? '00:00:00' : formatDuration(remaining));
+    time.parentElement?.classList.toggle('urgent', !finished && remaining <= 10 * 60_000);
+    start.classList.add('hidden');
+    finish.classList.toggle('hidden', finished);
     // Only the authenticated server session may end monitoring.
     if (state.session.status === 'FINISHED') {
       void showFinishedScreen('本场考试已结束，无法再次进入。').catch((error) => {
@@ -2798,21 +3043,52 @@ function startClock() {
     }
   };
   updateClock();
-  // Keep the shell clock in step with the embedded contest countdown. Both use
-  // the server-provided effective end time and refresh four times per second.
-  state.clockTimer = window.setInterval(updateClock, 250);
+  state.clockTimer = window.setInterval(updateClock, 500);
+}
+
+function canStartBrowserExam(now = examServerNow()) {
+  return isBrowserExam() && state.session?.status === 'APPROVED' && !state.session.startedAt &&
+    !state.session.lockdown && !state.sessionRevoked && !state.finishedScreenVisible && !state.startingExamSession &&
+    now >= Date.parse(state.exam.startAt) && now < Date.parse(state.exam.endAt);
+}
+
+function canShowStartConfirmation() {
+  return !$('examPanel').classList.contains('hidden') && !$('app').inert &&
+    $('examNoticeModal').classList.contains('hidden') && $('networkWarningModal').classList.contains('hidden');
+}
+
+function openStartConfirmation(automatic = false) {
+  const dialog = $('startConfirmModal');
+  if (dialog.open || !canStartBrowserExam() || !canShowStartConfirmation()) return;
+  const key = JSON.stringify([state.serverUrl, state.session.id, state.exam.startAt]);
+  if (automatic && (state.startPromptKey === key || document.visibilityState === 'hidden')) return;
+  dialog.showModal();
+  state.startPromptKey = key;
+}
+
+function closeStartConfirmation() {
+  const dialog = $('startConfirmModal');
+  if (dialog.open) dialog.close();
 }
 
 async function startExam() {
-  if (!confirm('确认开始考试后将正式计时，是否继续？')) return;
-  const session = await api('/api/client/session/start', {
-    method: 'POST',
-    body: JSON.stringify({ sessionId: state.session.id, confirm: true })
-  });
-  acceptSessionSnapshot(session);
-  if (state.session?.status === 'FINISHED' || state.finishedScreenVisible) return;
-  if (isBrowserExam()) { $('novaJudgeCountdown').textContent = '监考已开始，正在连接答题平台。'; openContestHome(); }
-  $('ojView').focus();
+  if (!$('startConfirmModal').open || !canStartBrowserExam() || !canShowStartConfirmation()) return;
+  const sessionId = state.session.id;
+  state.startingExamSession = sessionId;
+  closeStartConfirmation();
+  try {
+    const session = await api('/api/client/session/start', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, confirm: true })
+    });
+    if (state.session?.id !== sessionId || !acceptSessionSnapshot(session) ||
+        state.session?.status === 'FINISHED' || state.finishedScreenVisible) return;
+    $('examStartWaitingMessage').textContent = '监考已开始，正在连接答题平台。';
+    openContestHome();
+    $('ojView').focus();
+  } finally {
+    if (state.startingExamSession === sessionId) state.startingExamSession = null;
+  }
 }
 
 async function finishExam() {
@@ -2894,7 +3170,9 @@ async function startHeartbeat(generation = state.monitoringGeneration) {
     return window.proctorApi.startNetworkDomainMonitor();
   }, 30_000).catch(error => console.warn('[network-monitor-start]', errorMessage(error)));
   void permissionProbe('USB 检测启动', () => {
-    if (generation === state.monitoringGeneration && !state.finishedScreenVisible) return window.proctorApi.watchUsbEvents?.(sessionId);
+    if (generation === state.monitoringGeneration && !state.finishedScreenVisible) {
+      return window.proctorApi.watchUsbEvents?.(sessionId, state.session?.peripheralsBaselineFingerprint || state.baselineFingerprint);
+    }
   })
     .catch(error => console.warn('[usb-events]', errorMessage(error)));
   await heartbeatTick();
@@ -2925,7 +3203,7 @@ async function readMediaState(context) {
     const result = await api(`/api/client/test-environment?sessionId=${encodeURIComponent(context.sessionId)}`).catch(() => null);
     if (!mobileReconnectContextIsCurrent(context)) return;
     const labels = { DESKTOP_SCREEN: '屏幕', DESKTOP_CAMERA: '前置', MOBILE_CAMERA: '第二机位' };
-    $('testStreamStatus').textContent = result ? result.channels.filter(item => item.channel !== 'MOBILE_CAMERA' || state.requirements?.requireSecondCamera).map(item => `${labels[item.channel]}：${item.ready ? '推流通过' : item.available ? '等待推流' : '检测暂不可用'}`).join(' · ') : '推流检测暂不可用';
+    $('testStreamStatus').textContent = result ? result.channels.filter(item => item.channel !== 'MOBILE_CAMERA' || state.requirements?.requireSecondCamera).map(item => `${labels[item.channel]}：${item.ready ? '推流通过' : item.channel === 'DESKTOP_CAMERA' ? '未推流，不影响开考' : item.available ? '等待推流' : '检测暂不可用'}`).join(' · ') : '推流检测暂不可用';
   }
   updateLocalPreviews();
   // The second device continues uploading its own audit stream, but the
@@ -3063,13 +3341,16 @@ function renderExamConnectionStatus(connection) {
   badge.classList.toggle('hidden', !connection.active);
   badge.classList.toggle('connected', connection.phase === 'connected');
   badge.classList.toggle('offline', connection.phase === 'offline');
-  $('examConnectionText').textContent = connection.phase === 'connected' ? '监考连接正常' : connection.phase === 'offline' ? `连接已断开 · ${connection.offlineSeconds} 秒 · 自动重连中` : '连接检测中…';
+  setPreviewStatus('examConnectionText', connection.phase === 'connected' ? '监考连接正常' : connection.phase === 'offline' ? `连接已断开 · ${connection.offlineSeconds} 秒 · 自动重连中` : '连接检测中…');
   const modal = $('networkWarningModal');
   const wasVisible = !modal.classList.contains('hidden');
   modal.classList.toggle('hidden', !connection.warning);
-  $('networkWarningDuration').textContent = `已断开 ${connection.offlineSeconds} 秒`;
+  setPreviewStatus('networkWarningDuration', `已断开 ${connection.offlineSeconds} 秒`);
   $('networkReconnectNow').disabled = state.heartbeatBusy;
-  if (connection.warning && !wasVisible) $('networkReconnectNow').focus();
+  if (connection.warning && !wasVisible) {
+    closeStartConfirmation();
+    $('networkReconnectNow').focus();
+  }
   if (connection.active && connection.phase === 'offline') startReconnectLoop();
 }
 
@@ -3114,12 +3395,7 @@ function recoverStoppedCaptures() {
   }
   if (state.requirements?.requireFrontCamera && !cameraCaptureLive()
     && state.capturePending.camera?.generation !== state.monitoringGeneration) {
-    const generation = state.monitoringGeneration, sessionId = state.session?.id;
-    void ensureCameraCapture().then(ready => {
-      if (!ready || generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
-      startSegmentRecorders();
-      void startRtmpStreams();
-    }).catch(error => console.warn('[camera-recovery]', errorMessage(error)));
+    void startOptionalCameraCapture();
   }
 }
 
@@ -3190,7 +3466,7 @@ function observeSecuritySnapshot(snapshot, context) {
   const scope = `${context.serverUrl}:${context.sessionId}:${context.generation}`;
   if (state.securityAlertObservation?.scope !== scope) state.securityAlertObservation = { scope };
   const observed = state.securityAlertObservation;
-  const now = Date.now();
+  const now = performance.now();
   for (const [field, type, prefix] of [
     ['disallowedProcesses', 'PROCESS_POLICY', '发现不允许的进程：'],
     ['networkRemotes', 'NETWORK_POLICY', '发现外部域名活动（来源见括号）：']
@@ -3213,40 +3489,107 @@ function observeSecuritySnapshot(snapshot, context) {
   }
 }
 
+function refreshReactionClock() {
+  const { id: sessionId } = state.session;
+  const { monitoringGeneration, serverUrl, sessionToken } = state;
+  const scope = `${serverUrl}:${sessionId}:${monitoringGeneration}`;
+  if (state.reactionClockRequest?.scope === scope && state.reactionClockRequest.sessionToken === sessionToken
+    || state.reactionClock?.scope === scope && performance.now() - state.reactionClock.checkedAt < 30_000) return;
+  const request = { scope, sessionToken };
+  state.reactionClockRequest = request;
+  const sent = Date.now();
+  const startedAt = performance.now();
+  void api('/api/client/time').then(clock => {
+    if (state.reactionClockRequest !== request || state.monitoringGeneration !== monitoringGeneration ||
+      state.serverUrl !== serverUrl || state.sessionToken !== sessionToken || state.session?.id !== sessionId ||
+      state.finishedScreenVisible || !state.requirements?.reactionEnabled) return;
+    const checkedAt = performance.now();
+    const elapsed = checkedAt - startedAt;
+    const clockOffsetMs = clock.serverTime - (sent + elapsed / 2);
+    if (Number.isFinite(clockOffsetMs) && elapsed < 2000 && Math.abs(Date.now() - sent - elapsed) < 100) {
+      state.reactionClock = { scope, checkedAt, clockOffsetMs, clockUncertaintyMs: elapsed / 2 };
+    }
+  }).catch(() => { /* Recording marks missing offsets explicitly. */ })
+    .finally(() => { if (state.reactionClockRequest === request) state.reactionClockRequest = null; });
+}
+
+function heartbeatBody(payload, events) {
+  if (!events?.length) return JSON.stringify(payload);
+  // Retain any unsent events in the native queue for the next heartbeat.
+  const encoder = new TextEncoder();
+  const base = JSON.stringify(payload);
+  let remaining = 64 * 1024 - encoder.encode(base).byteLength - 32;
+  const batch = [];
+  for (const event of events.slice(0, 64)) {
+    remaining -= encoder.encode(JSON.stringify(event)).byteLength + 1;
+    if (remaining < 0) break;
+    batch.push(event);
+  }
+  if (batch.length) payload.system.peripheralEvents = batch;
+  return batch.length ? JSON.stringify(payload) : base;
+}
+
 async function sendHeartbeat() {
   if (!state.session) return;
   const generation = state.monitoringGeneration;
   const sessionId = state.session.id;
   const hosts = currentServerHosts();
+  const observedAt = performance.now();
   // OS scans can be slow on Windows. Refresh them independently so they do
   // not hold up the online heartbeat or revoke a connected candidate.
   const scanScope = `${state.serverUrl}:${sessionId}:${generation}`;
+  const peripheralUnlockNonce = state.session.unlockNonce ?? null;
+  const peripheralScope = peripheralUnlockNonce ? `${scanScope}:${peripheralUnlockNonce}` : scanScope;
+  if (window.proctorApi.readUsbEvents && !state.usbEventRequest) {
+    const request = { scope: scanScope };
+    const startedAt = globalThis.performance?.now();
+    const unlock = state.peripheralUnlockObserved;
+    state.usbEventRequest = request;
+    void window.proctorApi.readUsbEvents(sessionId).then(result => {
+      if (state.usbEventRequest !== request) return;
+      const events = result?.events?.map(({ observedAgeMs, ...event }) => {
+        if (!Number.isSafeInteger(observedAgeMs) || observedAgeMs < 0) return event;
+        // Use the start of the IPC read as a lower bound. The time spent in
+        // transit must not turn a pre-unlock device change into a new one.
+        const afterUnlock = unlock?.sessionId === sessionId && unlock.nonce === peripheralUnlockNonce &&
+          startedAt - observedAgeMs > unlock.at;
+        return { ...event, unlockNonce: afterUnlock ? unlock.nonce : null };
+      });
+      state.usbEventSnapshot = { scope: scanScope, events };
+    }).catch(error => console.warn('[heartbeat-usb-events]', errorMessage(error)))
+      .finally(() => { if (state.usbEventRequest === request) state.usbEventRequest = null; });
+  }
   // USB observations have their own IPC and freshness. A slow process
   // signature check must never delay a successful device observation.
   const peripheralSchedule = state.peripheralSnapshotSchedule;
-  if (!state.peripheralSnapshotRequest && (!peripheralSchedule || peripheralSchedule.scope !== scanScope || Date.now() - peripheralSchedule.startedAt >= 5000)) {
+  if (!state.peripheralSnapshotRequest && (!peripheralSchedule || peripheralSchedule.scope !== peripheralScope || observedAt - peripheralSchedule.startedAt >= 5000)) {
     const context = { generation, sessionId, serverUrl: state.serverUrl };
-    const isCurrent = () => context.generation === state.monitoringGeneration && context.sessionId === state.session?.id && context.serverUrl === state.serverUrl;
+    const isCurrent = () => context.generation === state.monitoringGeneration && context.sessionId === state.session?.id &&
+      context.serverUrl === state.serverUrl && (state.session.unlockNonce ?? null) === peripheralUnlockNonce;
     state.peripheralSnapshotRequest = context;
-    state.peripheralSnapshotSchedule = { scope: scanScope, startedAt: Date.now() };
+    state.peripheralSnapshotSchedule = { scope: peripheralScope, startedAt: observedAt };
     void window.proctorApi.getPeripheralSnapshot().then(snapshot => {
-      if (isCurrent()) state.peripheralSnapshot = { ...snapshot, scope: scanScope, observedAt: Date.now() };
+      if (state.peripheralSnapshotRequest === context && isCurrent()) {
+        state.peripheralSnapshot = { ...snapshot, scope: peripheralScope, observedAt: performance.now() };
+      }
     }).catch(error => {
-      if (isCurrent()) state.peripheralSnapshot = { peripheralScanOk: false, scope: scanScope, observedAt: Date.now() };
+      if (state.peripheralSnapshotRequest === context && isCurrent()) {
+        state.peripheralSnapshot = { peripheralScanOk: false, scope: peripheralScope, observedAt: performance.now() };
+      }
       console.warn('[heartbeat-peripherals]', errorMessage(error));
     }).finally(() => { if (state.peripheralSnapshotRequest === context) state.peripheralSnapshotRequest = null; });
   }
   const scanSchedule = state.heartbeatSnapshotSchedule;
   // Keep the normal five-second scan cadence during the faster two-second
   // reconnect loop, without delaying heartbeat delivery or USB observations.
-  if (!state.heartbeatSnapshotRequest && (!scanSchedule || scanSchedule.scope !== scanScope || Date.now() - scanSchedule.startedAt >= 5000)) {
+  if (!state.heartbeatSnapshotRequest && (!scanSchedule || scanSchedule.scope !== scanScope || observedAt - scanSchedule.startedAt >= 5000)) {
     const context = { generation, sessionId, serverUrl: state.serverUrl };
     state.heartbeatSnapshotRequest = context;
-    state.heartbeatSnapshotSchedule = { scope: scanScope, startedAt: Date.now() };
-    void window.proctorApi.getSecuritySnapshot(hosts).then(snapshot => {
+    state.heartbeatSnapshotSchedule = { scope: scanScope, startedAt: observedAt };
+    void window.proctorApi.getSecuritySnapshot(hosts, false).then(snapshot => {
       if (context.generation === state.monitoringGeneration && context.sessionId === state.session?.id && context.serverUrl === state.serverUrl) {
         state.heartbeatSnapshot = snapshot;
-        state.heartbeatSnapshotFreshness = { scope: scanScope, observedAt: Date.now() };
+        state.heartbeatSnapshotFreshness = { scope: scanScope, observedAt: performance.now() };
         observeSecuritySnapshot(snapshot, context);
       }
     }).catch(error => {
@@ -3264,16 +3607,16 @@ async function sendHeartbeat() {
   // but treat failures or a stalled scan as unknown instead of repeating []
   // forever. USB uses its independent observation and the same expiry bound.
   const snapshotFreshness = state.heartbeatSnapshotFreshness;
-  const snapshotFresh = snapshotFreshness?.scope === scanScope && Date.now() - snapshotFreshness.observedAt < 7500;
-  const peripheral = state.peripheralSnapshot?.scope === scanScope ? state.peripheralSnapshot : null;
-  const peripheralFresh = peripheral && Date.now() - peripheral.observedAt < 7500;
+  const snapshotFresh = snapshotFreshness?.scope === scanScope && observedAt - snapshotFreshness.observedAt < 7500;
+  const peripheral = state.peripheralSnapshot?.scope === peripheralScope ? state.peripheralSnapshot : null;
+  const peripheralFresh = peripheral && observedAt - peripheral.observedAt < 7500;
   // A slow heartbeat response can skip one polling tick. When the next tick
   // starts a fresh probe, an expired prior success is unknown until that probe
   // completes, rather than evidence of probe failure. Never extend this grace
   // to an explicit failure, and never send the stale fingerprint during it.
   const awaitingPeripheral = (!peripheral || !peripheralFresh && peripheral.peripheralScanOk === true && peripheral.peripheralsFingerprint)
     && state.peripheralSnapshotRequest
-    && state.peripheralSnapshotSchedule?.scope === scanScope && Date.now() - state.peripheralSnapshotSchedule.startedAt < 7500;
+    && state.peripheralSnapshotSchedule?.scope === peripheralScope && observedAt - state.peripheralSnapshotSchedule.startedAt < 7500;
   const peripheralScanOk = awaitingPeripheral ? undefined
     : Boolean(peripheralFresh && peripheral.peripheralScanOk === true && peripheral.peripheralsFingerprint);
   if (generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
@@ -3286,53 +3629,41 @@ async function sendHeartbeat() {
   // A separate direct alert can race a fingerprint-format migration or a proctor
   // unlock and incorrectly lock the session after the server accepted its state.
 
-  const disallowedProcesses = snapshotFresh ? normalizedSecurityList(snapshot.disallowedProcesses) : undefined;
-  const abnormalNetwork = snapshotFresh ? normalizedSecurityList(snapshot.networkRemotes) : undefined;
-
+  const telemetry = values => snapshotFresh ? normalizedSecurityList(values)?.slice(0, 16).map(value => String(value).slice(0, 128)) : undefined;
+  const payload = {
+    sessionId,
+    deviceId: state.desktopInfo.deviceId,
+    side: 'DESKTOP',
+    capture: state.monitoringStarting ? undefined : { screenOk, desktopCameraOk },
+    system: {
+      processes: telemetry(snapshot.disallowedProcesses),
+      networkRemotes: telemetry(snapshot.networkRemotes),
+      peripheralsFingerprint: peripheralScanOk ? peripheral.peripheralsFingerprint : undefined,
+      peripheralScanOk,
+      peripheralUnlockNonce,
+      vmSignals: telemetry(snapshot.vmSignals),
+      activeWindow: snapshotFresh && typeof snapshot.activeWindow === 'string' ? snapshot.activeWindow.slice(0, 512) : undefined
+    }
+  };
+  const usbEvents = state.usbEventSnapshot?.scope === scanScope ? state.usbEventSnapshot.events : undefined;
+  const result = await api('/api/client/heartbeat', { method: 'POST', body: heartbeatBody(payload, usbEvents) });
   if (generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
-  const usbEvents = await window.proctorApi.readUsbEvents?.(sessionId).catch(() => ({ available: false, events: [] }));
-  if (generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
-  const result = await api('/api/client/heartbeat', {
-    method: 'POST',
-    body: JSON.stringify({
-      sessionId: state.session.id,
-      deviceId: state.desktopInfo.deviceId,
-      side: 'DESKTOP',
-      capture: state.monitoringStarting ? undefined : { screenOk, desktopCameraOk },
-      system: {
-        processes: disallowedProcesses,
-        networkRemotes: abnormalNetwork,
-        peripheralsFingerprint: peripheralScanOk ? peripheral.peripheralsFingerprint : undefined,
-        peripheralScanOk: usbEvents?.available === false ? false : peripheralScanOk,
-        peripheralEvents: usbEvents?.events,
-        vmSignals: snapshotFresh ? normalizedSecurityList(snapshot.vmSignals) : undefined,
-        activeWindow: snapshot.activeWindow
-      }
-    })
-  });
-  if (generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
-  if (result.acceptedPeripheralEventIds?.length) await window.proctorApi.acknowledgeUsbEvents?.(sessionId, result.acceptedPeripheralEventIds).catch(() => {});
-  if (generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
+  if (result.acceptedPeripheralEventIds?.length) {
+    const acknowledged = new Set(result.acceptedPeripheralEventIds);
+    if (usbEvents?.some(event => acknowledged.has(event.id) && event.inventoryFingerprint &&
+        event.unlockNonce === peripheralUnlockNonce)) {
+      state.peripheralSnapshot = null;
+      state.peripheralSnapshotSchedule = null;
+      state.peripheralSnapshotRequest = null;
+    }
+    const cache = state.usbEventSnapshot;
+    if (cache?.scope === scanScope && cache.events) cache.events = cache.events.filter(event => !acknowledged.has(event.id));
+    void window.proctorApi.acknowledgeUsbEvents?.(sessionId, result.acceptedPeripheralEventIds).catch(() => {});
+  }
   examConnection.connected();
   if (isNovaJudgeExam() && state.session.status !== 'FINISHED') void examNoticeInbox.poll({ serverUrl: state.serverUrl, sessionId });
   void flushUploadQueue();
 
-  if (result.requirements?.reactionEnabled && (!state.reactionClock || Date.now() - (state.reactionClockCheckedAt || 0) > 30000)) {
-    const sent = Date.now();
-    try {
-      const clock = await api('/api/client/time');
-      if (generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
-      const received = Date.now();
-      const sample = { clockOffsetMs: clock.serverTime - (sent + received) / 2, clockUncertaintyMs: (received - sent) / 2 };
-      if (Number.isFinite(sample.clockOffsetMs) && sample.clockUncertaintyMs < 1000) {
-        state.reactionClock = sample;
-        state.reactionClockCheckedAt = received;
-      }
-    } catch { /* Unknown clocks remain explicitly incomplete on the server. */ }
-  }
-  // A failed clock request is asynchronous too; its old heartbeat must not
-  // update the recording policy or credentials of a finished/replaced session.
-  if (generation !== state.monitoringGeneration || state.session?.id !== sessionId || state.finishedScreenVisible) return;
   if (result.requirements) {
     state.requirements = { ...state.requirements, ...result.requirements };
     for (const entry of state.recordingBuffers.values()) if (entry.sessionId === sessionId && entry.serverUrl === state.serverUrl) {
@@ -3361,6 +3692,8 @@ async function sendHeartbeat() {
   const wasLocked = window.proctorWindowPolicy(state.session).mode === 'locked';
   const previousSessionId = state.session.id;
   const accepted = acceptSessionSnapshot(result.session);
+  if (accepted) acceptExamTiming(result.examTiming, sessionId);
+  if (state.requirements?.reactionEnabled && state.session.status !== 'FINISHED') refreshReactionClock();
   if (accepted && state.session.peripheralsBaselineFingerprint) {
     // Also covers format migrations and an unlock that happened entirely between
     // two heartbeats, without requiring the renderer to observe the locked state.
@@ -3392,14 +3725,19 @@ async function sendHeartbeat() {
   const windowPolicy = window.proctorWindowPolicy(state.session);
   const locked = windowPolicy.mode === 'locked';
   const cheatingLocked = windowPolicy.cheating;
+  if (locked) closeStartConfirmation();
   $('lockPanel').classList.toggle('hidden', !locked);
-  $('lockReason').textContent = state.session.lockdownReason || '检测到异常行为，等待管理员网页端解锁。';
+  const lockReason = state.session.lockdownReason || '检测到异常行为，等待管理员网页端解锁。';
+  const lockLabel = $('lockReason');
+  if (lockLabel.textContent !== lockReason) lockLabel.textContent = lockReason;
   $('cheatingActions').classList.toggle('hidden', !cheatingLocked);
   if (wasLocked && !locked && (state.session.lockdownReason || '').includes('取消')) {
     warnCandidate(state.session.lockdownReason);
   }
-  if (!locked && state.session.status === 'IN_EXAM') $('examStatus').textContent = '考试进行中，监控正常';
-  if (!locked && state.session.status === 'APPROVED') $('examStatus').textContent = '审核通过，等待确认开始考试';
+  const statusLabel = $('examStatus');
+  const statusText = state.session.status === 'IN_EXAM' ? '考试进行中，监控正常'
+    : state.session.status === 'APPROVED' ? '审核通过，等待确认开始考试' : null;
+  if (!locked && statusText && statusLabel.textContent !== statusText) statusLabel.textContent = statusText;
   if (state.session.status === 'FINISHED') {
     await showFinishedScreen('本场考试已结束，无法再次进入。');
     return;
@@ -3440,14 +3778,17 @@ function recordStream(stream, channel) {
   }
   const onError = (error) => {
     console.error('[recording]', channel, error);
-    warnCandidate('录像保存出现异常，正在重试；请联系监考老师。', `recording-${channel}`);
-    void reportAlert(channel === 'DESKTOP_SCREEN' ? 'SCREEN_CAPTURE_LOST' : 'CAMERA_CAPTURE_LOST', 5, '监考录像编码或保存失败');
+    if (channel === 'DESKTOP_SCREEN') {
+      warnCandidate('录像保存出现异常，正在重试；请联系监考老师。', `recording-${channel}`);
+      void reportAlert('SCREEN_CAPTURE_LOST', 5, '监考录像编码或保存失败');
+    }
   };
   let recording;
   try {
     recording = window.createProctorRecordingStream(stream, {
       width: channel === 'DESKTOP_SCREEN' ? 1920 : 1280, height: channel === 'DESKTOP_SCREEN' ? 1080 : 720,
-      frameRate: captureProfile.recordingFrameRate, onError
+      frameRate: captureProfile.recordingFrameRate, onError,
+      reuseCaptureSurface: channel === 'DESKTOP_SCREEN' && captureProfile.nativeWindows7 && Boolean(window.chrome?.webview)
     });
   } catch (error) { onError(error); return; }
   const controller = window.createProctorRecordingController({
@@ -3460,7 +3801,13 @@ function recordStream(stream, channel) {
     isActive: () => window.proctorRecordingEnabled(state.requirements) && !state.finishedScreenVisible && state.session?.id === sessionId &&
       window.proctorCapturePolicy(state.session, state.requirements).channels.includes(channel) &&
       stream === (channel === 'DESKTOP_SCREEN' ? state.screenStream : state.cameraStream),
-    getContext: () => ({ sessionToken: state.sessionToken, serverUrl: state.serverUrl, ...(state.reactionClock || {}) }),
+    getContext: () => {
+      const clock = state.reactionClock;
+      const scope = `${state.serverUrl}:${state.session?.id}:${state.monitoringGeneration}`;
+      const fresh = clock?.scope === scope && performance.now() - clock.checkedAt < 60_000;
+      return { sessionToken: state.sessionToken, serverUrl: state.serverUrl,
+        ...(fresh ? { clockOffsetMs: clock.clockOffsetMs, clockUncertaintyMs: clock.clockUncertaintyMs } : {}) };
+    },
     onSave: async (blob, filename, fields, context) => {
       await entry.buffer.add({ id: fields.uploadId, startedAt: fields.startedAt, endedAt: fields.endedAt, blob, filename, fields, context });
     },
@@ -3841,6 +4188,7 @@ window.addEventListener('online', () => {
   void flushUploadQueue();
   void flushPendingAlerts();
   void heartbeatTick();
+  if (!state.session && !state.loginResetting) void checkServerConnection().catch(() => {});
 });
 
 window.addEventListener('offline', () => {
@@ -3865,6 +4213,7 @@ window.addEventListener('beforeunload', (event) => {
 });
 
 window.addEventListener('blur', async () => {
+  if (permissionRefreshOnFocus && !state.session) permissionWindowBlurred = true;
   if (!state.session || state.session.status === 'FINISHED') return;
   // The main process intentionally focuses its broadcast window. That focus
   // change must not be reported as a candidate switching away from the exam.
@@ -3873,7 +4222,11 @@ window.addEventListener('blur', async () => {
 });
 
 const performPermissionAction = window.createPermissionActions({
-  api: window.proctorApi,
+  api: {
+    ...window.proctorApi,
+    getSecurityCapabilities: async () => (await refreshPermissionStatus()).capabilities,
+    requestNetworkDomainPermission: () => readPermissionDomainStatus(() => window.proctorApi.requestNetworkDomainPermission())
+  },
   requestLocalNetwork: requestLocalNetworkPermission,
   hosts: currentServerHosts,
   probeMedia: probeMediaDevice,
@@ -3891,14 +4244,27 @@ const performPermissionAction = window.createPermissionActions({
   }
 });
 
+async function readPermissionDomainStatus(probe) {
+  const scope = permissionContextKey();
+  const status = await probe();
+  const snapshot = state.permissionSnapshot;
+  if (scope === permissionContextKey() && snapshot?.scope === scope && snapshot.capabilities) {
+    snapshot.capabilities.networkDomainStatus = status;
+    snapshot.capabilities.networkScan = ['ready', 'limited'].includes(status.state);
+  }
+  return status;
+}
+
 async function openPermissionTarget(target) {
   if (permissionRequestTarget || setupActionActive || state.loginResetting || state.session) return;
   const scope = permissionContextKey();
   const current = () => scope === permissionContextKey() && !state.loginResetting && !state.session;
   permissionRequestTarget = target;
+  if (state.permissionSnapshot?.scope === scope) state.permissionSnapshot.checkedAt = 0;
   updateSetupButtons();
   lastPermissionTarget = target;
   permissionRefreshOnFocus = true;
+  permissionWindowBlurred = false;
   const cards = [...$('capabilityPanel').querySelectorAll('[data-permission]')];
   for (const card of cards) {
     card.setAttribute('aria-disabled', 'true');
@@ -3918,7 +4284,7 @@ async function openPermissionTarget(target) {
   } finally {
     permissionRequestTarget = '';
     let refreshFailed = false;
-    if (current()) await refreshPermissionStatus(message).catch(() => {
+    if (current()) await refreshPermissionCards(message).catch(() => {
       if (!current()) return;
       refreshFailed = true;
       setPermissionHint(message || '权限状态刷新失败，请再次点击卡片重试。');
@@ -3934,17 +4300,23 @@ async function openPermissionTarget(target) {
 }
 
 window.addEventListener('focus', () => {
-  if (!permissionRefreshOnFocus || state.loginResetting || state.session) return;
+  if (!permissionRefreshOnFocus || !permissionWindowBlurred || state.loginResetting || state.session) return;
   const scope = permissionContextKey();
   clearTimeout(permissionFocusTimer);
   permissionFocusTimer = window.setTimeout(() => {
+    permissionRefreshOnFocus = false;
+    permissionWindowBlurred = false;
     if (scope !== permissionContextKey() || permissionRequestTarget || setupActionActive || state.loginResetting || state.session) return;
-    const recheck = lastPermissionTarget === 'domain' ? window.proctorApi.startNetworkDomainMonitor() : Promise.resolve();
-    void recheck.then(() => {
-      if (scope !== permissionContextKey() || state.loginResetting || state.session) return;
-      return refreshPermissionStatus();
-    })
-      .then(() => updateSetupButtons()).catch(() => {});
+    if (lastPermissionTarget === 'network') {
+      void checkServerConnection().then(() => refreshPermissionCards()).catch(() => {});
+    } else if (lastPermissionTarget === 'domain') {
+      void readPermissionDomainStatus(() => window.proctorApi.startNetworkDomainMonitor())
+        .then(() => refreshPermissionCards()).catch(() => {});
+    } else if (lastPermissionTarget === 'activeWindow') {
+      void refreshPermissionStatus().catch(() => {});
+    } else {
+      void refreshPermissionCards().catch(() => {});
+    }
   }, 300);
 });
 
@@ -3955,7 +4327,7 @@ $('clientUpdateDownload').addEventListener('click', () => {
   void window.proctorApi.downloadClientUpdate().catch(() => {})
     .finally(() => { $('clientUpdateDownload').disabled = false; });
 });
-$('clientUpdateRetry').addEventListener('click', () => void ensureLatestClient(true));
+$('clientUpdateRetry').addEventListener('click', () => void ensureLatestClient('retry'));
 $('clientUpdateExit').addEventListener('click', () => void window.proctorApi.quitApp().catch(showError));
 document.addEventListener('dragover', (event) => event.preventDefault());
 document.addEventListener('drop', (event) => event.preventDefault());
@@ -3987,8 +4359,7 @@ void (async () => {
   // host allowlist cannot race the connection and permission checks.
   await window.proctorApi.setContestScope('', '').catch(() => {});
   window.proctorApi.onClientUpdate(renderClientUpdate);
-  await ensureLatestClient();
-  await checkServerConnection().catch(() => {});
+  await ensureLatestClient('startup');
   await refreshPermissionStatus().then(() => updateSetupButtons()).catch(() => {});
 })();
 $('permissionBtn').addEventListener('click', () => void runWithButtonBusy('permissionBtn', '检测中...', detectMedia));
@@ -4017,7 +4388,7 @@ $('networkPermissionBtn').addEventListener('click', async () => {
 $('screenPermissionBtn').addEventListener('click', async () => {
   await runWithButtonBusy('screenPermissionBtn', '打开中...', async () => {
     await window.proctorApi.openMacPrivacyPane('screen').catch(() => false);
-    await refreshPermissionStatus('授权后请完全退出并重新打开客户端，再点击“检测屏幕与摄像头”。').catch(() => null);
+    await refreshPermissionStatus('授权后请完全退出并重新打开客户端，再点击“检测屏幕与音视频”。').catch(() => null);
   });
 });
 $('cameraPermissionBtn').addEventListener('click', async () => {
@@ -4028,7 +4399,7 @@ $('cameraPermissionBtn').addEventListener('click', async () => {
       if (!prompted) await window.proctorApi.openMacPrivacyPane('camera').catch(() => false);
     }
     if (status.platform === 'win32') await window.proctorApi.openWindowsPrivacyPane('camera').catch(() => false);
-    await refreshPermissionStatus('摄像头授权后请重新点击“检测屏幕与摄像头”。').catch(() => null);
+    await refreshPermissionStatus('摄像头授权后可重新点击“检测屏幕与音视频”。').catch(() => null);
   });
 });
 $('microphonePermissionBtn').addEventListener('click', async () => {
@@ -4039,7 +4410,7 @@ $('microphonePermissionBtn').addEventListener('click', async () => {
       if (!prompted) await window.proctorApi.openMacPrivacyPane('microphone').catch(() => false);
     }
     if (status.platform === 'win32') await window.proctorApi.openWindowsPrivacyPane('microphone').catch(() => false);
-    await refreshPermissionStatus('麦克风授权后请重新点击“检测屏幕与摄像头”。').catch(() => null);
+    await refreshPermissionStatus('麦克风授权后请重新点击“检测屏幕与音视频”。').catch(() => null);
   });
 });
 $('accessibilityPermissionBtn').addEventListener('click', async () => {
@@ -4053,7 +4424,10 @@ $('adminRelaunchBtn').addEventListener('click', () => {
   void window.proctorApi.relaunchAsAdmin().catch(showError);
 });
 $('pairBtn').addEventListener('click', () => void runWithButtonBusy('pairBtn', '检测中...', enterLogin));
-$('qrLoginBtn').addEventListener('click', () => void runWithButtonBusy('qrLoginBtn', '生成中...', () => { selectLoginMethod('qr'); return createPair(); }));
+$('qrLoginBtn').addEventListener('click', () => void runWithButtonBusy('qrLoginBtn', '生成中...', () => {
+  selectLoginMethod('qr');
+  if (!state.pairCode || !state.pairPollToken) return createPair();
+}));
 $('credentialLoginBtn').addEventListener('click', () => {
   if (setupActionActive || permissionRequestTarget || state.loginResetting || state.session) return;
   clearInterval(state.pairTimer); state.pairTimer = 0; state.pairCode = ''; state.pairPollToken = '';
@@ -4086,7 +4460,9 @@ $('browserUrl').addEventListener('dragstart', (event) => event.preventDefault())
 $('testDisconnectBtn').addEventListener('click', () => void testDesktopDisconnect().catch(showError));
 $('mobileReconnectQrRefresh').addEventListener('click', () => void ensureMobileReconnectQr(true));
 $('novaJudgeRetryBtn').addEventListener('click', () => { state.contestPageRetryAt = 0; state.contestPageFailures = 0; state.contestPageLoaded = false; openContestHome(); });
-$('startBtn').addEventListener('click', () => void startExam().catch(showError));
+$('startBtn').addEventListener('click', () => openStartConfirmation());
+$('startConfirmCancel').addEventListener('click', closeStartConfirmation);
+$('startConfirmSubmit').addEventListener('click', () => void startExam().catch(showError));
 $('finishBtn').addEventListener('click', () => void finishExam().catch(showError));
 $('finishConfirmInput').addEventListener('input', () => {
   $('finishConfirmSubmit').disabled = $('finishConfirmInput').value.trim() !== $('finishConfirmExpected').textContent;

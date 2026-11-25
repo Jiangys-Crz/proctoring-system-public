@@ -3,8 +3,10 @@
     const rows = [
       { key: 'network', title: '监考服务器连接', granted: checks.network, detail: checks.networkDetail, label: checks.network ? '可访问' : '连接失败' },
       { key: 'screen', title: '屏幕录制', granted: checks.screen, detail: checks.screenDetail },
-      { key: 'camera', title: '摄像头权限', granted: checks.camera, detail: checks.cameraDetail },
-      { key: 'microphone', title: '麦克风权限', granted: checks.microphone, detail: checks.microphoneDetail }
+      { key: 'camera', title: '前置摄像头', optional: true, granted: checks.camera,
+        label: checks.camera ? '已授权' : '未启用', detail: checks.cameraDetail || '有可用摄像头时采集并推流，不可用时自动跳过。' },
+      { key: 'microphone', title: '麦克风', optional: true, granted: checks.microphone,
+        label: checks.microphone ? '已授权' : '未启用', detail: checks.microphoneDetail || '有可用麦克风时采集声音，不可用时自动跳过。' }
     ];
     if (permissions?.platform === 'darwin') rows.push({ key: 'accessibility', title: '辅助功能权限', granted: permissions.accessibility === true });
     if (permissions?.platform === 'win32') rows.push({ key: 'admin', title: 'Windows 管理员权限', granted: capabilities?.elevated === true,

@@ -5,19 +5,20 @@ const vm = require('node:vm');
 
 function scanner(platform, initialReport) {
   const module = { exports: {} };
-  let report = initialReport, failure = null, stderr = '', now = 0, scans = 0, hold = false;
+  let report = initialReport, failure = null, stderr = '', now = 0, wallClock = 0, scans = 0, hold = false;
   const callbacks = [], scripts = [];
   vm.runInNewContext(fs.readFileSync(require.resolve('../dist/main/security'), 'utf8'), {
-    module, exports: module.exports, process: { platform, env: {}, resourcesPath: '/client/resources' }, Date: { now: () => now },
+    module, exports: module.exports, process: { platform, env: {}, resourcesPath: '/client/resources' }, Date: { now: () => wallClock },
     setTimeout: (callback, ms) => { now += ms; callback(); },
     require: id => {
       if (id === 'electron') return { app: { isPackaged: true } };
-      if (id === './network-domains') return {};
+      if (id === './network-domains') return { getNetworkDomainStatus: () => ({}), networkRemotes: () => [] };
       if (id === './process-policy') return {};
       if (id === './windows-elevation') return {};
       if (id === './startup') return {};
       if (id === './windows-usb-identity') return require('../dist/main/windows-usb-identity');
       if (id === './windows-system-command') return require('../dist/main/windows-system-command');
+      if (id === 'node:perf_hooks') return { performance: { now: () => now } };
       if (id === 'node:child_process') return { execFile: (_command, args, _options, callback) => {
         if (args[0] === '-listDataTypes') return callback(null, 'SPUSBHostDataType\nSPUSBDataType\nSPThunderboltDataType', '');
         scans++;
@@ -33,11 +34,15 @@ function scanner(platform, initialReport) {
   });
   return {
     scan: () => module.exports.peripheralsFingerprint(), confirm: () => module.exports.confirmPeripheralBaseline(), scripts,
+    approvedBaseline: hash => module.exports.windowsUsbBaselineForFingerprint(hash),
+    snapshot: includePeripherals => module.exports.securitySnapshot([], includePeripherals),
+    confirmWatcher: (hash, at = now) => module.exports.confirmWindowsUsbFingerprint(hash, at),
     get scans() { return scans; },
     set: value => { report = value; failure = null; stderr = ''; },
     fail: () => { failure = new Error('scan failed'); },
     warn: value => { stderr = value; },
     advance: (ms = platform === 'win32' ? 3000 : 1000) => { now += ms; },
+    setWallClock: value => { wallClock = value; },
     hold: () => { hold = true; },
     release: () => { hold = false; for (const callback of callbacks.splice(0)) callback(); }
   };
@@ -51,6 +56,20 @@ function windows(rows, header = ['DeviceID', 'Present']) {
   const enriched = rows.map(row => [...row, /^USB\\/i.test(row[0]) ? 'USB' : 'OTHER', row[0].split('\\').slice(0, 2).join('\\')]);
   return [[...header, 'BusType', 'HardwareID'], ...enriched].map(row => row.map(value => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n');
 }
+
+test('only the successful Windows setup confirmation makes its exact device list available to a watcher', async () => {
+  const probe = scanner('win32', windows([root, keyboard]));
+  const initial = await probe.scan();
+  assert.equal(probe.approvedBaseline(initial), undefined);
+  const approved = await probe.confirm();
+  assert.equal(approved, initial);
+  assert.deepEqual([...probe.approvedBaseline(approved)], [keyboard[0]]);
+  probe.set(windows([root, keyboard, mouse]));
+  const next = await probe.confirm();
+  assert.notEqual(next, approved);
+  assert.equal(probe.approvedBaseline(approved), undefined);
+  assert.deepEqual([...probe.approvedBaseline(next)], [keyboard[0], mouse[0]]);
+});
 
 test('Windows physical USB fingerprints ignore ordering, duplicate rows, case, labels and virtual interfaces', async () => {
   const baseline = await scanner('win32', windows([root, keyboard, mouse])).scan();
@@ -133,6 +152,44 @@ test('Win7 driver re-enumeration remains unconfirmed across repeated observation
   probe.advance(1100); assert.equal(await probe.scan(), baseline);
   probe.set(windows([root, keyboard, mouse]));
   probe.advance(1100); assert.equal(await probe.scan(), baseline);
+});
+
+test('system-clock changes cannot shorten or extend physical device confirmation', async () => {
+  const h = scanner('win32', windows([root, keyboard]));
+  const baseline = await h.scan();
+  h.set(windows([root, keyboard, mouse]));
+  assert.equal(await h.scan(), baseline);
+  h.setWallClock(86_400_000);
+  h.advance(1000);
+  assert.equal(await h.scan(), baseline);
+  h.setWallClock(-86_400_000);
+  h.advance(2000);
+  assert.notEqual(await h.scan(), baseline);
+});
+
+test('process-only security snapshots do not start another USB inventory', async () => {
+  const h = scanner('win32', windows([root, keyboard]));
+  const result = await h.snapshot(false);
+  assert.equal('peripheralScanOk' in result, false);
+  assert.equal(h.scripts.some(args => args[0] === 'peripherals'), false);
+  const complete = await h.snapshot();
+  assert.equal(complete.peripheralScanOk, true);
+  assert.match(complete.peripheralsFingerprint, /^usb-v6:/);
+  assert.equal(h.scripts.filter(args => args[0] === 'peripherals').length, 1);
+});
+
+test('a confirmed watcher scan promotes the fingerprint, but cannot supersede a more recent probe', async () => {
+  const h = scanner('win32', windows([root, keyboard]));
+  const baseline = await h.scan();
+  const changed = await scanner('win32', windows([root, keyboard, mouse])).scan();
+  h.advance(100);
+  h.confirmWatcher(changed);
+  h.set(windows([root, keyboard, mouse]));
+  h.advance(100);
+  assert.equal(await h.scan(), changed);
+  h.confirmWatcher(baseline, 150);
+  h.advance(100);
+  assert.equal(await h.scan(), changed);
 });
 
 test('physical identities survive Win7 enumerator/revision changes without collapsing distinct instances', async () => {

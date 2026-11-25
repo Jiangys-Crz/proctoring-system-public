@@ -35,7 +35,8 @@ function fixture(role = 'ADMIN') {
   class AuthError extends Error {}
   const mocks: Record<string, unknown> = {
     '@/lib/db': { prisma: db }, '@/lib/auth': { AuthError, requireUser: async () => user },
-    '@/lib/permissions': { canManageExam: () => assert.fail('per-exam permission queries must not run'), canAccessCandidate: () => true },
+    '@/lib/permissions': { canManageExam: () => assert.fail('per-exam permission queries must not run'), canAccessCandidate: () => true,
+      proctoredCandidateIds: async () => { queryCount++; return ['in-room', 'without-alerts']; } },
     '@/lib/public-test': { publicTestExamId: async () => 'environment-test' },
     '@/lib/http': { ok: (data: unknown) => Response.json({ data }), fail: (message: string, status: number) => Response.json({ message }, { status }), toErrorMessage: String },
     '@/lib/recording-deletion': { RECORDING_CHANNELS: ['DESKTOP_SCREEN', 'DESKTOP_CAMERA', 'MOBILE_CAMERA', 'EVIDENCE_CLIP'] },
@@ -66,10 +67,10 @@ test('recording catalog keeps room scope, unassigned candidates and management p
     ['room-0', ['in-room']], ['__unassigned', ['unassigned']]
   ]);
   const queries = f.queries();
-  assert.equal(queries.count, 5, '40 exams require five batched reads, not 40 additional management checks');
+  assert.equal(queries.count, 6, '40 exams require batched reads, not 40 additional management checks');
   assert.deepEqual(queries.exams.select.administrators.where, { userId: 'current-user' });
   const candidateScope = queries.exams.select.candidates.where;
-  assert.deepEqual(candidateScope.OR[2].rooms.some.room.proctors.some, { userId: 'current-user' });
+  assert.deepEqual(candidateScope.OR[2], { id: { in: ['in-room', 'without-alerts'] } });
   assert.deepEqual(queries.exams.select.rooms.select.candidates.where.candidate, candidateScope);
   assert.deepEqual(queries.aggregates[0].where.candidate, candidateScope);
   assert.deepEqual(queries.exams.select.rooms.select.candidates.select, { candidateId: true }, 'reuse candidate identities without loading them once per room');

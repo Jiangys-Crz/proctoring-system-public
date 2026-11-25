@@ -74,7 +74,7 @@ export function ReactionBrandingPanel() {
     return mutate('replace', '组织徽章已替换；已有成片需要重新生成才能应用。', () => api(endpoint, { method: 'POST', body }));
   }
   async function renameOrganization(existingName: string, nextName: string) {
-    return mutate('rename', '组织名称已修改。请确保考生资料中的学校/组织名称与它对应。', () => api(endpoint, { method: 'PATCH', body: JSON.stringify({ name: existingName, newName: nextName }) }));
+    return mutate('rename', '组织名称已修改。请确保考生资料中用于匹配的学校或学院名称与它一致。', () => api(endpoint, { method: 'PATCH', body: JSON.stringify({ name: existingName, newName: nextName }) }));
   }
   async function deleteOrganization(existingName: string) {
     return mutate('delete', '组织徽章映射已删除；未匹配组织将使用全局默认徽章。', () => api(endpoint, { method: 'DELETE', body: JSON.stringify({ name: existingName }) }));
@@ -105,7 +105,7 @@ export function ReactionBrandingPanel() {
           <div className={styles.uploadLayout}>
             <BadgePreview src={organizationPreview} label="待添加的组织徽章预览" />
             <div className={styles.uploadFields}>
-              <label>组织名称<input aria-label="组织名称" value={name} maxLength={200} placeholder="与考生学校/组织名称一致" onChange={event => setName(event.target.value)} /></label>
+              <label>组织名称<input aria-label="组织名称" value={name} maxLength={200} placeholder="与考生的学校或学院名称一致" onChange={event => setName(event.target.value)} /></label>
               <label>徽章图片<input ref={organizationInput} aria-label="新增组织徽章图片" type="file" accept="image/png,image/jpeg,image/webp" onChange={event => pick(event.target.files?.[0], setOrganizationFile, event.target)} /></label>
             </div>
           </div>

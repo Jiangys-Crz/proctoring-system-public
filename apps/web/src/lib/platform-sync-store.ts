@@ -4,6 +4,7 @@ import { prisma } from './db';
 import { digest, FederationError } from './exam-federation-protocol';
 import { comparePlatformVersion, PlatformItemSchema, type PlatformItem } from './platform-sync-protocol';
 import { assertPlatformLease } from './platform-sync-lock';
+import { LOCAL_PLATFORM_KINDS } from './platform-sync-policy';
 
 export const jsonValue = (value: unknown) => JSON.parse(JSON.stringify(value, (_key, v) => typeof v === 'bigint' ? v.toString() : v)) as Record<string, Prisma.InputJsonValue | null>;
 export const itemHash = (payload: unknown, deleted = false) => digest({ payload, deleted });
@@ -56,11 +57,19 @@ export async function captureDeletions(tx: Prisma.TransactionClient, nodeId: str
 export function wireItem(row: { id: string; scope: string; kind: string; revision: number; writer: string; deleted: boolean; hash: string; payload: unknown }): PlatformItem {
   return PlatformItemSchema.parse(row);
 }
+/** Check identities only: sampling moving session rows before the previous
+ * bounded run drains can starve everything beyond its 8 x 32 entry budget. */
+export async function hasPlatformBacklog(after: bigint, peerNodeId: string) {
+  return Boolean(await prisma.platformSyncItem.findFirst({
+    where: { kind: { notIn: [...LOCAL_PLATFORM_KINDS] }, sequence: { gt: after }, writer: { not: peerNodeId } },
+    select: { id: true }, orderBy: { sequence: 'asc' },
+  }));
+}
 export async function readPlatformPage(after: bigint, writer?: string) {
   return prisma.$transaction(async tx => {
   const state = await tx.platformSyncState.findUnique({ where: { id: 'peer' } });
   if (after > (state?.sequence ?? 0n)) throw new FederationError('同步进度超出本机历史，请检查数据库备份', 409);
-  const rows = await tx.platformSyncItem.findMany({ where: { sequence: { gt: after, lte: state?.sequence ?? 0n }, ...(writer ? { writer: { not: writer } } : {}) }, select: { id: true, sequence: true }, orderBy: { sequence: 'asc' }, take: 32 });
+  const rows = await tx.platformSyncItem.findMany({ where: { kind: { notIn: [...LOCAL_PLATFORM_KINDS] }, sequence: { gt: after, lte: state?.sequence ?? 0n }, ...(writer ? { writer: { not: writer } } : {}) }, select: { id: true, sequence: true }, orderBy: { sequence: 'asc' }, take: 32 });
   const entries: PlatformItem[] = []; let bytes = 0, cursor = after;
   for (const row of rows) {
     // A page of 32 photos can exceed hundreds of MB even when the wire page

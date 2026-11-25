@@ -85,6 +85,11 @@ enum PrintMode {
   PHYSICAL
 }
 
+enum ReactionLogoMatchBy {
+  SCHOOL
+  COLLEGE
+}
+
 enum PrintJobStatus {
   SAVED
   PENDING
@@ -184,6 +189,8 @@ model Exam {
   platformBaseUrl    String
   platformContestId  String
   novaJudgeApiKey     String?             @db.Text
+  hydroBrowserApiKey  String?             @db.Text
+  hydroBrowserEventFeedApiKey String?     @db.Text
   novaJudgeTimezone   String              @default("Asia/Shanghai") @db.VarChar(100)
   contestType        ContestType
   teamAccountMode    TeamAccountMode     @default(MEMBER_ACCOUNTS)
@@ -207,6 +214,7 @@ model Exam {
   saveFullRecording Boolean             @default(false)
   saveIncidentRecording Boolean         @default(false)
   reactionEnabled Boolean               @default(false)
+  reactionLogoMatchBy ReactionLogoMatchBy @default(SCHOOL)
   reactionConfig ReactionConfig?
   reactions Reaction[]
   externalBoardEnabled Boolean          @default(false)
@@ -242,6 +250,9 @@ model Exam {
   printJobs          PrintJob[]
   screenControlGroups ScreenControlGroup[]
   screenControlDisplays ScreenControlDisplay[]
+  contestLiveSettings ContestLiveSettings?
+  contestDisplay      ContestDisplay?
+  contestLivePhotos ContestLivePhoto[]
 
   @@index([startAt])
   @@index([platform, platformContestId])
@@ -270,6 +281,7 @@ model ExternalBoardSync {
 
 // Successful remote submissions are checkpointed by payload, so rejudges are
 // forwarded and a restart never silently drops a partially pushed batch.
+// Also used by HYDRO_BROWSER, whose remoteId values have a hydro: prefix.
 model NovaJudgeBoardRecord {
   examId      String
   remoteId    String              @db.VarChar(191)
@@ -679,6 +691,8 @@ model ClientSession {
   startedAt                      DateTime?
   endedAt                        DateTime?
   revokedAt                      DateTime?
+  liveMediaStoppedAt             DateTime?
+  liveMediaRechecked             Boolean          @default(false)
   lastDesktopSeenAt              DateTime?
   lastMiniProgramSeenAt          DateTime?
   desktopOfflineAt               DateTime?
@@ -708,6 +722,8 @@ model ClientSession {
   @@index([miniProgramTokenHash])
   @@index([status, lastDesktopSeenAt])
   @@index([status, createdAt])
+  @@index([liveMediaStoppedAt, status, endedAt])
+  @@index([liveMediaRechecked, liveMediaStoppedAt])
   @@index([desktopDeviceId, createdAt])
   @@index([miniProgramDeviceId, createdAt])
 }
@@ -815,6 +831,7 @@ model Reaction {
   candidateId String?
   teamName String
   schoolName String?
+  collegeName String?
   problemId String
   problemLabel String
   sourceSubmittedAt DateTime
@@ -973,6 +990,51 @@ model SystemSetting {
   value     Json
   updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
+}
+
+model ContestLiveSettings {
+  examId          String                  @id
+  settings        Json
+  presets         Json                    @default("[]")
+  obsKeyHash      String?                 @db.VarChar(64)
+  exam            Exam                    @relation(fields: [examId], references: [id], onDelete: Cascade)
+  connections     ContestLiveConnection[]
+  updatedAt       DateTime                @updatedAt
+}
+
+model ContestDisplay {
+  examId      String   @id
+  settings    Json
+  keyHash     String?  @db.VarChar(64)
+  revision    Int      @default(1)
+  startedAt   DateTime
+  updatedAt   DateTime @updatedAt
+  exam        Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+}
+
+model ContestLivePhoto {
+  id          String   @id @default(cuid())
+  examId      String
+  accountHash String   @db.VarChar(64)
+  image       Bytes    @db.MediumBlob
+  exam        Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([examId, accountHash])
+}
+
+model ContestLiveConnection {
+  id         String              @id @db.VarChar(36)
+  examId     String
+  sessionId  String
+  teamId     String
+  channel    String              @db.VarChar(32)
+  access     String              @db.VarChar(64)
+  createdAt  DateTime            @default(now())
+  settings   ContestLiveSettings @relation(fields: [examId], references: [examId], onDelete: Cascade)
+
+  @@index([examId, access])
+  @@index([sessionId])
 }
 
 // Durable deletion outbox. It intentionally has no cascading foreign keys:
@@ -1203,6 +1265,7 @@ model ScreenControlDisplay {
   examId      String
   groupId     String
   groupName   String             @db.VarChar(120)
+  showParticipantCard Boolean?
   startsAt    DateTime
   endsAt      DateTime?
   stoppedAt   DateTime?

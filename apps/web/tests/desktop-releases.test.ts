@@ -10,7 +10,6 @@ import { createRequire } from 'node:module';
 import ts from 'typescript';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const dependency = createRequire(resolve(web, 'package.json'));
 function loader(mocks: Record<string, unknown>) {
   const modules = new Map<string, any>();
   function load(file: string): any {
@@ -22,7 +21,7 @@ function loader(mocks: Record<string, unknown>) {
       if (name.startsWith('@/')) return load(resolve(web, 'src', `${name.slice(2)}.ts`));
       if (name.startsWith('.')) return load(resolve(dirname(file), `${name}.ts`));
       if (name === '@cwnupaa/proctor-shared') return load(resolve(web, '../../packages/shared/src/index.ts'));
-      return dependency(name);
+      return createRequire(file)(name);
     }, module, module.exports);
     modules.set(file, module.exports); return module.exports;
   }
@@ -56,8 +55,10 @@ async function fixture(t: any, admin = true) {
   return { load, lib: load('lib/desktop-releases.ts'), root, rows, quotas };
 }
 function executable() { const bytes = Buffer.alloc(2048, 7); bytes.write('MZ'); bytes.writeUInt32LE(128, 60); bytes.write('PE\0\0', 128); return bytes; }
-function uploadRequest(bytes: Buffer, target = 'windows', channel = 'public', version = '0.1.21', length = bytes.length) {
-  return new Request(`http://localhost:4031/api/settings/desktop-releases/upload?channel=${channel}&target=${target}&kind=installer&version=${version}`, { method: 'POST', headers: { 'content-length': String(length) }, body: new Uint8Array(bytes).buffer });
+function uploadRequest(bytes: Buffer, target = 'windows', channel = 'public', version = '0.1.21', length = bytes.length, runtime?: string) {
+  const url = new URL(`http://localhost:4031/api/settings/desktop-releases/upload?channel=${channel}&target=${target}&kind=installer&version=${version}`);
+  if (runtime) url.searchParams.set('runtime', runtime);
+  return new Request(url, { method: 'POST', headers: { 'content-length': String(length) }, body: new Uint8Array(bytes).buffer });
 }
 const publish = (asset: any, overrides = {}) => ({ channel: asset.channel, target: asset.target, version: asset.version, installationMode: 'manual', notes: '更新说明', installerId: asset.id, updateId: asset.id, ...overrides });
 const download = (f: any, filename: string, range?: string) => f.load('app/api/desktop/releases/files/[filename]/route.ts').GET(new Request('http://localhost:4031/file', { headers: range ? { range } : {} }), { params: Promise.resolve({ filename }) });
@@ -158,4 +159,133 @@ test('legacy public and intranet releases resolve to the highest version and can
   assert.equal(await f.lib.isPublishedDesktopVersion('proctoring.example.org', 'win32 10.0', '0.1.11'), true);
   assert.equal(f.lib.desktopReleaseChannel('legacy-proctor.example.test'), 'public');
   assert.equal((await download(f, first.id + '.exe')).status, 200, 'historical download IDs remain valid');
+});
+
+
+test('a fixed-runtime release before 2.0.0 stays on its own update feed', async t => {
+  const f = await fixture(t);
+  const runtime = 'wx-webview2-109';
+  const legacy = await f.lib.uploadDesktopArtifact(uploadRequest(executable()), 'admin');
+  await f.lib.publishDesktopRelease(publish(legacy));
+
+  const manifest = f.load('app/api/desktop/releases/route.ts');
+  const updates = f.load('app/api/desktop/updates/[channel]/[target]/[filename]/route.ts');
+  const admin = f.load('app/api/settings/desktop-releases/route.ts');
+  const manifestFor = (query = '') => manifest.GET(new Request('http://localhost/api/desktop/releases?channel=public' + query));
+  const feedFor = (query = '') => updates.GET(new Request('http://localhost/feed' + query), {
+    params: Promise.resolve({ channel: 'public', target: 'windows', filename: 'latest.yml' }),
+  });
+
+  assert.equal((await (await manifestFor('&runtime=' + runtime)).json()).data[0].installer.id, legacy.id);
+  assert.equal((await feedFor('?runtime=' + runtime)).status, 404);
+  const payload = executable();
+  const fixed = await f.lib.uploadDesktopArtifact(uploadRequest(payload, 'windows', 'public', '0.1.22', payload.length, runtime), 'admin');
+  await assert.rejects(f.lib.publishDesktopRelease(publish(legacy, { runtime })), /对应/);
+  await assert.rejects(f.lib.publishDesktopRelease(publish(fixed)), /对应/);
+
+  const response = await admin.POST(new Request('http://localhost/api/settings/desktop-releases', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(publish(fixed, { runtime })),
+  }));
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).data[0].runtime, runtime);
+
+  const plain = (await (await manifestFor()).json()).data[0];
+  const pinned = (await (await manifestFor('&runtime=' + runtime)).json()).data[0];
+  assert.equal(plain.installer.id, legacy.id);
+  assert.equal('runtime' in plain, false);
+  assert.equal(pinned.installer.id, fixed.id);
+  assert.equal(pinned.runtime, runtime);
+  const plainFeed = await (await feedFor()).json();
+  const pinnedFeed = await (await feedFor('?runtime=' + runtime)).json();
+  assert.equal(plainFeed.version, legacy.version);
+  assert.equal('runtime' in plainFeed, false);
+  assert.equal(pinnedFeed.version, fixed.version);
+  assert.equal(pinnedFeed.runtime, runtime);
+  assert.equal((await manifestFor('&runtime=unknown')).status, 400);
+  assert.equal((await feedFor('?runtime=unknown')).status, 404);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 10.0', legacy.version), true);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 10.0', fixed.version), false);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 10.0', fixed.version, runtime), true);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 10.0', legacy.version, runtime), false);
+  assert.equal((await f.lib.getDesktopArtifacts()).some((asset: any) => asset.id === fixed.id), false);
+  assert.equal((await f.lib.getDesktopArtifacts(runtime))[0].status, 'active');
+});
+
+test('Electron update checks resolve published 2.0.0 installers for their platform', async t => {
+  const f = await fixture(t);
+  const manifest = f.load('app/api/desktop/releases/route.ts');
+  const updates = f.load('app/api/desktop/updates/[channel]/[target]/[filename]/route.ts');
+  const mac = Buffer.alloc(2048);
+  mac.write('koly', mac.length - 512);
+  const platforms = [
+    { target: 'windows', runtime: 'wx-webview2-109', bytes: executable(), extension: 'exe', feed: 'latest.yml' },
+    { target: 'mac-arm64', runtime: 'wx-wkwebview', bytes: mac, extension: 'dmg', feed: 'latest-mac.yml' },
+    { target: 'mac-x64', runtime: 'wx-wkwebview', bytes: mac, extension: 'dmg', feed: 'latest-mac.yml' },
+  ];
+
+  for (const { target, runtime, bytes, extension, feed } of platforms) {
+    const legacy = await f.lib.uploadDesktopArtifact(uploadRequest(bytes, target, 'public', '1.0.17'), 'admin');
+    await f.lib.publishDesktopRelease(publish(legacy));
+    const native = await f.lib.uploadDesktopArtifact(uploadRequest(bytes, target, 'public', '2.0.0', bytes.length, runtime), 'admin');
+    await f.lib.publishDesktopRelease(publish(native, { runtime }));
+
+    for (const channel of ['public', 'intranet']) {
+      const response = await manifest.GET(new Request(`http://localhost/api/desktop/releases?channel=${channel}`));
+      assert.equal(response.status, 200);
+      const upgrade = (await response.json()).data.find((item: any) => item.target === target);
+      assert.equal(upgrade.version, '2.0.0');
+      assert.equal(upgrade.installationMode, 'manual');
+      assert.equal(upgrade.update.url, `/api/desktop/releases/files/${native.id}.${extension}`);
+      assert.equal(upgrade.feedUrl, `/api/desktop/updates/${channel}/${target}/`);
+      const metadata = await updates.GET(new Request('http://localhost' + upgrade.feedUrl + feed), {
+        params: Promise.resolve({ channel, target, filename: feed }),
+      });
+      assert.equal(metadata.status, 200);
+      assert.deepEqual((await metadata.json()).files, [{ url: upgrade.update.url, sha512: native.sha512, size: native.size }]);
+    }
+
+    assert.equal((await f.lib.getDesktopReleases()).find((item: any) => item.target === target).installer.id, legacy.id);
+    assert.equal((await f.lib.getDesktopReleases(undefined, runtime, false)).find((item: any) => item.target === target).installer.id, native.id);
+    assert.equal((await download(f, legacy.id + '.' + extension)).status, 200);
+  }
+});
+
+test('split Windows targets keep the architecture-free manifest and feed on the compatibility installer', async t => {
+  const f = await fixture(t);
+  const runtime = 'wx-webview2-109';
+  const bytes = executable();
+  const manifest = f.load('app/api/desktop/releases/route.ts');
+  const updates = f.load('app/api/desktop/updates/[channel]/[target]/[filename]/route.ts');
+  const check = async (query = '') => {
+    const response = await manifest.GET(new Request('http://localhost/api/desktop/releases?channel=public' + query));
+    assert.equal(response.status, 200);
+    return (await response.json()).data.map((item: any) => [item.target, item.update.id]);
+  };
+  const feed = (target: string, query = '') => updates.GET(new Request('http://localhost/feed' + query), {
+    params: Promise.resolve({ channel: 'public', target, filename: 'latest.yml' }),
+  });
+  async function publishNative(target: string, version: string) {
+    const artifact = await f.lib.uploadDesktopArtifact(uploadRequest(bytes, target, 'public', version, bytes.length, runtime), 'admin');
+    await f.lib.publishDesktopRelease(publish(artifact, { runtime }));
+    return artifact;
+  }
+
+  const unified = await publishNative('windows', '2.0.0');
+  assert.deepEqual(await check('&runtime=' + runtime + '&target=windows-x64'), [['windows', unified.id]]);
+  assert.deepEqual(await check('&runtime=' + runtime + '&target=windows-arm64'), []);
+  assert.equal((await feed('windows-x64', '?runtime=' + runtime)).status, 404);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 6.1', unified.version, runtime, 'windows-x64'), true);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 10.0', unified.version, runtime, 'windows-arm64'), false);
+
+  const x64 = await publishNative('windows-x64', '2.1.0');
+  const arm64 = await publishNative('windows-arm64', '2.2.0');
+  assert.deepEqual(await check(), [['windows', unified.id]]);
+  assert.deepEqual(await check('&runtime=' + runtime), [['windows', unified.id]]);
+  assert.deepEqual(await check('&runtime=' + runtime + '&target=windows-x64'), [['windows-x64', x64.id]]);
+  assert.deepEqual(await check('&runtime=' + runtime + '&target=windows-arm64'), [['windows-arm64', arm64.id]]);
+  assert.equal((await feed('windows-arm64')).status, 404);
+  assert.equal((await (await feed('windows')).json()).files[0].url, `/api/desktop/releases/files/${unified.id}.exe`);
+  assert.equal((await (await feed('windows-arm64', '?runtime=' + runtime)).json()).files[0].url, `/api/desktop/releases/files/${arm64.id}.exe`);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 10.0', x64.version, runtime, 'windows-arm64'), false);
+  assert.equal(await f.lib.isPublishedDesktopVersion('localhost', 'win32 10.0', arm64.version, runtime, 'windows-arm64'), true);
 });

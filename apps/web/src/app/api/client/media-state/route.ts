@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { verifyClientTokenForSession } from '@/lib/client-auth';
 import { publicObjectUrl } from '@/lib/storage';
+import { isSharedLiveFramePath } from '@/lib/live-frame-path';
 import { options, fail, ok, toErrorMessage } from '@/lib/http';
 
 export async function GET(request: Request) {
@@ -44,7 +45,7 @@ export async function GET(request: Request) {
       where: { sessionId: session.id, deletedAt: null, channel: { in: ['DESKTOP_SCREEN', 'DESKTOP_CAMERA', 'MOBILE_CAMERA'] } },
       orderBy: { startedAt: 'desc' }, take: 12,
     }),
-    summaryOnly ? Promise.resolve([]) : prisma.liveFrame.findMany({
+    summaryOnly || session.status === 'FINISHED' ? Promise.resolve([]) : prisma.liveFrame.findMany({
       where: { sessionId: session.id, channel: { in: ['DESKTOP_SCREEN', 'DESKTOP_CAMERA', 'MOBILE_CAMERA'] } },
       orderBy: { capturedAt: 'desc' }, take: 3,
     })]);
@@ -60,7 +61,7 @@ export async function GET(request: Request) {
       }));
     }
     for (const frame of frames) {
-      if (live[frame.channel]) continue;
+      if (live[frame.channel] || isSharedLiveFramePath(frame.objectPath)) continue;
       live[frame.channel] = frame;
       urls.push(publicObjectUrl(frame.objectPath).then(url => {
         live[frame.channel] = { ...frame, objectPath: url || frame.objectPath };

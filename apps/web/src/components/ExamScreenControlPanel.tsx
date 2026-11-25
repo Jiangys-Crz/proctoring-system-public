@@ -1,15 +1,16 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, CalendarClock, Check, ImagePlus, LoaderCircle, Monitor, Play, RefreshCw, Save, Square, Trash2, Type, Upload, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CalendarClock, Check, Download, ImagePlus, LoaderCircle, Monitor, Play, RefreshCw, Save, Square, Trash2, Upload, X } from 'lucide-react';
 import { api } from './api';
 import { datetimeLocalToIso } from '@/lib/datetime-local';
-import { ScreenControlTemplateEditor, type ScreenTemplateGroup, type ScreenTemplateImage } from './ScreenControlTemplateEditor';
+import { SCREEN_CONTROL_MAX_IMAGES } from '@/lib/screen-control-policy';
+import type { ScreenTemplateGroup, ScreenTemplateImage } from './ScreenControlTemplateEditor';
 import './ExamScreenControlPanel.css';
 
 type ImageItem = ScreenTemplateImage;
 type ImageGroup = ScreenTemplateGroup & { createdAt: string };
-type Display = { id: string; groupId: string; groupName: string; startsAt: string; endsAt: string | null; stoppedAt: string | null; canceledAt: string | null; images: ImageItem[]; intervalMs: number };
+type Display = { id: string; groupId: string; groupName: string; startsAt: string; endsAt: string | null; stoppedAt: string | null; canceledAt: string | null; images: ImageItem[]; intervalMs: number; showParticipantCard: boolean; participantCardOnly: boolean };
 type ScreenState = { serverNow: string; current: Display | null; groups: ImageGroup[]; schedules: Display[]; history: Display[] };
 
 function dateTime(value: string | null) {
@@ -34,7 +35,10 @@ export function ExamScreenControlPanel({ examId }: { examId: string }) {
   const [mode, setMode] = useState<'now' | 'scheduled'>('now');
   const [startsAt, setStartsAt] = useState('');
   const [endsAt, setEndsAt] = useState('');
-  const [templateEditor, setTemplateEditor] = useState<{ group: ImageGroup; imageId?: string; readOnly: boolean } | null>(null);
+  const [showParticipantCard, setShowParticipantCard] = useState(false);
+  const [participantCardOnly, setParticipantCardOnly] = useState(false);
+  const [previewImage, setPreviewImage] = useState<ImageItem | null>(null);
+  const previewDialog = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async () => {
     const generation = ++readGeneration.current;
@@ -86,21 +90,26 @@ export function ExamScreenControlPanel({ examId }: { examId: string }) {
   }
 
   async function pushDisplay() {
-    if (!selectedGroupId) { setError('请先上传并选择图片组'); return; }
+    if (!participantCardOnly && !selectedGroupId) { setError('请先上传并选择图片组'); return; }
     const start = mode === 'scheduled' ? datetimeLocalToIso(startsAt) : undefined;
     const end = endsAt ? datetimeLocalToIso(endsAt) : null;
     const now = data ? new Date(data.serverNow).getTime() : Date.now();
     if (mode === 'scheduled' && (!start || !Number.isFinite(Date.parse(start)) || Date.parse(start) <= now)) { setError('定时展示的开始时间必须晚于当前时间'); return; }
     if (end && (!Number.isFinite(Date.parse(end)) || Date.parse(end) <= (start ? Date.parse(start) : now))) { setError('截止时间必须晚于展示开始时间'); return; }
-    await act('push', () => api(base, { method: 'POST', body: JSON.stringify({ groupId: selectedGroupId, ...(start ? { startsAt: start } : {}), endsAt: end }) }), mode === 'scheduled' ? '定时展示已保存，届时客户端会自动全屏展示' : '已推送，已登录和后续登录的客户端将自动全屏展示');
+    await act('push', async () => {
+      const content = participantCardOnly ? { participantCardOnly: true } : { groupId: selectedGroupId, showParticipantCard };
+      await api(base, { method: 'POST', body: JSON.stringify({ ...content, ...(start ? { startsAt: start } : {}), endsAt: end }) });
+      setShowParticipantCard(false);
+    }, mode === 'scheduled' ? '定时展示已保存，届时客户端会自动全屏展示' : '已推送，已登录和后续登录的客户端将自动全屏展示');
   }
 
   const selectedGroup = data?.groups.find(group => group.id === selectedGroupId);
+  const exceedsSlideLimit = !participantCardOnly && showParticipantCard && (selectedGroup?.images.length || 0) >= SCREEN_CONTROL_MAX_IMAGES;
   const isReferenced = (id: string) => data?.current?.groupId === id || data?.schedules.some(item => item.groupId === id);
 
   function openPreview(image: ImageItem) {
-    const group = data?.groups.find(item => item.images.some(entry => entry.id === image.id));
-    if (group) setTemplateEditor({ group, imageId: image.id, readOnly: true });
+    setPreviewImage(image);
+    previewDialog.current?.showModal();
   }
 
   return <div className="screen-control-panel">
@@ -108,7 +117,7 @@ export function ExamScreenControlPanel({ examId }: { examId: string }) {
       <div className="screen-control-heading"><div><span className="screen-control-eyebrow">屏幕控制</span><h2><Monitor size={22} />{data?.current ? `正在展示 · ${data.current.groupName}` : '当前无图片展示'}</h2><p>面向本场考试所有桌面客户端，每张图片全屏展示 5 秒并循环播放。</p></div>
         {data?.current ? <button className="button danger" disabled={!!busy} onClick={() => void act('stop', () => api(base, { method: 'PATCH', body: JSON.stringify({ action: 'STOP', displayId: data.current!.id }) }), '当前展示已关闭，客户端将恢复原界面')}><Square size={16} />{busy === 'stop' ? '关闭中…' : '关闭当前展示'}</button> : <button className="button secondary" disabled={!!busy} onClick={() => void act('refresh', load, '已刷新')}><RefreshCw size={16} />刷新</button>}
       </div>
-      {data?.current ? <div className="screen-control-status-facts"><span>开始：{dateTime(data.current.startsAt)}</span><span>截止：{dateTime(data.current.endsAt)}</span><span>{data.current.images.length} 张图片 · 5 秒 / 张</span></div> : null}
+      {data?.current ? <div className="screen-control-status-facts"><span>开始：{dateTime(data.current.startsAt)}</span><span>截止：{dateTime(data.current.endsAt)}</span><span>{data.current.images.length + Number(data.current.showParticipantCard)} 张图片 · 5 秒 / 张</span></div> : null}
     </section>
 
     {error ? <div role="alert" className="screen-control-message error">{error}</div> : null}
@@ -117,13 +126,19 @@ export function ExamScreenControlPanel({ examId }: { examId: string }) {
       <section className="card screen-control-compose">
         <div className="screen-control-section-heading"><h3><Play size={19} />推送展示</h3><span>开赛前、比赛中及结束后均可操作</span></div>
         <div className="screen-control-form-grid">
-          <label>图片组<select value={selectedGroupId} onChange={event => setSelectedGroupId(event.target.value)} disabled={!!busy}><option value="" disabled>请选择图片组</option>{data.groups.map(group => <option value={group.id} key={group.id}>{group.name}（{group.images.length} 张）</option>)}</select></label>
+          <label>推送内容<select value={participantCardOnly ? 'participant' : 'group'} onChange={event => setParticipantCardOnly(event.target.value === 'participant')} disabled={!!busy}><option value="group">图片组</option><option value="participant">只推送参赛信息</option></select></label>
+          {!participantCardOnly ? <label>图片组<select value={selectedGroupId} onChange={event => setSelectedGroupId(event.target.value)} disabled={!!busy}><option value="" disabled>请选择图片组</option>{data.groups.map(group => <option value={group.id} key={group.id}>{group.name}（{group.images.length} 张）</option>)}</select></label> : null}
           <label>展示方式<select value={mode} onChange={event => setMode(event.target.value as typeof mode)} disabled={!!busy}><option value="now">立即推送</option><option value="scheduled">定时展示</option></select></label>
           {mode === 'scheduled' ? <label>开始时间<input type="datetime-local" value={startsAt} onChange={event => setStartsAt(event.target.value)} disabled={!!busy} /></label> : null}
           <label>截止时间（可选）<input type="datetime-local" value={endsAt} onChange={event => setEndsAt(event.target.value)} disabled={!!busy} /></label>
         </div>
-        {selectedGroup ? <div className="screen-control-preview-strip">{selectedGroup.images.map((item, index) => <button type="button" title={`预览 ${item.name}`} key={item.id} onClick={() => openPreview(item)}><img src={item.url} alt={item.name} /><span>{index + 1}</span></button>)}</div> : null}
-        <div className="screen-control-submit"><p>留空截止时间时持续轮播，直到管理员关闭。新展示开始时替换当前展示，结束后恢复客户端原界面。</p><button className="button" disabled={!!busy || !selectedGroup} onClick={() => void pushDisplay()}>{busy === 'push' ? <LoaderCircle size={17} className="spin" /> : mode === 'scheduled' ? <CalendarClock size={17} /> : <Play size={17} />}{busy === 'push' ? '提交中…' : mode === 'scheduled' ? '保存定时展示' : '立即推送'}</button></div>
+        {!participantCardOnly ? <label className="screen-control-participant-toggle">
+          <input type="checkbox" role="switch" className="settings-switch" checked={showParticipantCard} onChange={event => setShowParticipantCard(event.target.checked)} disabled={!!busy} />
+          本次轮播展示参赛信息图
+        </label> : null}
+        {exceedsSlideLimit ? <p role="alert" className="screen-control-message error">含参赛信息图的展示最多选择 {SCREEN_CONTROL_MAX_IMAGES - 1} 张原图。</p> : null}
+        {!participantCardOnly && selectedGroup ? <div className="screen-control-preview-strip">{selectedGroup.images.map((item, index) => <button type="button" title={`预览 ${item.name}`} key={item.id} onClick={() => openPreview(item)}><img src={item.url} alt={item.name} /><span>{index + 1}</span></button>)}</div> : null}
+        <div className="screen-control-submit"><p>留空截止时间时持续展示，直到管理员关闭。新展示开始时替换当前展示，结束后恢复客户端原界面。</p><button className="button" disabled={!!busy || (!participantCardOnly && !selectedGroup) || exceedsSlideLimit} onClick={() => void pushDisplay()}>{busy === 'push' ? <LoaderCircle size={17} className="spin" /> : mode === 'scheduled' ? <CalendarClock size={17} /> : <Play size={17} />}{busy === 'push' ? '提交中…' : mode === 'scheduled' ? '保存定时展示' : '立即推送'}</button></div>
       </section>
 
       <section className="card screen-control-upload">
@@ -135,15 +150,23 @@ export function ExamScreenControlPanel({ examId }: { examId: string }) {
 
       <section className="card screen-control-groups"><div className="screen-control-section-heading"><h3>图片组</h3><span>{data.groups.length} 组</span></div>
         {!data.groups.length ? <div className="screen-control-empty">上传第一组图片后即可推送展示。</div> : data.groups.map(group => <article className="screen-control-group" key={group.id}>
-          <header><div><strong>{group.name}</strong><span>{group.images.length} 张图片{group.images.some(item => item.template?.blocks.length) ? ` · ${group.images.filter(item => item.template?.blocks.length).length} 张已设置考生信息` : ''}{isReferenced(group.id) ? ' · 已用于展示或定时计划' : ''}</span></div><div className="screen-control-row-actions"><button className="button secondary compact-button" disabled={!!busy || !!isReferenced(group.id)} onClick={() => setTemplateEditor({ group, readOnly: false })}><Type size={15} />添加考生信息</button><button className="button secondary compact-button" disabled={!!busy} onClick={() => setSelectedGroupId(group.id)}>选择推送</button><button className="button secondary compact-button" disabled={!!busy || !!isReferenced(group.id)} onClick={() => { setEditingGroupId(group.id); setEditingName(group.name); setEditingImages(group.images); }}>编辑</button><button className="button danger compact-button" disabled={!!busy || !!isReferenced(group.id)} onClick={() => void act(`delete-${group.id}`, () => api(`${base}/groups/${group.id}`, { method: 'DELETE' }), '图片组已删除')} aria-label={`删除 ${group.name}`}><Trash2 size={15} /></button></div></header>
+          <header><div><strong>{group.name}</strong><span>{group.images.length} 张图片{isReferenced(group.id) ? ' · 已用于展示或定时计划' : ''}</span></div><div className="screen-control-row-actions"><button className="button secondary compact-button" disabled={!!busy} onClick={() => setSelectedGroupId(group.id)}>选择推送</button><button className="button secondary compact-button" disabled={!!busy || !!isReferenced(group.id)} onClick={() => { setEditingGroupId(group.id); setEditingName(group.name); setEditingImages(group.images); }}>编辑</button><button className="button danger compact-button" disabled={!!busy || !!isReferenced(group.id)} onClick={() => void act(`delete-${group.id}`, () => api(`${base}/groups/${group.id}`, { method: 'DELETE' }), '图片组已删除')} aria-label={`删除 ${group.name}`}><Trash2 size={15} /></button></div></header>
           {editingGroupId === group.id ? <div className="screen-control-group-edit"><label>组名<input value={editingName} maxLength={100} onChange={event => setEditingName(event.target.value)} disabled={!!busy} /></label><div className="screen-control-edit-images">{editingImages.map((item, index) => <div key={item.id}><button className="screen-control-edit-preview" onClick={() => openPreview(item)}><img src={item.url} alt={item.name} /></button><span>{index + 1}. {item.name}</span><button type="button" disabled={!!busy || index === 0} aria-label={`向前移动 ${item.name}`} onClick={() => moveImage(index, -1)}><ArrowUp size={15} /></button><button type="button" disabled={!!busy || index === editingImages.length - 1} aria-label={`向后移动 ${item.name}`} onClick={() => moveImage(index, 1)}><ArrowDown size={15} /></button></div>)}</div><div className="screen-control-row-actions"><button className="button secondary compact-button" disabled={!!busy} onClick={() => setEditingGroupId('')}>取消</button><button className="button compact-button" disabled={!!busy || !editingName.trim()} onClick={() => void act(`edit-${group.id}`, async () => { await api(`${base}/groups/${group.id}`, { method: 'PATCH', body: JSON.stringify({ name: editingName.trim(), imageIds: editingImages.map(item => item.id) }) }); setEditingGroupId(''); }, '图片组已更新')}><Save size={15} />保存</button></div></div> : <div className="screen-control-preview-strip">{group.images.map((item, index) => <button type="button" title={`预览 ${item.name}`} key={item.id} onClick={() => openPreview(item)}><img src={item.url} alt={item.name} loading="lazy" /><span>{index + 1}</span></button>)}</div>}
         </article>)}
       </section>
 
-      <section className="card"><div className="screen-control-section-heading"><h3><CalendarClock size={19} />定时展示</h3><span>{data.schedules.length} 个计划</span></div><div className="screen-control-list">{data.schedules.map(item => <article key={item.id}><div><strong>{item.groupName}</strong><span>开始：{dateTime(item.startsAt)}<br />截止：{dateTime(item.endsAt)}</span></div><button className="button secondary compact-button" disabled={!!busy} onClick={() => void act(`cancel-${item.id}`, () => api(base, { method: 'PATCH', body: JSON.stringify({ action: 'CANCEL', displayId: item.id }) }), '定时展示已取消')}>取消计划</button></article>)}</div>{!data.schedules.length ? <div className="screen-control-empty">暂无待执行的定时展示</div> : null}</section>
-      <section className="card"><div className="screen-control-section-heading"><h3>展示记录</h3><span>最近的推送与定时展示</span></div><div className="screen-control-list">{data.history.map(item => <article key={item.id}><div><strong>{item.groupName}</strong><span>{dateTime(item.startsAt)} → {item.stoppedAt ? dateTime(item.stoppedAt) : dateTime(item.endsAt)}</span></div><span className="muted">{data.current?.id === item.id ? '正在展示' : data.schedules.some(schedule => schedule.id === item.id) ? '待展示' : item.canceledAt ? '已取消' : item.stoppedAt ? '已关闭' : '已结束'}</span></article>)}</div>{!data.history.length ? <div className="screen-control-empty">暂无展示记录</div> : null}</section>
+      <section className="card"><div className="screen-control-section-heading"><h3><CalendarClock size={19} />定时展示</h3><span>{data.schedules.length} 个计划</span></div><div className="screen-control-list">{data.schedules.map(item => <article key={item.id}><div><strong>{item.groupName}{item.participantCardOnly ? ' · 单页展示' : item.showParticipantCard ? ' · 含参赛信息图' : ''}</strong><span>开始：{dateTime(item.startsAt)}<br />截止：{dateTime(item.endsAt)}</span></div><button className="button secondary compact-button" disabled={!!busy} onClick={() => void act(`cancel-${item.id}`, () => api(base, { method: 'PATCH', body: JSON.stringify({ action: 'CANCEL', displayId: item.id }) }), '定时展示已取消')}>取消计划</button></article>)}</div>{!data.schedules.length ? <div className="screen-control-empty">暂无待执行的定时展示</div> : null}</section>
+      <section className="card"><div className="screen-control-section-heading"><h3>展示记录</h3><span>最近的推送与定时展示</span></div><div className="screen-control-list">{data.history.map(item => <article key={item.id}><div><strong>{item.groupName}{item.participantCardOnly ? ' · 单页展示' : item.showParticipantCard ? ' · 含参赛信息图' : ''}</strong><span>{dateTime(item.startsAt)} → {item.stoppedAt ? dateTime(item.stoppedAt) : dateTime(item.endsAt)}</span></div><span className="muted">{data.current?.id === item.id ? '正在展示' : data.schedules.some(schedule => schedule.id === item.id) ? '待展示' : item.canceledAt ? '已取消' : item.stoppedAt ? '已关闭' : '已结束'}</span></article>)}</div>{!data.history.length ? <div className="screen-control-empty">暂无展示记录</div> : null}</section>
     </>}
-    {templateEditor ? <ScreenControlTemplateEditor examId={examId} group={templateEditor.group} initialImageId={templateEditor.imageId} readOnly={templateEditor.readOnly}
-      onClose={() => setTemplateEditor(null)} onSaved={async () => { await load(); setNotice('考生信息模板已保存，推送时将自动生成各考生对应的图片'); }} /> : null}
+    <dialog ref={previewDialog} className="screen-control-original-dialog" aria-label="原图预览" onClose={() => setPreviewImage(null)}>
+      {previewImage ? <div>
+        <header>
+          <strong>{previewImage.name}</strong>
+          <a className="button secondary compact-button" href={previewImage.url} download={`${previewImage.name.replace(/\.(?:png|webp|jpe?g|gif)$/i, '')}.webp`}><Download size={15} />下载原图</a>
+          <button type="button" className="button secondary compact-button" aria-label="关闭预览" onClick={() => previewDialog.current?.close()}><X size={16} /></button>
+        </header>
+        <img src={previewImage.url} alt={previewImage.name} />
+      </div> : null}
+    </dialog>
   </div>;
 }

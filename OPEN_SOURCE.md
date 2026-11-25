@@ -13,7 +13,7 @@
 ## 客户端与可选集成
 
 - 桌面开发配置在 `apps/desktop/src/renderer/config.js`。手机扫码入口须填写手机可访问且受信任的 HTTPS 地址。打包前同步修改 `apps/desktop/scripts/copy-assets.mjs`、`apps/desktop/scripts/package-release.mjs`、`apps/desktop/src/main/main.ts` 和 `apps/desktop/package.json` 中的示例后端及更新地址；自定义后台与独立考生网页还需配置 `PROCTOR_CLIENT_WEB_URL`。
-- 示例公网后台和考生网页分别为 `proctoring.example.org`、`proctorstu.example.org`；内网对应 `proctoring.example.test`、`proctorstu.example.test`。如采用其他命名，请同时更新 `apps/desktop/src/renderer/renderer.js` 中的域名映射，或显式提供考生网页地址。
+- 示例公网后台和考生网页分别为 `proctoring.example.org`、`proctorstu.example.org`；内网对应 `proctoring.example.test`、`proctorstu.example.test`。如采用其他命名，请更新 `apps/desktop/src/renderer/renderer.js` 和 `apps/client-web/src/lib/api.ts` 中的示例域名映射，并在部署时配置对应的考生网页与后台地址。
 - 原生 Android/iOS 客户端和微信小程序使用自己的 HTTPS 服务。微信项目默认使用游客 AppID，正式发布前须在 `apps/miniprogram/project.config.json` 填写自己的 AppID；iOS 的 `DEVELOPMENT_TEAM` 留空，须自行设置签名团队。
 - 外部账号登录和测试账号领取使用 `CWNUPAA_EXTERNAL_API_BASE`、`CWNUPAA_EXTERNAL_APP_KEY`，也可在后台配置。这里保留的是既有集成的接口约定；需要兼容的外部服务才能启用，本地管理员登录不依赖该集成。
 - 仓库保留原有项目命名、应用标识和品牌资源以便识别来源。部署衍生版本时请配置自己的包标识、签名和品牌，不应将自行部署的服务描述为原组织运营的服务。
@@ -24,7 +24,7 @@
 
 运行配置、私钥、签名材料、数据库、上传文件、录像、个人 IDE 工作区和现场测试报告不属于源码分发内容。教程保留文字操作步骤，原部署截图不随仓库发布；测试目录内的两段小视频是合成色块素材。
 
-本次源码更新同步桌面端 1.0.14、HydroOJ 浏览器监考、题库创建及旧版 Hydro 兼容修复、公网与内网题库及考试同步、共用媒体服务及排行榜等界面更新。保留功能说明和数据库结构升级脚本，不分发实际服务器的发布、备份及清理记录。升级已有部署时先核对数据库结构并备份；`deployment/migrations/*.sql` 是源码的一部分，按对应说明选择升级步骤，不能把全部脚本当作可重复执行的初始化脚本。
+本次源码更新包含桌面端 2.0.6、Windows 三架构合并安装器和 macOS WKWebView 客户端、HydroOJ 浏览器考试独立密钥、赛事直播与大屏、外榜推送及跨节点同步更新。保留功能说明和数据库结构升级脚本，不分发实际服务器的发布、备份及清理记录。升级已有部署时先核对数据库结构并备份；`deployment/migrations/*.sql` 是源码的一部分，按对应说明选择升级步骤，不能把全部脚本当作可重复执行的初始化脚本。
 
 提交前检查暂存文件和差异，确认所有凭据均为占位符、测试数据均为合成数据。若曾提交有效凭据，应先撤销或更换；仅新增删除提交不能清除旧提交中的内容。
 

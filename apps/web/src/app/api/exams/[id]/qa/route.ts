@@ -6,7 +6,7 @@ import { contentIdentity } from '@/lib/exam-communication-entry';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
-import { canAccessCandidate, canAccessExam, canManageExam } from '@/lib/permissions';
+import { canAccessCandidate, canAccessExam, candidateRoomScope, canManageExam } from '@/lib/permissions';
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 import { settleReads } from '@/lib/request-admission';
 
@@ -22,13 +22,10 @@ async function getQa(_request: Request, context: { params: Promise<{ id: string 
     const { id } = await context.params;
     if (!(await canAccessExam(user, id))) return fail('无权查看该考试答疑', 403);
     const manageable = await canManageExam(user, id);
-    const candidateScope = manageable ? {} : {
-      rooms: { some: { room: { proctors: { some: { userId: user.id } } } } }
-    };
-    const questionScope = manageable ? {} : { candidate: candidateScope };
+    const candidateScope = manageable ? { examId: id } : candidateRoomScope(id, user.id);
     const [questions, announcements, candidates] = await settleReads([
       prisma.examQuestion.findMany({
-        where: { examId: id, ...questionScope },
+        where: { examId: id, candidate: candidateScope },
         include: {
           candidate: { select: { id: true, examNumber: true, name: true, teamName: true, seatNo: true } },
           answeredBy: { select: { id: true, realName: true, nickname: true, username: true } },
@@ -37,7 +34,7 @@ async function getQa(_request: Request, context: { params: Promise<{ id: string 
         orderBy: [{ answeredAt: 'asc' }, { createdAt: 'desc' }]
       }),
       prisma.examAnnouncement.findMany({
-        where: { AND: [qaAnnouncementVisibility()], examId: id, ...(manageable ? {} : { OR: [{ candidateId: null }, { candidate: candidateScope }] }) },
+        where: { AND: [qaAnnouncementVisibility()], examId: id, OR: [{ candidateId: null }, { candidate: candidateScope }] },
         include: {
           createdBy: { select: { id: true, realName: true, nickname: true, username: true } },
           candidate: { select: { id: true, examNumber: true, name: true, teamName: true } }
@@ -46,7 +43,7 @@ async function getQa(_request: Request, context: { params: Promise<{ id: string 
         take: 50
       }),
       prisma.candidate.findMany({
-        where: { examId: id, ...candidateScope },
+        where: candidateScope,
         select: { id: true, examNumber: true, name: true, teamName: true, seatNo: true },
         orderBy: { examNumber: 'asc' }
       })

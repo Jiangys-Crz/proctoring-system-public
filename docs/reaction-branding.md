@@ -4,13 +4,13 @@
 
 ## 匹配与历史行为
 
-生成时先按 Reaction.candidateId 找到当前候选人，并同时验证考试 ID 和准确考号 `examNumber === Reaction.teamId`。验证成功使用当前 `Candidate.school`；候选人已删除或身份不符时才使用原录像的 school 快照。修改队伍所属学校后，预览和重新生成均使用新学校。
+在「编辑考试 → 考试设置」中可以为每场考试选择 Reaction LOGO 按学校名称或学院名称匹配，默认按学校，选择后单独保存。预览和生成使用同一设置，分别取考生资料中的 `school` 或 `college`。生成时如果找不到本场考号完全匹配的考生，则使用录像记录中的相应快照。所选字段为空或未匹配时使用默认徽章。视频上的学校名称仍取学校字段。
 
 组织名处理为 **NFKC 归一、去首尾空白、连续空白折叠为一个空格，保留大小写**。处理后精确匹配，不按队名、拼音、子串或相似名称推断。选择顺序为：组织匹配徽章 → 系统自定义默认徽章 → 内置中性默认徽章。缺失或已归档的库记录不能作为新生成的组织徽章，会使用下一层默认。
 
 旧的考试 `teamLogos`、`schoolLogos`、`defaultLogoPath/defaultLogoId` JSON 保留供历史读取，但不再参与生成。系统修改不自动重做已生成 MP4；管理员点击重新生成才应用当前设置。替换或移除组织只改变系统绑定，原素材记录和文件保留，避免破坏历史引用。
 
-每次生成的 metadata 保存实际 `basis`（system-organization/system-default/built-in-default）、组织名、归一后的学校名、schoolSource（current-candidate/recording-snapshot）、logoId 和图片 SHA-256；素材存储路径不写入下载元数据。
+每次生成的 metadata 保存匹配方式 `matchBy`、归一后的匹配名称 `normalizedOrganizationName`、实际 `basis`（system-organization/system-default/built-in-default）、匹配到的组织名、归一后的学校名、schoolSource（current-candidate/recording-snapshot）、logoId 和图片 SHA-256；素材存储路径不写入下载元数据。
 
 ## 接口
 

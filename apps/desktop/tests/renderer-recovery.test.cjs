@@ -29,7 +29,7 @@ test('a recovered renderer authenticates before reopening the contest and keeps 
  const context=vm.createContext({state,URL,console,$:id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',inert:false});return nodes.get(id);},
  window:{PROCTOR_RELEASE_CHANNEL:'unified',proctorApi:{setAllowedHosts:async()=>calls.push('hosts'),setContestScope:async()=>calls.push('scope'),rendererRecoveryComplete:async()=>calls.push('complete')},setInterval:()=>1},
  setOnly:()=>{},contestWebsiteOrigin:()=>'',sendHeartbeat:async()=>{calls.push('authenticate');state.session={...state.session,status:'IN_EXAM'};state.requirements={...state.requirements,reactionEnabled:true};},
- startSubmittedMonitoring:async()=>calls.push('monitor'),ensureScreenCapture:async()=>calls.push('screen'),ensureCameraCapture:async()=>calls.push('camera'),
+ startSubmittedMonitoring:async()=>calls.push('monitor'),ensureScreenCapture:async()=>calls.push('screen'),startOptionalCameraCapture:async()=>calls.push('camera'),
  startSegmentRecorders:()=>{assert.equal(state.requirements.reactionEnabled,true,'recovered recording uses authenticated server requirements');calls.push('record');},startRtmpStreams:async()=>calls.push('publish'),enterApproved:async()=>calls.push('contest'),pollPair:()=>{}});
  vm.runInContext(source.slice(start,end),context);await context.restoreRendererRecovery(sample());
  assert.deepEqual(calls,['hosts','scope','authenticate','monitor','screen','camera','record','publish','contest','complete']);

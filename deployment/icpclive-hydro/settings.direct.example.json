@@ -1,0 +1,14 @@
+{
+  "type": "clics",
+  "feeds": [
+    {
+      "source": {
+        "url": "https://hydro.example/api/ccs",
+        "login": "ccs",
+        "password": "REPLACE_WITH_HYDRO_CCS_PASSWORD"
+      },
+      "contestId": "691000000000000000000001",
+      "feedVersion": "2023_06"
+    }
+  ]
+}

@@ -8,9 +8,10 @@ function deferred() { let resolve; const promise = new Promise(done => resolve =
 function context(overrides = {}) {
   const state = { serverUrl: 'https://api.test', sessionServerOrigin: 'https://api.test', sessionToken: 'test-token', session: { id: 's1' }, pairCode: '123456', pairPollToken: 'private-poll-proof', desktopInfo: { deviceId: 'd1' }, pairPollBusy: false };
   const resets = [], calls = [];
-  const env = { state, URL, FormData, errorMessage: e => e.message, lastPairError: '', resets, calls, showError() {}, async resetWaitingLogin(text) { resets.push(text); state.sessionToken = ''; state.session = null; }, fetch: async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => ({ ok: true, data: {} }) }; }, window: { proctorApi: { jsonRequest: async (url, path, options) => { calls.push({ url, path, options }); return {}; } } }, ...overrides };
+  const env = { state, URL, FormData, Headers, AbortController, performance, errorMessage: e => e.message, lastPairError: '', resets, calls, showError() {}, async resetWaitingLogin(text) { resets.push(text); state.sessionToken = ''; state.session = null; }, fetch: async (url, options) => { calls.push({ url, options }); return { ok: true, json: async () => ({ ok: true, data: {} }) }; }, window: { proctorApi: { jsonRequest: async (url, path, options) => { calls.push({ url, path, options }); return {}; } } }, ...overrides };
+  Object.assign(env.window, { setTimeout, clearTimeout });
   const ctx = vm.createContext(env);
-  vm.runInContext(between('function clientAuthHeaders(', 'function watchScreenControl(') + between('function shouldFallbackToRendererFetch(', 'async function diagnoseFromRenderer(') + between('async function api(', 'function openUploadDb('), ctx);
+  vm.runInContext(between('function synchronizeExamClock(', 'function examServerNow(') + between('function clientAuthHeaders(', 'function watchScreenControl(') + between('function shouldFallbackToRendererFetch(', 'async function diagnoseFromRenderer(') + between('async function api(', 'function openUploadDb('), ctx);
   return { ctx, state, resets, calls };
 }
 test('session credentials are sent only to the origin that issued them, including explicit upload destinations', async () => {

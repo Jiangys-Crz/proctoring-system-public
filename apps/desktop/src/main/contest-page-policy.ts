@@ -1,3 +1,14 @@
+// Chromium creates a separate MIME-handler WebContents for a PDF stream.
+// The exam webview itself must never navigate to chrome:// or an extension.
+const pdfExtension = 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/';
+export function chromiumPdfViewerResource(value: string, type: string, remoteDocument: string | undefined) {
+  const viewer = pdfExtension + 'index.html';
+  if (remoteDocument === undefined) return false;
+  if (type === 'mainFrame') return value === viewer && (remoteDocument === '' || remoteDocument === viewer);
+  return remoteDocument === viewer && type !== 'subFrame'
+    && (value.startsWith(pdfExtension) || value.startsWith('chrome://resources/'));
+}
+
 /** Only the student application's pages, compiled static files and client APIs
  * belong to the embedded contest browser. Never permit static files as frames. */
 export function contestPageRequestAllowed(value: string, resourceType: string, origin: string) {

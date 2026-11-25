@@ -3,7 +3,7 @@ import { publicTestExamId } from '@/lib/public-test';
 import { LoginRequestCreateSchema } from '@cwnupaa/proctor-shared';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
-import { canAccessExam } from '@/lib/permissions';
+import { canAccessExam, candidateRoomScope, proctoredCandidateIds } from '@/lib/permissions';
 import { verifyCandidateIdentity } from '@/lib/candidate-verify';
 import { createCandidateLoginRequest } from '@/lib/candidate-login';
 import { LoginFlowError } from '@/lib/room-login-policy';
@@ -17,23 +17,14 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const examId = searchParams.get('examId') || undefined;
     if (examId && !(await canAccessExam(user, examId))) return fail('无权查看该考试', 403);
+    const candidateScope = user.role === 'SUPER_ADMIN' ? undefined : examId
+      ? candidateRoomScope(examId, user.id)
+      : { id: { in: await proctoredCandidateIds(user.id) } };
 
     const loginRequests = await prisma.loginRequest.findMany({
       where: {
         AND: [{ examId }, { examId: { not: await publicTestExamId() } }],
-        ...(user.role === 'SUPER_ADMIN'
-          ? {}
-          : {
-              candidate: {
-                rooms: {
-                  some: {
-                    room: {
-                      proctors: { some: { userId: user.id } }
-                    }
-                  }
-                }
-              }
-            })
+        ...(candidateScope ? { candidate: candidateScope } : {}),
       },
       include: { candidate: true, exam: true, reviewedBy: { select: PUBLIC_USER_SELECT } },
       orderBy: { createdAt: 'desc' },

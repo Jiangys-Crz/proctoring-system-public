@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
-import { canAccessExam, canAccessCandidate, canManageExam } from '@/lib/permissions';
+import { canAccessExam, canAccessCandidate, candidateRoomScope, canManageExam } from '@/lib/permissions';
 import { fail, ok, options, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 
 const ActionSchema = z.object({ id: z.string().min(1), action: z.enum(['PRINTED', 'REJECTED']), reason: z.string().trim().max(1000).optional() });
@@ -10,7 +10,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     const user = await requireUser(); const { id } = await context.params;
     if (!(await canAccessExam(user, id))) return fail('无权查看打印记录', 403);
-    const scope = await canManageExam(user, id) ? {} : { candidate: { rooms: { some: { room: { proctors: { some: { userId: user.id } } } } } } };
+    const scope = { candidate: await canManageExam(user, id) ? { examId: id } : candidateRoomScope(id, user.id) };
     return ok(await prisma.printJob.findMany({ where: { examId: id, ...scope }, orderBy: { createdAt: 'desc' } }));
   } catch (error) { if (error instanceof AuthError) return fail(error.message, error.status); return fail(toErrorMessage(error), 500); }
 }
@@ -24,7 +24,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const existing = await prisma.printJob.findFirst({ where: { id: input.id, examId } });
     if (!existing) return fail('打印任务不存在', 404);
     if (!(await canAccessCandidate(user, existing.candidateId))) return fail('无权处理其他考室考生的打印任务', 403);
-    const scope = await canManageExam(user, examId) ? {} : { candidate: { rooms: { some: { room: { proctors: { some: { userId: user.id } } } } } } };
+    const scope = { candidate: await canManageExam(user, examId) ? { examId } : candidateRoomScope(examId, user.id) };
     const updated = await prisma.printJob.updateMany({ where: { id: input.id, examId, ...scope }, data: {
       status: input.action, rejectedReason: input.action === 'REJECTED' ? input.reason : null,
       reviewedById: user.id, reviewedAt: new Date(), printedAt: input.action === 'PRINTED' ? new Date() : null,

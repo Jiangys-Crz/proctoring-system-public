@@ -1,14 +1,28 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUpFromLine, Check, RefreshCw, Trash2 } from 'lucide-react';
-import { isReleaseVersion, type DesktopRelease, type DesktopTarget } from '@cwnupaa/proctor-shared';
+import {
+  DESKTOP_FIXED_RUNTIME, DESKTOP_MAC_RUNTIME, DESKTOP_RELEASE_RUNTIMES, DESKTOP_TARGETS, isReleaseVersion, isWindowsDesktopTarget, supportsDesktopReleaseRuntime,
+  type DesktopRelease, type DesktopReleaseRuntime, type DesktopTarget,
+} from '@cwnupaa/proctor-shared';
 import { FileCleanupStatus } from './FileCleanupStatus';
 import { api } from './api';
 
-interface Artifact { id: string; target: DesktopTarget; kind: 'installer' | 'update'; version: string; name: string; size: number; createdAt: string; status: string; downloadUrl: string }
-const names = { 'mac-arm64': 'Mac · Apple 芯片', 'mac-x64': 'Mac · Intel 芯片', windows: 'Windows · 32 / 64 位' };
+interface Artifact { id: string; target: DesktopTarget; runtime?: DesktopReleaseRuntime; kind: 'installer' | 'update'; version: string; name: string; size: number; createdAt: string; status: string; downloadUrl: string }
+const names = {
+  'mac-arm64': 'Mac · Apple 芯片', 'mac-x64': 'Mac · Intel 芯片',
+  windows: 'Windows · 兼容包（32 / 64 位）', 'windows-x64': 'Windows · x64', 'windows-arm64': 'Windows · ARM64',
+};
+const runtimes = [undefined, ...DESKTOP_RELEASE_RUNTIMES] as const;
+const platformLabel = (target: DesktopTarget, runtime?: DesktopReleaseRuntime) => names[target] +
+  (runtime === DESKTOP_FIXED_RUNTIME ? ' · WebView2 109' : runtime === DESKTOP_MAC_RUNTIME ? ' · WKWebView' : '');
+const releaseKey = (target: DesktopTarget, runtime?: DesktopReleaseRuntime) => runtime ? `${target}:${runtime}` : target;
+const tracks = runtimes.flatMap(runtime => DESKTOP_TARGETS.filter(target => supportsDesktopReleaseRuntime(target, runtime))
+  .map(target => ({ target, runtime, key: releaseKey(target, runtime) })));
 export function DesktopReleasePanel() {
-  const [target, setTarget] = useState<DesktopTarget>('windows');
+  const [track, setTrack] = useState<string>('windows');
+  const { target, runtime } = tracks.find(item => item.key === track)!;
+  const windows = isWindowsDesktopTarget(target);
   const [version, setVersion] = useState('');
   const [notes, setNotes] = useState('');
   const [releases, setReleases] = useState<DesktopRelease[]>([]);
@@ -24,12 +38,16 @@ export function DesktopReleasePanel() {
   const [error, setError] = useState(false);
   const upload = useRef<XMLHttpRequest | null>(null);
   async function load() {
-    const result = await api<{ releases: DesktopRelease[]; artifacts: Artifact[] }>('/api/settings/desktop-releases');
-    setReleases(result.releases); setArtifacts(result.artifacts);
-    setSelectedIds(ids => ids.filter(id => result.artifacts.some(a => a.id === id && a.status !== 'active')));
+    const results = await Promise.all(runtimes.map(runtime => api<{ releases: DesktopRelease[]; artifacts: Artifact[] }>(
+      '/api/settings/desktop-releases' + (runtime ? `?runtime=${runtime}` : ''),
+    )));
+    const nextArtifacts = results.flatMap(result => result.artifacts)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    setReleases(results.flatMap(result => result.releases)); setArtifacts(nextArtifacts);
+    setSelectedIds(ids => ids.filter(id => nextArtifacts.some(a => a.id === id && a.status !== 'active')));
   }
   useEffect(() => { void load().catch(() => { setError(true); setMessage('发布设置读取失败，请重试'); }); return () => upload.current?.abort(); }, []);
-  const choices = artifacts.filter(item => item.target === target && item.version === version);
+  const choices = artifacts.filter(item => item.target === target && item.runtime === runtime && item.version === version);
   function reset() { setInstallerId(''); setMessage(''); }
   async function uploadFile(file: File | undefined, kind: 'installer' | 'update') {
     if (!file) return;
@@ -38,7 +56,9 @@ export function DesktopReleasePanel() {
     try {
       const result = await new Promise<Artifact>((resolve, reject) => {
         const xhr = new XMLHttpRequest(); upload.current = xhr;
-        xhr.open('POST', `/api/settings/desktop-releases/upload?${new URLSearchParams({ target, kind, version })}`);
+        const params = new URLSearchParams({ target, kind, version });
+        if (runtime) params.set('runtime', runtime);
+        xhr.open('POST', `/api/settings/desktop-releases/upload?${params}`);
         xhr.timeout = 15 * 60_000;
         xhr.setRequestHeader('Content-Type', 'application/octet-stream');
         xhr.upload.onprogress = event => { if (event.lengthComputable) setProgress(Math.round(event.loaded / event.total * 100)); };
@@ -59,12 +79,12 @@ export function DesktopReleasePanel() {
   async function publish() {
     setBusy('publish'); setError(false); setMessage('');
     try {
-      await api('/api/settings/desktop-releases', { method: 'POST', body: JSON.stringify({ target, version, notes, installationMode: 'manual', installerId, updateId: installerId }) });
+      await api('/api/settings/desktop-releases', { method: 'POST', body: JSON.stringify({ target, runtime, version, notes, installationMode: 'manual', installerId, updateId: installerId }) });
       await load(); setMessage('最新版已发布，下载首页和客户端版本检查已同步更新。');
     } catch (cause) { setError(true); setMessage(cause instanceof Error ? cause.message : '发布失败'); }
     finally { setBusy(''); }
   }
-  const filtered = artifacts.filter(a => `${a.name} ${a.version} ${names[a.target]}`.toLowerCase().includes(fileSearch.toLowerCase()));
+  const filtered = artifacts.filter(a => `${a.name} ${a.version} ${platformLabel(a.target, a.runtime)}`.toLowerCase().includes(fileSearch.toLowerCase()));
   const pages = Math.max(1, Math.ceil(filtered.length / 20));
   const page = Math.min(filePage, pages);
   const visible = filtered.slice((page - 1) * 20, page * 20);
@@ -78,14 +98,14 @@ export function DesktopReleasePanel() {
     finally { setBusy(''); }
   }
   return <div style={{ display: 'grid', gap: 18 }}>
-    {releases.length ? <div className="table-scroll"><table className="table"><thead><tr><th>系统</th><th>最新版</th><th>发布时间</th><th>下载</th></tr></thead><tbody>{releases.map(release => <tr key={release.target}><td>{names[release.target]}</td><td>{release.version}</td><td>{new Date(release.publishedAt).toLocaleString()}</td><td><a href={release.installer.url}>下载安装包</a></td></tr>)}</tbody></table></div> : <div className="muted">尚未发布任何客户端版本。</div>}
+    {releases.length ? <div className="table-scroll"><table className="table"><thead><tr><th>系统</th><th>最新版</th><th>发布时间</th><th>下载</th></tr></thead><tbody>{releases.map(release => <tr key={releaseKey(release.target, release.runtime)}><td>{platformLabel(release.target, release.runtime)}</td><td>{release.version}</td><td>{new Date(release.publishedAt).toLocaleString()}</td><td><a href={release.installer.url}>下载安装包</a></td></tr>)}</tbody></table></div> : <div className="muted">尚未发布任何客户端版本。</div>}
     <fieldset disabled={!!busy} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 16, minWidth: 0 }}>
-      <div className="grid two"><label>发布系统<select value={target} onChange={event => { reset(); setTarget(event.target.value as DesktopTarget); }}>
-        {Object.entries(names).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
+      <div className="grid two"><label>发布系统<select value={track} onChange={event => { reset(); setTrack(event.target.value); }}>
+        {tracks.map(item => <option key={item.key} value={item.key}>{platformLabel(item.target, item.runtime)}</option>)}
       </select></label><label>版本号<input value={version} maxLength={20} placeholder="例如 0.1.30" onChange={event => { reset(); setVersion(event.target.value.trim()); }} /></label></div>
       <label>更新说明<textarea value={notes} onChange={event => setNotes(event.target.value)} maxLength={5000} rows={3} placeholder="向考生说明本次更新内容" /></label>
-      <label><span><ArrowUpFromLine size={15} /> {target === 'windows' ? 'Windows 安装包（EXE，包含 32 / 64 位）' : 'Mac 安装包（DMG）'}</span>
-        <input type="file" accept={target === 'windows' ? '.exe' : '.dmg'} key={`${target}-${version}-installer`} onChange={event => { void uploadFile(event.target.files?.[0], 'installer'); event.target.value = ''; }} />
+      <label><span><ArrowUpFromLine size={15} /> {windows ? `${names[target]}安装包（EXE）` : 'Mac 安装包（DMG）'}</span>
+        <input type="file" accept={windows ? '.exe' : '.dmg'} key={`${track}-${version}-installer`} onChange={event => { void uploadFile(event.target.files?.[0], 'installer'); event.target.value = ''; }} />
         <select value={installerId} onChange={event => setInstallerId(event.target.value)}><option value="">选择已上传的安装包</option>{choices.filter(item => item.kind === 'installer').map(item => <option key={item.id} value={item.id}>{item.name} · {(item.size / 1024 ** 2).toFixed(1)} MB</option>)}</select>
       </label>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button type="button" className="button" disabled={!isReleaseVersion(version) || !installerId} onClick={() => void publish()}><Check size={16} />发布最新版</button><button type="button" className="button secondary" onClick={() => void load().catch(() => { setError(true); setMessage('读取失败，请重试'); })}><RefreshCw size={15} />刷新</button></div>
@@ -101,7 +121,7 @@ export function DesktopReleasePanel() {
       <div className="table-scroll"><table className="table candidate-table"><thead><tr><th>选择</th><th>安装包</th><th>系统 / 版本</th><th>大小</th><th>状态</th><th>上传时间</th><th>操作</th></tr></thead><tbody>
         {visible.map(asset => <tr key={asset.id}>
           <td><input type="checkbox" aria-label={`选择 ${asset.name}`} disabled={!!busy || asset.status === 'active' || !selectedIds.includes(asset.id) && selectedIds.length >= 100} checked={selectedIds.includes(asset.id)} onChange={event => setSelectedIds(ids => event.target.checked ? [...ids, asset.id] : ids.filter(id => id !== asset.id))} /></td>
-          <td>{asset.name}</td><td>{names[asset.target]} / {asset.version}</td><td>{(asset.size / 1024 ** 2).toFixed(1)} MiB</td>
+          <td>{asset.name}</td><td>{platformLabel(asset.target, asset.runtime)} / {asset.version}</td><td>{(asset.size / 1024 ** 2).toFixed(1)} MiB</td>
           <td>{asset.status === 'active' ? '当前发布' : asset.status === 'historical' ? '历史版本' : '未发布'}</td><td>{new Date(asset.createdAt).toLocaleString()}</td>
           <td><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><a href={asset.downloadUrl}>下载</a><button type="button" className="button secondary compact-button" disabled={!!busy || asset.status === 'active'} onClick={() => void remove([asset.id])}>删除</button></div></td>
         </tr>)}

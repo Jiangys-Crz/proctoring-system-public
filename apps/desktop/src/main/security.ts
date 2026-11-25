@@ -3,12 +3,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { hostname, platform, release, userInfo } from 'node:os';
 import { basename, join, normalize } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readlinkSync, renameSync, rmSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import { app } from 'electron';
 import { getNetworkDomainStatus, networkRemotes } from './network-domains';
 import { installedProcessPolicy, trustedProcessExecutable } from './process-policy';
 import { readClientWindowsElevation, type ElevationStatus } from './windows-elevation';
 import { writeStartupDiagnostic } from './startup';
-import { physicalUsbIdentity } from './windows-usb-identity';
+import { physicalUsbIdentity, windowsUsbFingerprint, type WindowsUsbInventorySample } from './windows-usb-identity';
 
 function windowsTokenProbe() {
   return app.isPackaged
@@ -255,9 +256,10 @@ export async function peripheralsFingerprint() {
   // Capability probes and heartbeat scans can overlap. One OS inventory must
   // count as one observation, never as two confirmations of a transient change.
   if (pendingPeripheralScan) return pendingPeripheralScan;
-  const scan = scanPeripherals().then(fingerprint => {
-    const now = Date.now();
-    lastPeripheralObservation = { fingerprint, observedAt: now, sequence: ++peripheralObservationSequence };
+  const scan = scanPeripherals().then(({ fingerprint, observedAt: now, devices }) => {
+    if (now < latestPeripheralAttemptAt) return stablePeripheralFingerprint;
+    latestPeripheralAttemptAt = now;
+    lastPeripheralObservation = { fingerprint, observedAt: now, sequence: ++peripheralObservationSequence, devices };
     if (!stablePeripheralFingerprint || fingerprint === stablePeripheralFingerprint) {
       stablePeripheralFingerprint = fingerprint;
       peripheralChange = null;
@@ -270,6 +272,8 @@ export async function peripheralsFingerprint() {
     return stablePeripheralFingerprint;
   }).catch(error => {
     // A failed/partial scan is neither an empty device set nor a second vote.
+    latestPeripheralAttemptAt = performance.now();
+    lastPeripheralObservation = null;
     peripheralChange = null;
     throw error;
   });
@@ -282,7 +286,24 @@ let pendingPeripheralScan: Promise<string> | null = null;
 let stablePeripheralFingerprint = '';
 let peripheralChange: { fingerprint: string; firstSeenAt: number } | null = null;
 let peripheralObservationSequence = 0;
-let lastPeripheralObservation: { fingerprint: string; observedAt: number; sequence: number } | null = null;
+let latestPeripheralAttemptAt = -Infinity;
+let lastPeripheralObservation: { fingerprint: string; observedAt: number; sequence: number; devices?: string[] } | null = null;
+let confirmedWindowsBaseline: { fingerprint: string; devices: string[] } | undefined;
+
+export function windowsUsbBaselineForFingerprint(fingerprint: string) {
+  return confirmedWindowsBaseline?.fingerprint === fingerprint ? confirmedWindowsBaseline.devices : undefined;
+}
+
+export function confirmWindowsUsbFingerprint(fingerprint: string, observedAt: number) {
+  if (observedAt < latestPeripheralAttemptAt ||
+      observedAt === latestPeripheralAttemptAt && lastPeripheralObservation?.fingerprint !== fingerprint) return;
+  if (observedAt !== latestPeripheralAttemptAt) {
+    latestPeripheralAttemptAt = observedAt;
+    lastPeripheralObservation = { fingerprint, observedAt, sequence: ++peripheralObservationSequence };
+  }
+  stablePeripheralFingerprint = fingerprint;
+  peripheralChange = null;
+}
 
 // Used only by the guarded pre-login IPC. Never reset the monitoring state:
 // a pending real change must settle before a new login can adopt its baseline.
@@ -293,7 +314,10 @@ export async function confirmPeripheralBaseline() {
     const observed = lastPeripheralObservation;
     if (observed && previous && observed.sequence !== previous.sequence
       && observed.fingerprint === previous.fingerprint && observed.observedAt - previous.observedAt >= 1000
-      && !peripheralChange && stablePeripheralFingerprint === observed.fingerprint) return observed.fingerprint;
+      && !peripheralChange && stablePeripheralFingerprint === observed.fingerprint) {
+      if (observed.devices) confirmedWindowsBaseline = { fingerprint: observed.fingerprint, devices: observed.devices };
+      return observed.fingerprint;
+    }
     previous = observed;
     if (attempt < 3) await new Promise<void>(resolve => setTimeout(resolve, 1100));
   }
@@ -397,24 +421,25 @@ function normalizedMacDevices(output: string, usbType: string, requireThunderbol
   return [...devices].sort();
 }
 
-async function scanPeripherals() {
-  let identities: string[];
+async function scanPeripherals(): Promise<{ fingerprint: string; observedAt: number; devices?: string[] }> {
   if (process.platform === 'win32') {
-    identities = await windowsUsbInventory();
-  } else {
-    const usbType = await macUsbDataType();
-    const result = await execResult('/usr/sbin/system_profiler', [usbType, ...(macHasThunderboltDataType ? ['SPThunderboltDataType'] : []), '-json'], 10000);
-    if (result.code || /timed?\s*out|timeout|incomplete|failed|error/i.test(result.stderr)) throw new Error(result.error || 'USB 外设检测未完成');
-    identities = normalizedMacDevices(result.stdout, usbType, macHasThunderboltDataType);
+    const { devices, observedAt } = await windowsUsbInventory();
+    return { fingerprint: windowsUsbFingerprint(devices), observedAt, devices };
   }
+  const usbType = await macUsbDataType();
+  const result = await execResult('/usr/sbin/system_profiler', [usbType, ...(macHasThunderboltDataType ? ['SPThunderboltDataType'] : []), '-json'], 10000);
+  if (result.code || /timed?\s*out|timeout|incomplete|failed|error/i.test(result.stderr)) throw new Error(result.error || 'USB 外设检测未完成');
+  const identities = normalizedMacDevices(result.stdout, usbType, macHasThunderboltDataType);
   const hash = createHash('sha256').update(JSON.stringify(identities)).digest('hex');
-  return `${process.platform === 'darwin' ? 'mac-usb-v3' : 'usb-v6'}:${hash}`;
+  return { fingerprint: `${process.platform === 'darwin' ? 'mac-usb-v3' : 'usb-v6'}:${hash}`, observedAt: performance.now() };
 }
 
-let pendingWindowsUsbInventory: Promise<string[]> | null = null;
+let pendingWindowsUsbInventory: Promise<WindowsUsbInventorySample> | null = null;
 export async function windowsUsbInventory() {
   if (pendingWindowsUsbInventory) return pendingWindowsUsbInventory;
-  const scan = exec(windowsInventoryProbe(), ['peripherals']).then(normalizedUsbDevices);
+  const scan = exec(windowsInventoryProbe(), ['peripherals']).then(output => ({
+    devices: normalizedUsbDevices(output), observedAt: performance.now()
+  }));
   pendingWindowsUsbInventory = scan;
   try { return await scan; }
   finally { if (pendingWindowsUsbInventory === scan) pendingWindowsUsbInventory = null; }
@@ -548,26 +573,24 @@ export async function peripheralSnapshot() {
   }
 }
 
-export async function securitySnapshot(allowedHosts: string[]) {
+export async function securitySnapshot(allowedHosts: string[], includePeripherals = true) {
   const [processes, remotes, fingerprint, vm, activeWindow] = await Promise.allSettled([
     disallowedProcesses(),
     Promise.resolve().then(() => networkRemotes(allowedHosts)),
-    peripheralsFingerprint(),
+    includePeripherals ? peripheralSnapshot() : undefined,
     vmSignals(),
     activeWindowTitle()
   ]);
   // A failed process/window probe must not discard a valid USB observation.
   // Unknown observations stay absent; they never become healthy empty lists.
   const value = <T>(result: PromiseSettledResult<T>) => result.status === 'fulfilled' ? result.value : undefined;
-  if (fingerprint.status === 'rejected') writeStartupDiagnostic(app, 'peripheral-scan-failed', String(fingerprint.reason));
   return {
     activeWindow: value(activeWindow),
     disallowedProcesses: value(processes),
     networkRemotes: value(remotes),
     networkDomainStatus: getNetworkDomainStatus(),
     allowedNetworkRemotes: allowedHosts,
-    peripheralsFingerprint: value(fingerprint),
-    peripheralScanOk: fingerprint.status === 'fulfilled',
+    ...value(fingerprint),
     vmSignals: value(vm)
   };
 }

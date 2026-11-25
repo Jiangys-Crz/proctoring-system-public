@@ -1,0 +1,23 @@
+#include <winver.h>
+1 ICON "@DESKTOP@/build/icon.ico"
+1 24 "@CMAKE_CURRENT_SOURCE_DIR@/resources/client.manifest"
+1 VERSIONINFO
+ FILEVERSION @PROCTOR_VERSION_COMMAS@,0
+ PRODUCTVERSION @PROCTOR_VERSION_COMMAS@,0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+   BLOCK "040904B0"
+   BEGIN
+    VALUE "FileVersion", "@PROCTOR_VERSION@"
+    VALUE "ProductVersion", "@PROCTOR_VERSION@"
+    VALUE "OriginalFilename", "proctor-desktop.exe"
+   END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+   VALUE "Translation", 0x0409, 1200
+  END
+ END

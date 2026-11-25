@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { deflateRawSync } from 'node:zlib';
-import { artifacts, digest, prepare, zipMember } from '../scripts/prepare-windows-prerequisites.mjs';
+import { artifacts, digest, prepare, universalCrtArtifacts, zipMember } from '../scripts/prepare-windows-prerequisites.mjs';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'proctor prerequisite '));
@@ -74,9 +74,24 @@ test('ZIP extraction rejects wrong names, malformed and truncated containers', (
 
 test('all production prerequisites are pinned HTTPS Microsoft downloads with fixed basenames', () => {
   assert.deepEqual(artifacts.map(item => item.filename), ['dotnet452.exe', 'wmf51-x86.msu', 'wmf51-x64.msu']);
-  for (const item of artifacts) {
+  assert.deepEqual(universalCrtArtifacts.map(item => item.filename), [
+    'ucrt-x86.msu', 'ucrt-x64.msu',
+    'ucrt-win8-x86.msu', 'ucrt-win8-x64.msu',
+    'ucrt-win81-x86.msu', 'ucrt-win81-x64.msu',
+  ]);
+  for (const item of [...artifacts, ...universalCrtArtifacts]) {
     assert.equal(new URL(item.url).protocol, 'https:'); assert.equal(new URL(item.url).hostname, 'download.microsoft.com');
     assert.match(item.sha256, /^[a-f0-9]{64}$/);
     if (item.member) assert.match(item.archiveSha256, /^[a-f0-9]{64}$/);
   }
+});
+
+test('the wx UCRT bundle writes its own manifest alongside an existing Electron bundle', async t => {
+  const h = await fixture(t);
+  const original = 'preserve the Electron manifest';
+  await writeFile(join(h.directory, 'manifest.ini'), original);
+  await writeFile(join(h.directory, h.filename), h.bytes);
+  await prepare({ ...h.options, offline: true, withUniversalCrt: true, fetcher() { assert.fail('offline must not download'); } });
+  assert.equal(await readFile(join(h.directory, 'manifest.ini'), 'utf8'), original);
+  assert.equal(await readFile(join(h.directory, 'manifest-ucrt.ini'), 'utf8'), `${h.filename}=${h.source.sha256}\r\n`);
 });

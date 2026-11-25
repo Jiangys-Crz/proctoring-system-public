@@ -10,7 +10,7 @@ export type ReactionRankContext = {
   status: 'AVAILABLE' | 'UNAVAILABLE';
   beforeRank: number | null;
   afterRank: number | null;
-  source: 'CCS_OBSERVED_ORDER' | 'HISTORICAL_CCS_RECONSTRUCTION';
+  source: 'CCS_OBSERVED_ORDER' | 'HISTORICAL_CCS_RECONSTRUCTION' | 'HYDRO_OBSERVED_RESULT' | 'HYDRO_CCS_OBSERVED_ORDER';
   observedAt: string;
   provenance: JsonObject;
   reason?: string;
@@ -26,12 +26,28 @@ const date = (value: unknown) => typeof value === 'string' ? new Date(value).get
 export function parseReactionRankContext(value: unknown, expected?: { contestId: string; teamId: string; submissionId: string; verdict?: string | null }): ReactionRankContext | null {
   const context = object(value);
   if (context.version !== 1 || !['AVAILABLE', 'UNAVAILABLE'].includes(String(context.status)) ||
-      !['CCS_OBSERVED_ORDER', 'HISTORICAL_CCS_RECONSTRUCTION'].includes(String(context.source)) || !Number.isFinite(date(context.observedAt))) return null;
+      !['CCS_OBSERVED_ORDER', 'HISTORICAL_CCS_RECONSTRUCTION', 'HYDRO_OBSERVED_RESULT', 'HYDRO_CCS_OBSERVED_ORDER'].includes(String(context.source)) || !Number.isFinite(date(context.observedAt))) return null;
+  if (context.source === 'HYDRO_OBSERVED_RESULT' && context.status !== 'UNAVAILABLE') return null;
   const provenance = object(context.provenance);
-  if (expected && (provenance.contestId !== expected.contestId || provenance.teamId !== expected.teamId || provenance.submissionId !== expected.submissionId ||
+  const contestMatches = !expected || (context.source === 'HYDRO_CCS_OBSERVED_ORDER'
+    ? text(provenance.contestId).toLowerCase() === expected.contestId.toLowerCase() : provenance.contestId === expected.contestId);
+  if (expected && (!contestMatches || provenance.teamId !== expected.teamId || provenance.submissionId !== expected.submissionId ||
       (expected.verdict && provenance.verdict !== expected.verdict))) return null;
   if (context.status === 'AVAILABLE' && (![context.beforeRank, context.afterRank].every(rank => Number.isSafeInteger(rank) && Number(rank) > 0))) return null;
   return context as ReactionRankContext;
+}
+
+/** Only an authenticated Hydro CCS judgement, bound to this exact recording,
+ * may supply the source's persisted rank transition. */
+export function hydroCcsRankContext(value: unknown, expected: { contestId: string; teamId: string; submissionId: string; judgementId: string; verdict: string }) {
+  const context = parseReactionRankContext(value, expected);
+  if (!context || context.source !== 'HYDRO_CCS_OBSERVED_ORDER' || context.provenance.judgementId !== expected.judgementId
+    || context.provenance.rules !== 'HYDRO_ACM_V1' || context.provenance.visibility !== 'UNFROZEN_ADMIN'
+    || context.provenance.ordering !== 'CCS_PERSISTED_OBSERVATION_ORDER'
+    || !/^[a-f\d]{24}\.[1-9]\d*\.\d+$/.test(String(context.provenance.eventToken))
+    || !/^[a-f\d]{64}$/.test(String(context.provenance.beforeStateHash))
+    || !/^[a-f\d]{64}$/.test(String(context.provenance.afterStateHash))) return null;
+  return context;
 }
 
 /** NovaJudge's unfiltered, unfrozen TEAM standings. This is not a fetched historical scoreboard.

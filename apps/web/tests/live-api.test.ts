@@ -8,6 +8,16 @@ import { POST as mediaAuth } from '../src/app/api/media/auth/route';
 import { prisma } from '../src/lib/db';
 import { copyHlsQuery, fetchHlsAsset } from '../src/lib/media-hls-proxy';
 
+function mediaRoom(requireCamera = true) {
+  const now = Date.now();
+  return {
+    requireFrontCamera: requireCamera, requireSecondCamera: requireCamera,
+    exam: { startAt: new Date(now - 60_000), endAt: new Date(now + 60_000), latestStartAt: new Date(now),
+      contestRule: 'XCPC', flexible: false, durationMinutes: 2 },
+    candidates: [] as Array<{ candidate: { startedAt: Date } }>,
+  };
+}
+
 test('live keys are independently generated, path safe, and persisted by hash only', () => {
   const keys = Array.from({ length: 100 }, generateLiveApiKey);
   assert.equal(new Set(keys).size, 100);
@@ -43,7 +53,7 @@ test('all three WebRTC streams retain fresh key checks and scoped resources', as
   prisma.liveApiKey.findUnique=(async(args:any)=>args.where.keyHash===liveApiKeyHash(key)||args.where.id==='key-a'?{id:'key-a',enabled}:null)as any;
   prisma.clientSession.findFirst=(async(args:any)=>{assert.equal(args.where.candidate.examNumber,'1001');return{id:'session-a',examId:'exam-a',candidateId:'candidate-a',status:'IN_EXAM',revokedAt:null};})as any;
   prisma.clientSession.findUnique=(async()=>({status:'IN_EXAM',revokedAt:null}))as any;
-  prisma.examRoom.findFirst=(async()=>({requireFrontCamera:cameraRequired,requireSecondCamera:cameraRequired}))as any;
+  prisma.examRoom.findFirst=(async()=>mediaRoom(cameraRequired))as any;
   prisma.$transaction=(async(callback:any)=>callback(prisma))as any;prisma.$queryRaw=(async()=>[])as any;
   prisma.liveWebRtcConnection.create=(async({data}:any)=>{connections.set(data.id,data);return data;})as any;
   prisma.liveWebRtcConnection.findUnique=(async({where}:any)=>connections.get(where.id)||null)as any;
@@ -64,10 +74,10 @@ test('all three WebRTC streams retain fresh key checks and scoped resources', as
 });
 
 test('MediaMTX accepts live credentials for enabled read connections, never publishing', async () => {
-  const originals={key:prisma.liveApiKey.findUnique,session:prisma.clientSession.findUnique,room:prisma.examRoom.findFirst};let enabled=true,status='IN_EXAM';
+  const originals={key:prisma.liveApiKey.findUnique,session:prisma.clientSession.findUnique,room:prisma.examRoom.findFirst};let enabled=true,status='IN_EXAM', room = mediaRoom();
   prisma.liveApiKey.findUnique=(async()=>({enabled}))as any;
   prisma.clientSession.findUnique=(async()=>({examId:'exam',candidateId:'candidate',status,revokedAt:null}))as any;
-  prisma.examRoom.findFirst=(async()=>({requireFrontCamera:true,requireSecondCamera:true}))as any;
+  prisma.examRoom.findFirst=(async()=>room)as any;
   const token=createLiveApiReadToken('key-a','session-a','DESKTOP_SCREEN');
   const request=(action='read',protocol='hls',path='live/session-a_DESKTOP_SCREEN')=>new Request('http://localhost/api/media/auth',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,protocol,path,token})});
   try {
@@ -75,6 +85,10 @@ test('MediaMTX accepts live credentials for enabled read connections, never publ
     status='OFFLINE';assert.equal((await mediaAuth(request())).status,204);
     status='FINISHED';assert.equal((await mediaAuth(request())).status,401);status='IN_EXAM';
     assert.equal((await mediaAuth(request('read','webrtc'))).status,204);
+    room = { ...mediaRoom(), exam: { ...mediaRoom().exam, contestRule: 'OI', flexible: true, durationMinutes: 1 },
+      candidates: [{ candidate: { startedAt: new Date(Date.now() - 61_000) } }] };
+    assert.equal((await mediaAuth(request('read','webrtc'))).status,401);
+    room = mediaRoom();
     assert.equal((await mediaAuth(request('publish','rtmp'))).status,401);
     assert.equal((await mediaAuth(request('api','hls'))).status,401);
     enabled=false;assert.equal((await mediaAuth(request())).status,401);

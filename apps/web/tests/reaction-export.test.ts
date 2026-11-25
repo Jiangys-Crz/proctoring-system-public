@@ -37,12 +37,44 @@ test('ZIP64 contains only exact submission UUID.mp4 names and unchanged bytes, i
   for (const [index, item] of entries.entries()) assert.equal(unpacked.get(`${item.submissionId}.mp4`)?.toString(), `MP4 content ${index + 1}`);
 });
 
-test('invalid, path-like and duplicate UUIDs cannot create unsafe or colliding filenames', () => {
+test('invalid, path-like and duplicate submission IDs cannot create unsafe or colliding filenames', () => {
   for (const id of ['', '123', '../video', 'a/b', 'a\\b', 'a\r\nheader', null, undefined, 123]) assert.throws(() => streamReactionZip([{ ...entry(1, 'x'), submissionId: id as string }]));
   assert.throws(() => streamReactionZip([entry(1, 'a'), entry(1, 'b')]), /duplicate/);
   const id = 'abcdefab-abcd-4abc-8abc-abcdefabcdef';
-  assert.throws(() => streamReactionZip([{ ...entry(1, 'a'), submissionId: id }, { ...entry(2, 'b'), submissionId: id.toUpperCase() }]), /duplicate/);
+  for (const submissionId of [id, `sub_${id}`]) {
+    assert.throws(() => streamReactionZip([{ ...entry(1, 'a'), submissionId }, { ...entry(2, 'b'), submissionId: submissionId.toUpperCase() }]), /duplicate/);
+  }
   assert.throws(() => streamReactionZip([entry(1, '')]), /size/);
+});
+
+test('local Hydro sub_UUID exports keep the complete ID and remain distinct from a bare UUID', async () => {
+  const original = entry(1, 'bare UUID content');
+  const local = { ...entry(2, 'local Hydro content'), submissionId: `sub_${original.submissionId}` };
+  const unpacked = files(Buffer.from(await new Response(streamReactionZip([original, local])).arrayBuffer()));
+  assert.equal(unpacked.size, 2);
+  assert.equal(unpacked.get(`${original.submissionId}.mp4`)?.toString(), 'bare UUID content');
+  assert.equal(unpacked.get(`${local.submissionId}.mp4`)?.toString(), 'local Hydro content');
+});
+
+test('malformed prefixes and unsafe suffixes are rejected without opening source files', () => {
+  const uuid = entry(1, 'x').submissionId;
+  const invalid = ['sub_', 'sub_123', `sub_sub_${uuid}`, `sub-${uuid}`, `sub_${'a'.repeat(24)}`];
+  for (const id of [uuid, `sub_${uuid}`, '691000000000000000000001', `c${'a'.repeat(24)}`]) {
+    invalid.push(...['\n', '\r', '\r\n', '\u2028', '\u2029', '\0', '.mp4', '/video', '\\video', '"'].map(suffix => id + suffix));
+    invalid.push(`../${id}`, `sub_../${id}`);
+  }
+  let opened = false;
+  for (const submissionId of invalid) {
+    assert.throws(() => streamReactionZip([{ ...entry(1, 'x'), submissionId, open: async () => { opened = true; return Readable.from(['x']); } }]), /submission/i, submissionId);
+  }
+  assert.equal(opened, false);
+});
+
+test('native Hydro ObjectIds and legacy local CUIDs export with their exact source IDs', async () => {
+  const ids = ['691000000000000000000001', `c${'a'.repeat(24)}`];
+  const entries = ids.map((submissionId, i) => ({ ...entry(i + 1, `hydro ${i}`), submissionId }));
+  const unpacked = files(Buffer.from(await new Response(streamReactionZip(entries)).arrayBuffer()));
+  for (const [i, id] of ids.entries()) assert.equal(unpacked.get(`${id}.mp4`)?.toString(), `hydro ${i}`);
 });
 
 test('storage open failures terminate the archive and do not leak private errors', async () => {

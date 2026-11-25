@@ -16,6 +16,8 @@ const { withSessionWrite } = await import('../src/lib/session-write');
 const prefix = `heartbeat-perf-${randomUUID()}`;
 const token = randomUUID(), tokenHash = hashClientSessionToken(token);
 const baseline = `usb-v5:${'a'.repeat(64)}`;
+const candidateCount = Number(process.env.PERFORMANCE_TEST_CANDIDATES || 300);
+assert.ok([100, 200, 300].includes(candidateCount), 'candidate count must be an explicit 100/200/300 QA scenario');
 let examId = '', queries: string[] = [];
 db.$on('query', event => { queries.push(event.query); });
 const request = (id: string, side: 'DESKTOP' | 'MINIPROGRAM' = 'DESKTOP', system: Record<string, unknown> = { peripheralScanOk: true, peripheralsFingerprint: baseline }) => new Request('http://localhost/api/client/heartbeat', {
@@ -33,7 +35,7 @@ try {
     requireMiniProgram: true, requireFrontCamera: true, saveIncidentRecording: false,
   } });
   examId = exam.id;
-  const candidates = Array.from({ length: 300 }, (_, index) => ({
+  const candidates = Array.from({ length: candidateCount }, (_, index) => ({
     id: `${prefix}-${index}`, examId, examNumber: `${prefix}-${index}`, password: prefix,
     seatNo: String(index), startedAt, status: 'ONLINE_NORMAL' as const,
   }));
@@ -90,7 +92,7 @@ try {
   latencies.sort((a, b) => a - b);
   assert.equal(await db.alert.count({ where: { examId } }), 0);
   assert.equal(await db.clientSession.count({ where: { examId, lastDesktopSeenAt: { gt: now }, lastMiniProgramSeenAt: { gt: now }, status: 'IN_EXAM' } }), sessions.length);
-  console.log(JSON.stringify({ scenario: '300 candidates / 600 simultaneous desktop and phone heartbeats',
+  console.log(JSON.stringify({ scenario: `${candidateCount} candidates / ${candidateCount * 2} simultaneous desktop and phone heartbeats`,
     connectionLimit: database.searchParams.get('connection_limit'), durationMs,
     p95Ms: Math.round(latencies[Math.ceil(latencies.length * 0.95) - 1]),
     requestsPerSecond: Math.round(latencies.length * 1000 / durationMs),
@@ -126,11 +128,15 @@ try {
   assert.ok(failures.every(response => response.status === 200));
   assert.equal(await db.alert.count({ where: { sessionId: sessions[0].id, type: 'PERIPHERAL_CHANGED' } }), 1);
   const failedRow = await db.clientSession.findUniqueOrThrow({ where: { id: sessions[0].id } });
-  assert.equal(failedRow.lockdown, true);
+  assert.equal(failedRow.lockdown, false, 'a failed scanner is not evidence of an attached peripheral');
   assert.equal(failedRow.lastPeripheralsFingerprint, baseline);
   const recovered = await heartbeat(request(sessions[0].id));
-  assert.equal((await recovered.json()).data.session.lockdown, true);
-  console.log('PASS: exact public response, both-side clocks, one USB failure episode, stale fingerprint rejection, persistent proctor lock.');
+  assert.equal((await recovered.json()).data.session.lockdown, false);
+  const changed = await heartbeat(request(sessions[0].id, 'DESKTOP', { peripheralScanOk: true, peripheralsFingerprint: `usb-v5:${'b'.repeat(64)}` }));
+  assert.equal((await changed.json()).data.session.lockdown, true);
+  const afterChange = await heartbeat(request(sessions[0].id));
+  assert.equal((await afterChange.json()).data.session.lockdown, true);
+  console.log('PASS: exact public response, both-side clocks, one scanner failure alert without a false lock, confirmed USB-change locking and persistent proctor lock.');
 } finally {
   if (examId) await db.exam.delete({ where: { id: examId } });
   await db.$disconnect();

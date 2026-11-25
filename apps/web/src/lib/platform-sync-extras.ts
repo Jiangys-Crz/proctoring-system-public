@@ -11,6 +11,7 @@ import { readPlatformPhoto } from './platform-sync-photo';
 import { platformTransaction } from './platform-sync-lock';
 import { storeBuffer } from './storage';
 import { settleReads } from './request-admission';
+import { isSynchronizedPlatformKind } from './platform-sync-policy';
 
 export const EXTRA_KINDS = new Set(['SESSION','PHOTO','SCREEN_GROUP','SCREEN_IMAGE','SCREEN_DISPLAY','CODE_JOB','CODE_SOURCE','CODE_PAIR']);
 const fields = {
@@ -24,6 +25,12 @@ const fields = {
  CODE_PAIR:['jobId','problemTitle','problemOrder','language','firstUid','secondUid','firstSourceId','secondSourceId','firstName','secondName','firstExamNumber','secondExamNumber','similarity','firstSimilarity','secondSimilarity','versions','matches'],
 } as const;
 type ExtraKind=keyof typeof fields;
+// Session history needs no device IDs, token hashes or local alert JSON.
+const sessionSelect = {
+ id:true,candidateId:true,loginRequestId:true,memberStudentId:true,memberName:true,status:true,
+ approvedAt:true,startedAt:true,endedAt:true,revokedAt:true,lastDesktopSeenAt:true,lastMiniProgramSeenAt:true,
+ desktopOfflineAt:true,miniProgramOfflineAt:true,lockdown:true,lockdownReason:true,unlockNonce:true,createdAt:true,
+} satisfies Prisma.ClientSessionSelect;
 const pick=(row:object, names:readonly string[])=>Object.fromEntries(names.map(k=>[k,(row as Record<string,unknown>)[k]]));
 type PictureKind='PHOTO'|'SCREEN_IMAGE';
 type PictureRow={id:string;objectPath:string;byteSize:number;candidateId?:string|null};
@@ -35,11 +42,11 @@ const pictureFingerprint=(kind:PictureKind,row:PictureRow)=>digest({metadata:pic
 /** Read at most two images per kind before taking the exam/row locks. */
 async function prepareExtraPictures(examId:string,incoming?:PlatformItem):Promise<PreparedPictures>{
  const prepared:PreparedPictures=new Map();
- if(incoming&&incoming.kind!=='PHOTO'&&incoming.kind!=='SCREEN_IMAGE')return prepared;
+ if(incoming&&(!isSynchronizedPlatformKind(incoming.kind)||(incoming.kind!=='PHOTO'&&incoming.kind!=='SCREEN_IMAGE')))return prepared;
  const exam=await prisma.exam.findUniqueOrThrow({where:{id:examId},select:{examCode:true}});
  const target=incoming?(await prisma.platformSyncItem.findUnique({where:{id:incoming.id},select:{localId:true}}))?.localId||incoming.id.slice(incoming.id.indexOf(':')+1):undefined;
  const [photos,images]=await settleReads([
-  !incoming||incoming.kind==='PHOTO'?prisma.mediaSegment.findMany({where:{examId,candidateId:{not:null},channel:'IDENTITY_PHOTO',deletedAt:null,validatedAt:{not:null},...(target?{id:target}:{})},orderBy:{id:'asc'}}):[],
+  isSynchronizedPlatformKind('PHOTO')&&(!incoming||incoming.kind==='PHOTO')?prisma.mediaSegment.findMany({where:{examId,candidateId:{not:null},channel:'IDENTITY_PHOTO',deletedAt:null,validatedAt:{not:null},...(target?{id:target}:{})},orderBy:{id:'asc'}}):[],
   !incoming||incoming.kind==='SCREEN_IMAGE'?prisma.screenControlImage.findMany({where:{group:{examId},...(target?{id:target}:{})},orderBy:{id:'asc'}}):[],
  ]);
  const rows=await prisma.systemSetting.findMany({where:{key:{in:[...photos.map(row=>pictureKey(exam.examCode,'PHOTO',row.id)),...images.map(row=>pictureKey(exam.examCode,'SCREEN_IMAGE',row.id))]}},select:{key:true,value:true}});
@@ -84,12 +91,25 @@ export async function captureExtrasInTransaction(tx:Prisma.TransactionClient,exa
  const exam=await tx.exam.findUniqueOrThrow({where:{id:examId},include:{federation:true}});
  if(!exam.federation?.managedGlobally||!exam.federation.enabled)return;
  const target=incoming?(await tx.platformSyncItem.findUnique({where:{id:incoming.id},select:{localId:true}}))?.localId||incoming.id.slice(incoming.id.indexOf(':')+1):null;
- const read=<T>(kind:string,load:()=>Promise<T[]>)=>!incoming||incoming.kind===kind?load():Promise.resolve([] as T[]);
+ const read=<T>(kind:string,load:()=>Promise<T[]>)=>isSynchronizedPlatformKind(kind)&&(!incoming||incoming.kind===kind)?load():Promise.resolve([] as T[]);
  const [sessions,groups,images,displays,jobs,sourceIds,pairIds,candidates,problems,allPhotos]=await Promise.all([
-  read('SESSION',()=>tx.clientSession.findMany({where:{examId,...(target?{id:target}:{})}})),read('SCREEN_GROUP',()=>tx.screenControlGroup.findMany({where:{examId,deletedAt:null,...(target?{id:target}:{})}})),read('SCREEN_IMAGE',()=>tx.screenControlImage.findMany({where:{group:{examId},...(target?{id:target}:{})},orderBy:{id:'asc'}})),read('SCREEN_DISPLAY',()=>tx.screenControlDisplay.findMany({where:{examId,...(target?{id:target}:{})}})),
+  read('SESSION',()=>tx.clientSession.findMany({where:{examId,...(target?{id:target}:{})},select:sessionSelect})),read('SCREEN_GROUP',()=>tx.screenControlGroup.findMany({where:{examId,deletedAt:null,...(target?{id:target}:{})}})),read('SCREEN_IMAGE',()=>tx.screenControlImage.findMany({where:{group:{examId},...(target?{id:target}:{})},orderBy:{id:'asc'}})),read('SCREEN_DISPLAY',()=>tx.screenControlDisplay.findMany({where:{examId,...(target?{id:target}:{})}})),
   read('CODE_JOB',()=>tx.codeCheckJob.findMany({where:{examId,...(target?{id:target}:{})}})),read('CODE_SOURCE',()=>changedCodeReportIds(tx,examId,exam.examCode,'CODE_SOURCE',target||undefined)),read('CODE_PAIR',()=>changedCodeReportIds(tx,examId,exam.examCode,'CODE_PAIR',target||undefined)),
   tx.candidate.findMany({where:{examId},select:{id:true,syncKey:true}}),tx.examProblem.findMany({where:{examId},select:{id:true,syncKey:true}}),read('PHOTO',()=>tx.mediaSegment.findMany({where:{examId,candidateId:{not:null},channel:'IDENTITY_PHOTO',deletedAt:null,validatedAt:{not:null},...(target?{id:target}:{})},orderBy:{id:'asc'}})),
  ]);
+ // Batch journal metadata instead of two or three round trips per session on
+ // every poll. Bound SQL parameter lists and preserve rolling-upgrade links.
+ const sessionHistory=new Map<string,{payload:Prisma.JsonValue;appliedHash:string|null;deleted:boolean}>();
+ for(let offset=0;offset<sessions.length;offset+=256){
+  const history=await tx.platformSyncItem.findMany({where:{scope:exam.examCode,kind:'SESSION',localId:{in:sessions.slice(offset,offset+256).map(row=>row.id)}},select:{localId:true,payload:true,appliedHash:true,deleted:true}});
+  for(const row of history)if(row.localId)sessionHistory.set(row.localId,row);
+ }
+ const legacyLogins=new Map<string,string>();
+ const loginIds=[...new Set(sessions.flatMap(row=>row.loginRequestId?[row.loginRequestId]:[]))];
+ for(let offset=0;offset<loginIds.length;offset+=256){
+  const links=await tx.platformSyncItem.findMany({where:{scope:exam.examCode,kind:'LOGIN',localId:{in:loginIds.slice(offset,offset+256)}},select:{localId:true,id:true}});
+  for(const row of links)if(row.localId)legacyLogins.set(row.localId,row.id);
+ }
  const selectedPairs=await boundedCodeReportIds(tx,exam.examCode,'CODE_PAIR',pairIds,Boolean(incoming));
  const selectedSources=await boundedCodeReportIds(tx,exam.examCode,'CODE_SOURCE',sourceIds,Boolean(incoming));
  const pairs=selectedPairs.length?await tx.codeCheckPair.findMany({where:{job:{examId},id:{in:selectedPairs}}}):[];
@@ -138,6 +158,7 @@ export async function captureExtrasInTransaction(tx:Prisma.TransactionClient,exa
   }
  }
   for(const[kind,rows]of [['PHOTO',photos],['SESSION',sessions],['SCREEN_GROUP',groups],['SCREEN_IMAGE',selectedImages],['SCREEN_DISPLAY',displays],['CODE_JOB',jobs],['CODE_SOURCE',sources],['CODE_PAIR',pairs]]as const){
+   if(!isSynchronizedPlatformKind(kind))continue;
    for(const row of rows){
     if(!matches(kind,row.id))continue;
     if((kind==='PHOTO'||kind==='SCREEN_IMAGE')&&!pictureData.has(stateKey(kind,row.id)))continue;
@@ -153,8 +174,20 @@ export async function captureExtrasInTransaction(tx:Prisma.TransactionClient,exa
     if('candidateId'in row)p.candidateKey=row.candidateId ? candidateKeys.get(row.candidateId) : null;
     if('problemId'in row)p.problemKey=row.problemId?problemKeys.get(row.problemId):null;
     if(kind==='SCREEN_IMAGE'||kind==='PHOTO')p.data=pictureData.get(stateKey(kind,row.id));
-    if(kind==='SESSION'&&'loginRequestId'in row&&row.loginRequestId)p.loginKey=(await tx.platformSyncItem.findUnique({where:{scope_kind_localId:{scope:exam.examCode,kind:'LOGIN',localId:row.loginRequestId}}}))?.id;
+    if(kind==='SESSION'){
+     // Retain an already journaled opaque link during rolling upgrades so an
+     // older peer cannot clear its own approval when receiving its history
+     // back. No login request or photograph is captured or sent with it.
+     const previous=sessionHistory.get(row.id);
+     const legacy=(previous?.payload as {loginKey?:unknown}|undefined)?.loginKey;
+     if(typeof legacy==='string')p.loginKey=legacy;
+     else if('loginRequestId'in row&&row.loginRequestId)p.loginKey=legacyLogins.get(row.loginRequestId);
+    }
     const payload=jsonValue(p);
+    if(kind==='SESSION'){
+     const previous=sessionHistory.get(row.id);
+     if(previous&&(previous.deleted||previous.appliedHash===itemHash(payload)))continue;
+    }
     if(kind==='CODE_SOURCE'||kind==='CODE_PAIR'){
      try{
       if(Buffer.byteLength(JSON.stringify(payload))>16*1024*1024-4096)throw new FederationError('单条查重内容超过同步容量');
@@ -178,6 +211,7 @@ export async function captureExtrasInTransaction(tx:Prisma.TransactionClient,exa
   }
 }
 export async function mergeExtraItem(value:PlatformItem,settings:PlatformSyncSettings,alreadyCaptured=false) {
+ if(!isSynchronizedPlatformKind(value.kind))return;
  const exam=await prisma.exam.findUnique({where:{examCode:value.scope},include:{federation:true}});
  if(!exam?.federation?.managedGlobally||!exam.federation.enabled)throw new FederationError('考试同步已暂停，资料将在恢复后补齐');
  if(value.hash!==itemHash(value.payload,value.deleted))throw new FederationError('同步资料校验失败',400);
@@ -225,10 +259,9 @@ export async function mergeExtraItem(value:PlatformItem,settings:PlatformSyncSet
     const old=await tx.clientSession.findUnique({where:{id}});if(old&&old.examId!==exam.id)throw new FederationError('会话来源冲突');
     if(value.deleted){if(old)await tx.clientSession.delete({where:{id}});return{localId:id};}
     if(old&&candidate&&old.candidateId!==candidate.id)throw new FederationError('会话考生身份不允许改写');
-    const login = p.loginKey ? await tx.platformSyncItem.findUnique({where:{id:String(p.loginKey)}}) : null;
-    if(p.loginKey&&(!login?.localId||login.kind!=='LOGIN'||login.scope!==value.scope||login.deleted))throw new FederationError('登录请求尚未同步或来源不一致');
-    if(login?.localId&&!await tx.loginRequest.findFirst({where:{id:login.localId,examId:exam.id,candidateId:candidate!.id}}))throw new FederationError('会话与登录请求的考生映射不一致');
-    const body={...data,examId:exam.id,candidateId:candidate!.id,loginRequestId:login?.localId||null}as Prisma.ClientSessionUncheckedCreateInput;
+    // Older peers may still send loginKey. Imported history must not depend
+    // on a remote approval, or replace a local session's own approval link.
+    const body={...data,examId:exam.id,candidateId:candidate!.id}as Prisma.ClientSessionUncheckedCreateInput;
     if(old)await tx.clientSession.update({where:{id},data:body});else await tx.clientSession.create({data:{...body,id,syncImported:true}});return{localId:id};
    }
    if(kind==='SCREEN_GROUP'){

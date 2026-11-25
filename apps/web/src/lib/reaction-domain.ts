@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const reactionChannels = ['DESKTOP_CAMERA', 'DESKTOP_SCREEN'] as const;
 export const activeReactionStates = ['PENDING', 'TAIL', 'CAPTURING'];
-export type CcsEvent = { id?: string; type: string; op?: string; data?: Record<string, unknown> | null };
+export type CcsEvent = { id?: string | null; type: string; op?: string; token?: string; data?: Record<string, unknown> | null };
 export const eventHash = (data: unknown) => createHash('sha256').update(JSON.stringify(data)).digest('hex');
 
 /** A streaming decoder must retain both split UTF-8 characters and partial lines. */
@@ -26,7 +26,7 @@ export async function* readNdjson(body: ReadableStream<Uint8Array>): AsyncGenera
 
 export function finalVerdict(data: Record<string, unknown>) {
   const value = typeof data.judgement_type_id === 'string' ? data.judgement_type_id : '';
-  return ['AC', 'WA', 'TLE', 'RTE', 'RE', 'CE', 'MLE', 'OLE', 'PE', 'SE', 'JE', 'NO', 'FAILED'].includes(value) ? value : null;
+  return ['AC', 'WA', 'TLE', 'RTE', 'RE', 'CE', 'MLE', 'OLE', 'PE', 'FE', 'HK', 'IGN', 'SE', 'JE', 'NO', 'FAILED'].includes(value) ? value : null;
 }
 
 /** CCS contest_time is a duration, independent of the proctoring exam schedule. */

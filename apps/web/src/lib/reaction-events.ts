@@ -1,8 +1,9 @@
 import type { Exam, Prisma, ReactionConfig } from '@prisma/client';
 import { prisma } from './db';
 import { eventHash, finalVerdict, reactionChannels, type CcsEvent } from './reaction-domain';
-import { observedReactionRankContext, rankingEventTypes } from './reaction-ranking';
+import { hydroCcsRankContext, observedReactionRankContext, rankingEventTypes } from './reaction-ranking';
 import { resolveReactionTeamName } from './reaction-team-name';
+import { sameReactionSource, supportsReaction } from './reaction-source';
 
 type ConfiguredExam = Exam & { reactionConfig: ReactionConfig | null };
 const asString = (v: unknown) => typeof v === 'string' || typeof v === 'number' ? String(v) : '';
@@ -25,8 +26,12 @@ export async function acceptReactionEvent(exam: ConfiguredExam, event: CcsEvent,
     await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${exam.id} FOR UPDATE`;
     const current=await tx.exam.findUniqueOrThrow({where:{id:exam.id},include:{reactionConfig:true}});
     if (!current.reactionEnabled || !current.reactionConfig) return;
-    if (current.platform !== 'NOVAJUDGE' || current.platformContestId !== exam.platformContestId || new URL(current.platformBaseUrl).origin !== new URL(exam.platformBaseUrl).origin) throw new Error('REACTION_SOURCE_CHANGED');
+    if (!supportsReaction(current.platform) || !sameReactionSource(current, exam)) throw new Error('REACTION_SOURCE_CHANGED');
     const config=current.reactionConfig;
+    // A response obtained before a disable/re-enable or worker lease change
+    // cannot alter the new recording session.
+    if (current.platform !== 'NOVAJUDGE' && (+config.initializedAt! !== +exam.reactionConfig?.initializedAt!
+      || (exam.reactionConfig?.leaseToken && config.leaseToken !== exam.reactionConfig.leaseToken))) return;
     const key={examId:exam.id,type:event.type,remoteId};
     const previous=await tx.reactionEvent.findUnique({where:{examId_type_remoteId:key}});
     const checkpointOnlyReplay=previous?.payloadHash===hash;
@@ -60,12 +65,15 @@ export async function acceptReactionEvent(exam: ConfiguredExam, event: CcsEvent,
       }
       // Unknown historical items after reconnect must never become new recordings.
       if (!Number.isFinite(+source) || (config.initializedAt && source < config.initializedAt)) return;
-      const candidate=await tx.candidate.findFirst({where:{examId:exam.id,examNumber:teamId}});
+      const matchedCandidate=await tx.candidate.findFirst({where:{examId:exam.id,examNumber:teamId}});
+      // MySQL may compare strings with a case-insensitive collation. Recording
+      // ownership still requires the exact source account, including case.
+      const candidate=matchedCandidate?.examNumber===teamId?matchedCandidate:null;
       const teamEvent=await tx.reactionEvent.findUnique({where:{examId_type_remoteId:{examId:exam.id,type:'teams',remoteId:teamId}}});
       const problem=await tx.reactionEvent.findUnique({where:{examId_type_remoteId:{examId:exam.id,type:'problems',remoteId:problemId}}});
       const problemLabel=problem?.payload && typeof problem.payload==='object' && !Array.isArray(problem.payload) ? asString(problem.payload.label) : '';
       const r=await tx.reaction.create({data:{examId:exam.id,contestId:exam.platformContestId,submissionId:remoteId,teamId,
-        candidateId:candidate?.id,teamName:resolveReactionTeamName({examId:exam.id,teamId,candidate,teamEvent}),schoolName:candidate?.school,
+        candidateId:candidate?.id,teamName:resolveReactionTeamName({examId:exam.id,teamId,candidate,teamEvent}),schoolName:candidate?.school,collegeName:candidate?.college,
         problemId,problemLabel:problemLabel||problemId,sourceSubmittedAt:source,submissionObservedAt:observedAt,eventOffsetMs:+observedAt-+source,
         windowStart:new Date(+source-config.beforeSeconds*1000),status:candidate?'PENDING':'UNMAPPED',error:candidate?null:'TEAM_USERNAME_NOT_MAPPED',
         expiresAt:new Date(+observedAt+config.retentionDays*86400000)}});
@@ -94,10 +102,17 @@ export async function acceptReactionEvent(exam: ConfiguredExam, event: CcsEvent,
       // Same verdict replay from create/update must not extend the capture end.
       if(r.verdict===verdict && r.judgementObservedAt) return;
       const synthetic=new Date(asString(data.end_time));
-      let rankContext=r.rankContext || await observedReactionRankContext(tx,{
+      const hydroRank=current.platform !== 'NOVAJUDGE' ? hydroCcsRankContext(data.x_hydro_rank, {
+        contestId:exam.platformContestId,teamId:r.teamId,submissionId:r.submissionId,judgementId:remoteId,verdict,
+      }) : null;
+      let rankContext=r.rankContext || hydroRank || (current.platform !== 'NOVAJUDGE' ? {
+        version: 1, status: 'UNAVAILABLE', beforeRank: null, afterRank: null, source: 'HYDRO_OBSERVED_RESULT',
+        observedAt: judgementObservedAt.toISOString(), reason: 'HYDRO_HISTORICAL_RANK_UNAVAILABLE',
+        provenance: { contestId: exam.platformContestId, teamId: r.teamId, submissionId: r.submissionId, judgementId: remoteId, verdict },
+      } : await observedReactionRankContext(tx,{
         examId:exam.id,contestId:exam.platformContestId,teamId:r.teamId,submissionId:r.submissionId,
         judgementId:remoteId,verdict,observedAt:judgementObservedAt,previous:previous?{type:previous.type,remoteId:previous.remoteId,payload:previous.payload,observedAt:previous.observedAt}:null
-      });
+      }));
       if(checkpointOnlyReplay && !r.rankContext) rankContext={...(rankContext as object),status:'UNAVAILABLE',beforeRank:null,afterRank:null,reason:'FINAL_JUDGEMENT_PRECEDED_SUBMISSION_OBSERVATION'};
       await tx.reaction.update({where:{id:r.id},data:{...historyUpdate,verdict,originalVerdict:verdict,judgementId:remoteId,status:'TAIL',
         rankContext:rankContext as Prisma.InputJsonValue,

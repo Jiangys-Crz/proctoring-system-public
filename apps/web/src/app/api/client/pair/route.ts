@@ -1,6 +1,8 @@
+import { candidateLoginIpEnabled } from '@/lib/room-login-ip';
 import { effectiveEnd } from '@/lib/contest-rules';
+import { restrictHydroBrowserAccount } from '@/lib/hydro-browser';
 import { admittedLogin } from '@/lib/request-admission';
-import { DesktopPairRequestSchema } from '@cwnupaa/proctor-shared';
+import { DesktopPairRequestSchema, isDesktopReleaseRuntime, isDesktopTarget } from '@cwnupaa/proctor-shared';
 import { prisma } from '@/lib/db';
 import { isPublicTestExam } from '@/lib/public-test';
 import { publicClientSession, verifyClientTokenForSession, verifyClientTokenValueForSession } from '@/lib/client-auth';
@@ -31,9 +33,13 @@ async function handlePost(request: Request) {
   try {
     const input = await parseBody(request, DesktopPairRequestSchema, 16 * 1024);
     if (input.publicTest && input.sessionId) return fail('测试登录二维码不能用于恢复已有会话', 400);
-    if (input.publicTest && (!input.screenOk || !input.desktopCameraOk)) return fail('请先完成屏幕和摄像头检测', 400);
+    if (input.publicTest && !input.screenOk) return fail('请先完成屏幕检测', 400);
     if (!input.sessionId) await consumeInitialPairingAttempt(input.deviceId);
-    if (!input.sessionId && !await isPublishedDesktopVersion(request.headers.get('host'), input.os, input.clientVersion)) {
+    const runtime = request.headers.get('x-proctor-desktop-runtime');
+    const target = request.headers.get('x-proctor-desktop-target');
+    if (!input.sessionId && target !== null && !isDesktopTarget(target)) return fail('客户端架构无效', 400);
+    if (!input.sessionId && !await isPublishedDesktopVersion(request.headers.get('host'), input.os, input.clientVersion,
+      isDesktopReleaseRuntime(runtime) ? runtime : undefined, isDesktopTarget(target) ? target : undefined)) {
       return fail('请从监考后台主页下载最新版客户端，在原安装位置替换旧版本后重新登录', 426);
     }
     const poll = createPairSecret('POLL');
@@ -106,6 +112,9 @@ export async function GET(request: Request) {
     if (session?.revokedAt && !rejected) return revokedClientSessionResponse();
     const testContext = directSession && await isPublicTestExam(directSession.examId) ? directSession : null;
     const context = current.loginRequest || testContext;
+    if (context && session && !rejected && !session.revokedAt && session.status !== 'FINISHED') {
+      await restrictHydroBrowserAccount(context.exam, context.candidate);
+    }
     const room = context ? await prisma.examRoom.findFirst({
       where: { examId: context.examId, candidates: { some: { candidateId: context.candidateId } } },
       select: { name: true, requireFrontCamera: true, requireSecondCamera: true, loginMode: true },
@@ -118,12 +127,12 @@ export async function GET(request: Request) {
       // An already authenticated desktop keeps its existing session when its
       // network egress changes. IP binding still gates first token delivery.
       if (!publicTest && !verifyClientTokenForSession(request, session, 'DESKTOP')) {
-        const [ipExam, ipCandidate] = await Promise.all([
-          prisma.exam.findUnique({ where: { id: session.examId }, select: { ipLoginRestrictionEnabled: true } }),
+        const [ipEnabled, ipCandidate] = await Promise.all([
+          candidateLoginIpEnabled(prisma, session.examId, session.candidateId),
           prisma.candidate.findUnique({ where: { id: session.candidateId }, select: { loginIp: true } })
         ]);
-        if (!ipExam || !ipCandidate) return fail('考试或考生不存在', 404);
-        assertLoginIp(ipExam.ipLoginRestrictionEnabled, ipCandidate.loginIp, incomingIp);
+        if (!ipCandidate) return fail('考试或考生不存在', 404);
+        assertLoginIp(ipEnabled, ipCandidate.loginIp, incomingIp);
       }
       const token = desktopPairToken(current.id, session.id, request.headers.get('x-proctor-pair-poll-token')!);
       // Waiting-review clients poll every 2.5 seconds as well as heartbeating.

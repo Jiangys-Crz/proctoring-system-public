@@ -11,7 +11,7 @@ type State = Omit<Config, 'intervalSeconds'> & { intervalSeconds: number; enable
 const draftOf = (state: State): Config => ({ baseUrl: state.baseUrl, eventId: state.eventId, appKey: state.appKey, intervalSeconds: String(state.intervalSeconds) });
 const time = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12: false });
 
-export function ExternalBoardSettings({ examId }: { examId: string }) {
+export function ExternalBoardSettings({ examId, hydroBrowser = false }: { examId: string; hydroBrowser?: boolean }) {
   const [state, setState] = useState<State | null>(null);
   const [config, setConfig] = useState<Config>({ baseUrl: 'www.example.org', eventId: '', appKey: '', intervalSeconds: '10' });
   const [loading, setLoading] = useState(true);
@@ -76,6 +76,7 @@ export function ExternalBoardSettings({ examId }: { examId: string }) {
 
   return <section className="card grid exam-settings-card">
     <div className="table-toolbar"><div><h2 style={{ margin: 0 }}>外榜推送</h2><p className="muted">比赛进行中也可调整。开关立即生效，配置在这里独立保存。</p></div><button className="button secondary" disabled={busy} onClick={() => { setError(''); setReload(value => value + 1); }}><RefreshCw size={17} />刷新状态</button></div>
+    {hydroBrowser ? <p className="muted">从 Hydro 原生比赛同步题目和监考名单内的提交，重判后自动更新。读取使用本场考试填写的 HydroOJ 监考插件 API-Key；未填写时使用与系统评测服务同站点的 Key。下方填写官网的推送密钥。官网比赛账号须与监考考号一致，封榜规则请在官网比赛中配置。</p> : null}
     {error ? <div className="exam-editor-error" role="alert">{error}</div> : null}
     <form ref={form} className="form" onSubmit={event => { event.preventDefault(); void save(); }}>
       <fieldset disabled={loading || busy || !state} style={{ border: 0, padding: 0, margin: 0 }} className="form">

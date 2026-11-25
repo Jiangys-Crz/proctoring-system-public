@@ -1,6 +1,7 @@
 import { prisma } from './db';
 import { PUBLIC_USER_SELECT } from './public-dto';
 import { settleReads } from './request-admission';
+import { candidateRoomScope } from './permissions';
 
 type MonitorExam = Awaited<ReturnType<typeof readMonitorExam>>;
 type MonitorData = Awaited<ReturnType<typeof readMonitorData>>;
@@ -33,7 +34,7 @@ export function loadMonitorExam(examId: string) {
 function readMonitorExam(examId: string) {
   return prisma.exam.findUnique({
     where: { id: examId },
-    omit: { externalBoardApiKey: true, novaJudgeApiKey: true },
+    omit: { externalBoardApiKey: true, novaJudgeApiKey: true, hydroBrowserApiKey: true, hydroBrowserEventFeedApiKey: true },
     include: { problems: {
       orderBy: { order: 'asc' },
       select: { id: true, order: true, label: true, sourceDeleted: true, hydroProblemId: true, title: true,
@@ -53,21 +54,10 @@ export function loadMonitorData(examId: string, userId: string, manageable: bool
 }
 
 async function readMonitorData(examId: string, userId: string, manageable: boolean) {
-  const candidateScope =
-    manageable
-      ? {}
-      : {
-          rooms: {
-            some: {
-              room: {
-                proctors: { some: { userId } }
-              }
-            }
-          }
-        };
+  const candidateScope = manageable ? { examId } : candidateRoomScope(examId, userId);
 
   const [candidates, loginRequests, sessions, alerts, mediaSegments, rooms, cheatingRecords, printJobs] = await settleReads([
-    prisma.candidate.findMany({ where: { examId, ...candidateScope }, orderBy: [{ seatNo: 'asc' }, { examNumber: 'asc' }], omit: { password: true } }),
+    prisma.candidate.findMany({ where: candidateScope, orderBy: [{ seatNo: 'asc' }, { examNumber: 'asc' }], omit: { password: true } }),
     prisma.loginRequest.findMany({
       where: { examId, status: 'REQUESTING', candidate: candidateScope },
       include: { candidate: { omit: { password: true } } },
@@ -95,7 +85,7 @@ async function readMonitorData(examId: string, userId: string, manageable: boole
           where: { examId },
           include: {
             proctors: { include: { user: { select: PUBLIC_USER_SELECT } } },
-            candidates: { include: { candidate: { omit: { password: true } } } }
+            candidates: { where: { candidate: { examId } }, include: { candidate: { omit: { password: true } } } }
           },
           orderBy: { createdAt: 'asc' }
         })
@@ -103,7 +93,7 @@ async function readMonitorData(examId: string, userId: string, manageable: boole
           where: { examId, proctors: { some: { userId } } },
           include: {
             proctors: { include: { user: { select: PUBLIC_USER_SELECT } } },
-            candidates: { include: { candidate: { omit: { password: true } } } }
+            candidates: { where: { candidate: { examId } }, include: { candidate: { omit: { password: true } } } }
           },
           orderBy: { createdAt: 'asc' }
         }),

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import ts from 'typescript';
 import { NextResponse } from 'next/server';
 import { prisma } from '../src/lib/db';
-import { setSessionCookie, verifySessionToken } from '../src/lib/auth';
+import { createSessionToken, setSessionCookie, verifySessionToken } from '../src/lib/auth';
 import { isTrustedMutationOrigin } from '../src/lib/request-origin';
 import { parseBody, RequestParseError } from '../src/lib/http';
 import { POST as login } from '../src/app/api/auth/login/route';
@@ -37,6 +37,13 @@ test('admin cookie and signed session both last seven days', async () => {
   const session = verifySessionToken(cookie.value);
   assert.ok(session);
   assert.ok(session.exp >= start + lifetime && session.exp <= Math.floor(Date.now() / 1000) + lifetime);
+});
+
+test('admin cookie verification rejects incomplete session identities and extra fields after the signature', () => {
+  const user = { id: 'admin', role: 'SUPER_ADMIN', username: 'admin', numberId: null } as const;
+  assert.equal(verifySessionToken(createSessionToken(user))?.sub, user.id);
+  assert.equal(verifySessionToken(createSessionToken({ ...user, id: '' })), null);
+  assert.equal(verifySessionToken(`${createSessionToken(user)}.extra`), null);
 });
 
 test('cookie writes require an exact origin, including sibling sites and opaque origins', () => {

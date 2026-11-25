@@ -12,9 +12,17 @@ async function start(role:'PUBLIC'|'LOCAL',port:number,other:number){
 async function qa(port:number,op:string,data:object={}){const response=await fetch(`http://127.0.0.1:${port}/qa`,{method:'POST',headers:{'content-type':'application/json','x-qa':'isolated-test'},body:JSON.stringify({op,...data})});const result=await response.json();assert.equal(response.status,200,JSON.stringify(result));return result;}
 async function converge(check:()=>Promise<boolean>,label:string){for(let i=0;i<15;i++){await qa(publicPort,'capture');await qa(localPort,'sync');if(await check()){console.log(`PASS ${label}`);return;}await sleep(800);}throw new Error(`Did not converge: ${label}`);}
 try{
- await start('PUBLIC',publicPort,localPort);await start('LOCAL',localPort,publicPort);await qa(publicPort,'setup');await qa(localPort,'setup');await qa(publicPort,'capture');await qa(localPort,'sync');
+ await start('PUBLIC',publicPort,localPort);await start('LOCAL',localPort,publicPort);await qa(publicPort,'setup');await qa(localPort,'setup');
+ await qa(publicPort,'edit',{saveFullRecording:true,saveIncidentRecording:false});
+ const initialCatalog=(await qa(publicPort,'capture')).catalogRequests;
+ assert.equal((await qa(publicPort,'capture',{scheduled:true})).catalogRequests,initialCatalog);
+ assert.equal((await qa(publicPort,'capture')).catalogRequests,initialCatalog+1);
+ console.log('PASS scheduled bank scan is throttled and manual capture stays immediate');
+ await qa(localPort,'sync');
  assert.equal((await qa(localPort,'import')).examCode,'2026110601');
  let pub=await qa(publicPort,'state'),local=await qa(localPort,'state');
+ assert.equal(pub.exam.saveFullRecording,true);assert.equal(local.exam.saveFullRecording,false);assert.equal(local.exam.saveIncidentRecording,false);
+ await qa(localPort,'edit',{saveFullRecording:false,saveIncidentRecording:true});
  assert.equal(local.exam.problems[0].label,'L1-1');assert.equal(local.exam.problems[0].score,70);assert.notEqual(local.exam.problems[0].hydroProblemId,pub.exam.problems[0].hydroProblemId);assert.equal(local.exam.candidates[0].password,'pass');assert.equal(local.exam.rooms[0].requireSecondCamera,false);assert.equal((await qa(localPort,'verify')).ok,true);console.log('PASS import, docId mapping, labels, credentials and room cameras');
  await qa(publicPort,'edit',{loginIp:'203.0.113.10'});
  await qa(localPort,'edit',{name:'内网修改',score:80,label:'Z-1',number:'LAN1001',ip:false,loginIp:'192.0.2.20'});
@@ -28,23 +36,69 @@ try{
  local=await qa(localPort,'state');
  assert.equal(local.exam.ipLoginRestrictionEnabled,true);
  assert.equal(local.exam.candidates[0].loginIp,'192.0.2.20');
+ assert.equal((await qa(publicPort,'state')).exam.saveFullRecording,true);assert.equal((await qa(publicPort,'state')).exam.saveIncidentRecording,false);
  await qa(publicPort,'edit',{bankTitle:'修改后原题'});
  await converge(async()=>{const s=await qa(localPort,'state');return s.exam.problems[0].title==='修改后原题';},'bank edits retain mapping despite custom pid change');assert.equal((await qa(localPort,'state')).exam.problems[0].hydroProblemId,local.exam.problems[0].hydroProblemId);
- await qa(localPort,'submit');
+ const localSubmission=await qa(localPort,'submit');
  await converge(async()=>{const s=await qa(publicPort,'state');return s.exam.submissions.length===1&&s.exam.questions.length===1&&s.exam.announcements.length===1;},'code, judge results, questions and announcements');
  await qa(localPort,'extras');
- await converge(async()=>{const s=await qa(publicPort,'state');return s.exam.sessions.length===1&&s.exam.printJobs.length===1&&s.exam.cheatingRecords.length===1&&s.exam.screenControlGroups[0]?.images.length===1&&s.exam.codeCheckJobs[0]?.sources.length===1&&s.exam.loginRequests[0]?.identityPhotoPath;},'sessions, photos, print, cheating, screen schedules and code reports');
- const expanded=await qa(publicPort,'state');assert.equal(expanded.exam.sessions[0].desktopTokenHash,null);assert.equal(expanded.exam.sessions[0].loginRequestId,expanded.exam.loginRequests[0].id);assert.equal(expanded.exam.mediaSegments.some((m:any)=>m.channel==='ROOM_VIDEO'),false);assert.equal(expanded.exam.codeCheckJobs[0].sources[0].problemId,expanded.exam.problems[0].id);assert.equal(expanded.exam.loginRequests[0].syncMaterialsVerified,true);
+ await converge(async()=>{const s=await qa(publicPort,'state');return s.exam.sessions.length===1&&s.exam.printJobs.length===1&&s.exam.cheatingRecords.length===1&&s.exam.screenControlGroups[0]?.images.length===1&&s.exam.codeCheckJobs[0]?.sources.length===1;},'session history, print, cheating, screen schedules and code reports');
+ const expanded=await qa(publicPort,'state');assert.equal(expanded.exam.sessions[0].desktopTokenHash,null);assert.equal(expanded.exam.sessions[0].loginRequestId,null);assert.equal(expanded.exam.loginRequests.length,0);assert.equal(expanded.exam.mediaSegments.some((m:any)=>['ROOM_VIDEO','IDENTITY_PHOTO'].includes(m.channel)),false);assert.equal(expanded.exam.codeCheckJobs[0].sources[0].problemId,expanded.exam.problems[0].id);
+ const owner=await qa(localPort,'state');assert.equal(owner.exam.loginRequests.length,1);assert.equal(owner.exam.sessions[0].loginRequestId,owner.exam.loginRequests[0].id);assert.equal(owner.exam.mediaSegments.some((m:any)=>m.channel==='IDENTITY_PHOTO'),true);assert.equal(expanded.exam.questions.length,1);assert.equal(expanded.exam.announcements.length,1);console.log('PASS login requests/photos stay local while sessions, questions and announcements continue syncing');
+ const publicSubmission=await qa(publicPort,'submit',{status:22,score:0,code:'// public submission\nint main() {}',question:'公网考生提问',announcement:'公网公告'});
+ await converge(async()=>{const s=await qa(localPort,'state');return s.exam.submissions.some((r:any)=>r.id===publicSubmission.submissionId&&r.status===22)&&s.exam.questions.some((q:any)=>q.content==='公网考生提问')&&s.exam.announcements.some((a:any)=>a.content==='公网公告');},'public submissions, questions and announcements reach LAN');
+ await qa(publicPort,'result',{submissionId:publicSubmission.submissionId,score:160});
+ await converge(async()=>(await qa(localPort,'state')).exam.submissions.some((r:any)=>r.id===publicSubmission.submissionId&&r.status===1&&r.score===160),'judged score updates reach LAN');
+ const publicJudgeRecord=(await qa(publicPort,'state')).exam.submissions.find((r:any)=>r.id===publicSubmission.submissionId).hydroRecordId;
+ assert.match(publicJudgeRecord,/^public-/);
+ assert.equal((await qa(localPort,'state')).exam.submissions.find((r:any)=>r.id===publicSubmission.submissionId).hydroRecordId,null);
+ await qa(localPort,'result',{submissionId:publicSubmission.submissionId,manualScore:58.75});
+ await converge(async()=>(await qa(publicPort,'state')).exam.submissions.some((r:any)=>r.id===publicSubmission.submissionId&&r.manualScore===58.75),'LAN manual grades on imported submissions reach public');
+ assert.equal((await qa(publicPort,'state')).exam.submissions.find((r:any)=>r.id===publicSubmission.submissionId).hydroRecordId,publicJudgeRecord,'peer manual grades retain the original local Hydro association');
+ await qa(publicPort,'result',{submissionId:publicSubmission.submissionId,manualScore:63.25});
+ await converge(async()=>(await qa(localPort,'state')).exam.submissions.some((r:any)=>r.id===publicSubmission.submissionId&&r.manualScore===63.25),'public manual grade corrections reach LAN');
+ await qa(localPort,'result',{submissionId:publicSubmission.submissionId,clearManual:true});
+ await converge(async()=>(await qa(publicPort,'state')).exam.submissions.some((r:any)=>r.id===publicSubmission.submissionId&&r.manualScore===null&&r.score===160),'clearing a manual grade preserves and synchronizes the judged score');
+ assert.equal((await qa(publicPort,'state')).exam.submissions.find((r:any)=>r.id===publicSubmission.submissionId).hydroRecordId,publicJudgeRecord);
+ assert.equal((await qa(localPort,'state')).exam.submissions.find((r:any)=>r.id===publicSubmission.submissionId).hydroRecordId,null,'replicas never borrow the other node\'s Hydro ID');
+ await qa(publicPort,'message',{question:'题目咨询',content:'公网老师答复'});
+ await converge(async()=>(await qa(localPort,'state')).exam.questions.some((q:any)=>q.messages.some((m:any)=>m.content==='公网老师答复')),'public replies reach LAN');
+ await qa(localPort,'message',{question:'题目咨询',sender:'CANDIDATE',content:'内网考生追问'});
+ await qa(localPort,'message',{question:'公网考生提问',content:'内网老师答复'});
+ await converge(async()=>{const s=await qa(publicPort,'state');return ['内网考生追问','内网老师答复'].every(text=>s.exam.questions.some((q:any)=>q.messages.some((m:any)=>m.content===text)));},'LAN follow-up messages and replies reach public');
+ await qa(localPort,'acknowledge',{announcementId:publicSubmission.announcementId,message:'公网老师答复'});
+ await converge(async()=>{const s=await qa(publicPort,'state');return s.exam.announcements.find((a:any)=>a.id===publicSubmission.announcementId)?.receipts.length===1&&s.exam.questions.some((q:any)=>q.messages.some((m:any)=>m.content==='公网老师答复'&&m.acknowledgedAt));},'announcement and answer read receipts synchronize');
+ await qa(publicPort,'private-runtime');
+ await converge(async()=>(await qa(localPort,'state')).exam.sessions.length===2,'public session history reaches LAN without login/photo dependencies');
+ for(const port of [publicPort,localPort]){const s=await qa(port,'state');assert.equal(s.exam.loginRequests.length,1);assert.equal(s.exam.mediaSegments.length,2);assert.equal(s.exam.mediaSegments.filter((m:any)=>m.channel==='IDENTITY_PHOTO').length,1);assert.equal(s.exam.mediaSegments.filter((m:any)=>m.channel==='ROOM_VIDEO').length,1);assert.equal(s.exam.sessions.filter((r:any)=>r.loginRequestId).length,1);}console.log('PASS login requests, verification photos and recordings stay on both owning servers');
+ const secondRoom=await qa(publicPort,'add-ip-room');
+ await converge(async()=>(await qa(localPort,'state')).exam.rooms.length===2,'second room and membership synchronize');
+ const localRoom=(await qa(localPort,'state')).exam.rooms.find((r:any)=>r.name==='第一考室');
+ await qa(localPort,'room-ip',{roomId:localRoom.id,enabled:false});
+ await converge(async()=>(await qa(publicPort,'restrictions')).data.rooms.find((r:any)=>r.name==='第一考室')?.enabled===false,'LAN room IP policy reaches public');
+ await qa(publicPort,'room-ip',{roomId:secondRoom.roomId,enabled:true});
+ await converge(async()=>{const d=(await qa(localPort,'restrictions')).data;return d.rooms.find((r:any)=>r.name==='第二考室 IP')?.enabled===true&&d.total===1;},'public room IP policy reaches LAN');
+ for(const port of [publicPort,localPort]){const d=(await qa(port,'restrictions')).data;assert.equal(d.total,1);assert.equal(d.candidates[0].examNumber,'ROOM2IP');assert.equal((await qa(port,'ip-check',{examNumber:'IPCHECK1001',ip:'198.51.100.9'})).allowed,true);}
+ const publicFirst=(await qa(publicPort,'state')).exam.rooms.find((r:any)=>r.name==='第一考室');
+ await qa(publicPort,'room-ip',{roomId:publicFirst.id,enabled:true});
+ await converge(async()=>(await qa(localPort,'restrictions')).data.total===2,'re-enabling a room updates the restricted roster');
+ for(const port of [publicPort,localPort])assert.equal((await qa(port,'ip-check',{examNumber:'IPCHECK1001',ip:'198.51.100.9'})).allowed,false);
+ assert.equal((await qa(publicPort,'state')).exam.candidates.find((r:any)=>r.examNumber==='IPCHECK1001').loginIp,'203.0.113.10');assert.equal((await qa(localPort,'state')).exam.candidates.find((r:any)=>r.examNumber==='IPCHECK1001').loginIp,'192.0.2.20');console.log('PASS room IP switches synchronize in both directions, disabled rooms disappear from restrictions, bound IPs remain node-local');
  await qa(localPort,'toggle',{enabled:false});await qa(publicPort,'edit',{name:'暂停期间更新'});await qa(publicPort,'capture');await qa(localPort,'sync');assert.notEqual((await qa(localPort,'state')).exam.name,'暂停期间更新');await qa(localPort,'toggle',{enabled:true});
  await converge(async()=>(await qa(localPort,'state')).exam.name==='暂停期间更新','paused updates drain after resume');
  await qa(publicPort,'legacy');await qa(localPort,'legacy');await qa(publicPort,'toggle',{enabled:true});await qa(publicPort,'capture');await qa(localPort,'import');
- await converge(async()=>{const s=await qa(publicPort,'state'),l=await qa(localPort,'state');return s.exam.submissions.length===1&&l.exam.submissions.length===1&&s.exam.candidates[0].syncKey===l.exam.candidates[0].syncKey;},'legacy connection migration retains history and remaps existing rows');
+ await converge(async()=>{const s=await qa(publicPort,'state'),l=await qa(localPort,'state');return s.exam.submissions.length===2&&l.exam.submissions.length===2&&s.exam.candidates[0].syncKey===l.exam.candidates[0].syncKey;},'legacy connection migration retains history and remaps existing rows');
  await qa(publicPort,'edit',{number:'NEW1001'});
  await converge(async()=>(await qa(localPort,'state')).exam.candidates[0].examNumber==='NEW1001','account edits preserve submission identity');
  await qa(localPort,'edit',{end:true});await converge(async()=>new Date((await qa(publicPort,'state')).exam.endAt).getTime()<Date.now(),'end time sync');
  await qa(publicPort,'edit',{deleteBank:true});
- await converge(async()=>{const s=await qa(localPort,'state');return s.exam.problems[0].sourceDeleted&&s.exam.submissions.length===1;},'deleted source retains completed exam and submissions');assert.equal((await qa(localPort,'rejudge')).count,0);
- local=await qa(localPort,'state');assert.equal(local.exam.problems[0].title,'修改后原题');assert.equal(local.exam.submissions[0].code,'int main() {}');
+ await converge(async()=>{const s=await qa(localPort,'state');return s.exam.problems[0].sourceDeleted&&s.exam.submissions.length===2;},'deleted source retains completed exam and submissions');assert.equal((await qa(localPort,'rejudge')).count,0);
+ local=await qa(localPort,'state');assert.equal(local.exam.problems[0].title,'修改后原题');assert.equal(local.exam.submissions.find((r:any)=>r.id===localSubmission.submissionId).code,'int main() {}');
  const paths=await qa(localPort,'codePaths');assert.match(paths[0].path,/^0001-张三\/Z-1-修改后原题-[^.]+\.cpp$/);console.log('PASS no rejudge after deletion; statement and code retained');
  await qa(publicPort,'edit',{recreateBank:true});await converge(async()=>{const s=await qa(localPort,'state');return s.docs.some((d:any)=>d.title==='重新创建的新题');},'reused Hydro docId is a new problem after deletion');assert.equal((await qa(localPort,'state')).exam.problems[0].title,'修改后原题');
+ local=await qa(localPort,'state');pub=await qa(publicPort,'state');assert.equal(local.exam.saveFullRecording,false);assert.equal(local.exam.saveIncidentRecording,true);assert.equal(pub.exam.saveFullRecording,true);assert.equal(pub.exam.saveIncidentRecording,false);
+ // Replay a legacy peer snapshot last: its deliberately synthetic version
+ // must not become the source of subsequent two-node convergence assertions.
+ await qa(localPort,'legacy-recording',{saveFullRecording:true,saveIncidentRecording:false});
+ local=await qa(localPort,'state');assert.equal(local.exam.name,'旧节点更新考试资料');assert.equal(local.exam.saveFullRecording,false);assert.equal(local.exam.saveIncidentRecording,true);console.log('PASS recording settings stay node-local across import, two-way updates and legacy snapshots');
 }finally{for(const child of children)child.kill('SIGTERM');}

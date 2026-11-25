@@ -1,5 +1,7 @@
 # Reaction 隔离验收
 
+Hydro 适配测试及实际客户端验收步骤见 [Hydro Reaction](reaction-hydro.md#验证)。本文件其余真实评测流程使用 NovaJudge，不能作为 Hydro 实机验收结果。
+
 模块单测、隔离集成测试和真实端到端验收是三个不同层次。不要把构造 CCS 事件或单独生成 MP4 的通过结果当作真实提交、摄像头和客户端验收。
 
 ## 通用环境

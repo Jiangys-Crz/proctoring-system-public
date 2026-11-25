@@ -11,7 +11,7 @@ export async function GET(request: Request) {
     const sessionId = params.get('sessionId') || '', channel = params.get('channel') || '';
     if (!liveChannels.includes(channel as LiveChannel) || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return fail('推流参数不正确', 400);
     const session = await prisma.clientSession.findUnique({ where: { id: sessionId }, select: {
-      id: true, examId: true, candidateId: true, status: true, revokedAt: true, desktopTokenHash: true, miniProgramTokenHash: true
+      id: true, examId: true, candidateId: true, startedAt: true, status: true, revokedAt: true, desktopTokenHash: true, miniProgramTokenHash: true
     } });
     if (!session || !verifyClientTokenForSession(request, session, channel === 'MOBILE_CAMERA' ? 'MINIPROGRAM' : 'DESKTOP')) return fail('客户端会话令牌无效或已注销', 401);
     if (!await canPublishChannel(session, channel)) return fail('当前会话不允许该画面推流', 403);

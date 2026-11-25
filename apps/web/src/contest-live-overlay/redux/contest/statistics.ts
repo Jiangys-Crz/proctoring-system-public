@@ -1,0 +1,21 @@
+import { createSlice, PayloadAction } from "@reduxjs/toolkit";
+import { SolutionsStatistic } from "../../api";
+export interface StatisticsState {
+    statistics?: SolutionsStatistic;
+}
+
+const initialState: StatisticsState = {};
+
+export const statisticsSlice = createSlice({
+    name: "statistics",
+    initialState,
+    reducers: {
+        setStatistics: (state, action: PayloadAction<SolutionsStatistic>) => {
+            state.statistics = action.payload;
+        },
+    },
+});
+
+export const { setStatistics } = statisticsSlice.actions;
+
+export default statisticsSlice.reducer;

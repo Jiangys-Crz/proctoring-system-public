@@ -1,6 +1,6 @@
 # NovaJudge native Windows submit
-#Requires -Version 5.1
-# Windows PowerShell 5.1+. Credentials and source never enter process arguments.
+#Requires -Version 3.0
+# Windows PowerShell 3.0+ with .NET Framework 4.5+. Credentials and source never enter process arguments.
 $ErrorActionPreference = "Stop"
 $ClientVersion = "2026.11.05.2"
 $ConfigPath = Join-Path $env:USERPROFILE ".novajudge-submit.json"
@@ -577,7 +577,7 @@ Failed requests are never automatically resent. Check the queue before trying ag
   Write-Host @"
 NovaJudge submit - native Windows client $ClientVersion
 Submit one source file to the administrator-selected contest for judging.
-Requires Windows PowerShell 5.1. On Windows 7 SP1, install .NET Framework 4.5.2 or later and WMF 5.1 first.
+Requires Windows PowerShell 3.0 and .NET Framework 4.5 or later. The Windows 7 SP1 desktop installer prepares WMF 5.1 and .NET Framework 4.5.2.
 
 Usage:
   submit [options] <source-file>

@@ -87,6 +87,19 @@ try {
   await assert.rejects(updateScreenControlGroup(exam.id, first.id, { name: 'locked' }), /正在展示/);
   await assert.rejects(deleteScreenControlGroup(exam.id, first.id), /正在展示/);
 
+  const only = await createScreenControlDisplay(otherExam.id, { participantCardOnly: true }, owner.id);
+  const onlyState = (await (await getClientState(clientRequest(otherSession.id, otherToken.token))).json()).data.active;
+  assert.deepEqual(onlyState.images.map((item: { id: string }) => item.id), [`participant-${only.id}`]);
+  assert.equal((await getAdminScreenControl(otherExam.id)).groups.length, 0);
+  const cardId = onlyState.images[0].id;
+  const card = await getClientImage(clientRequest(otherSession.id, otherToken.token, cardId), { params: Promise.resolve({ imageId: cardId }) });
+  assert.equal(card.status, 200);
+  assert.equal((await sharp(Buffer.from(await card.arrayBuffer())).metadata()).width, 1920);
+  assert.equal((await getClientImage(clientRequest(otherSession.id, otherToken.token, first.images[0].id), { params: Promise.resolve({ imageId: first.images[0].id }) })).status, 403);
+  assert.equal((await getClientImage(clientRequest(session.id, token.token, cardId), { params: Promise.resolve({ imageId: cardId }) })).status, 403);
+  const scheduledOnly = await createScreenControlDisplay(otherExam.id, { participantCardOnly: true, startsAt: new Date(Date.now() + 30_000).toISOString() }, owner.id);
+  assert.equal((await getAdminScreenControl(otherExam.id)).schedules.find(item => item.id === scheduledOnly.id)?.participantCardOnly, true);
+
   // Exam and session phases never override the separate administrator display.
   await prisma.exam.update({ where: { id: exam.id }, data: { endAt: new Date(Date.now() - 1_000) } });
   await prisma.clientSession.update({ where: { id: session.id }, data: { status: 'FINISHED' } });

@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../src/lib/db';
 import { createClientSessionToken } from '../src/lib/client-auth';
 import { triggerJudgeStatusSync } from '../src/lib/deferred-judge';
+import { saveHydroSettings, defaultHydroSettings } from '../src/lib/settings';
 import { POST as submissions } from '../src/app/api/client/contest/submissions/route';
 
 // Run against a disposable database after prisma db push. The test removes all
@@ -11,10 +12,14 @@ const database = new URL(process.env.DATABASE_URL || '');
 assert.equal(database.hostname, '127.0.0.1');
 assert.equal(database.pathname, '/proctor_submission_qa', 'requires an isolated submission QA database');
 const marker = `submission-qa-${crypto.randomUUID()}`;
+const candidateCount = Number(process.env.PERFORMANCE_TEST_CANDIDATES || 30);
+assert.ok([30, 100, 200].includes(candidateCount));
+const submissionCount = candidateCount * 10;
 const originalFetch = globalThis.fetch;
 let examId = '';
 
 async function main() {
+  await saveHydroSettings({ ...defaultHydroSettings, baseUrl: 'https://judge.example.org', apiKey: 'isolated-qa-only' });
   const start = new Date(Date.now() - 60_000);
   const exam = await prisma.exam.create({ data: {
     name: marker, examCode: crypto.randomBytes(5).toString('hex'),
@@ -25,19 +30,19 @@ async function main() {
     problems: { create: { order: 0, hydroProblemId: '1', title: 'Load fixture', content: 'statement'.repeat(16_000) } },
   }, include: { problems: true } });
   examId = exam.id;
-  const candidates = await Promise.all(Array.from({ length: 30 }, (_, index) => prisma.candidate.create({ data: {
+  const candidates = await Promise.all(Array.from({ length: candidateCount }, (_, index) => prisma.candidate.create({ data: {
     examId, examNumber: String(index).padStart(3, '0'), password: 'test-only', name: `Candidate ${index}`, seatNo: String(index + 1),
   } })));
   const sessions = await Promise.all(candidates.map(async candidate => {
     const credentials = createClientSessionToken();
     const session = await prisma.clientSession.create({ data: {
       examId, candidateId: candidate.id, desktopDeviceId: `${marker}-${candidate.id}`,
-      desktopTokenHash: credentials.tokenHash, startedAt: start, status: 'IN_EXAM',
+      desktopTokenHash: credentials.tokenHash, approvedAt: start, startedAt: start, status: 'IN_EXAM',
     } });
     return { session, token: credentials.token };
   }));
   const rows = candidates.flatMap((candidate, candidateIndex) => Array.from({ length: 10 }, (_, index) => ({
-    id: `${marker}-${String(candidateIndex * 10 + index).padStart(3, '0')}`,
+    id: `${marker}-${String(candidateIndex * 10 + index).padStart(6, '0')}`,
     examId, candidateId: candidate.id, problemId: exam.problems[0].id,
     actorKey: candidate.examNumber, candidateExamNumber: candidate.examNumber,
     lang: 'cpp', code: `${candidate.id}\n${'x'.repeat(16 * 1024)}`,
@@ -59,14 +64,14 @@ async function main() {
     assert.equal(response.status, 200, await response.clone().text());
     const { data } = await response.json();
     timings.push(performance.now() - began);
-    assert.equal(data.length, 300);
+    assert.equal(data.length, 10, 'individual candidates only see their own submissions');
     assert.equal(data.filter((row: any) => row.canViewDetail).length, 10);
     assert.ok(data.filter((row: any) => !row.canViewDetail).every((row: any) => row.code === '' && row.testCases.length === 0));
   }));
-  assert.equal(remoteCalls, 0, '30 candidate polls must continue without Hydro');
+  assert.equal(remoteCalls, 0, 'candidate polls must continue without Hydro');
   timings.sort((a, b) => a - b);
-  console.log(JSON.stringify({ fixture: '30 candidates, 300 submissions, 16 KiB code each, Hydro offline',
-    successfulPolls: timings.length, p50Ms: Math.round(timings[14]), p95Ms: Math.round(timings[28]), remoteCalls }));
+  console.log(JSON.stringify({ fixture: `${candidateCount} candidates, ${submissionCount} submissions, 16 KiB code each, Hydro offline`,
+    successfulPolls: timings.length, p50Ms: Math.round(timings[Math.floor(timings.length / 2)]), p95Ms: Math.round(timings[Math.ceil(timings.length * .95) - 1]), remoteCalls }));
 
   // Oldest 200 records stay pending. Records 201..300 finish remotely and must
   // still be found on the second worker tick, with real SQL keyset pagination.
@@ -84,15 +89,16 @@ async function main() {
   };
   await triggerJudgeStatusSync();
   await triggerJudgeStatusSync();
-  assert.deepEqual(queried.map(ids => ids.length), [200, 100]);
-  assert.equal(await prisma.contestSubmission.count({ where: { examId, judgeAt: { not: null }, score: 100 } }), 100);
-  assert.equal(await prisma.contestSubmission.count({ where: { examId, judgeAt: null } }), 200);
+  const completedCount = Math.min(200, submissionCount - 200);
+  assert.deepEqual(queried.map(ids => ids.length), [200, completedCount]);
+  assert.equal(await prisma.contestSubmission.count({ where: { examId, judgeAt: { not: null }, score: 100 } }), completedCount);
+  assert.equal(await prisma.contestSubmission.count({ where: { examId, judgeAt: null } }), submissionCount - completedCount);
   const latest = await submissions(request(sessions[29]));
   const { data } = await latest.json();
   assert.ok(data.filter((row: any) => row.canViewDetail).every((row: any) => row.status === 1));
   await prisma.clientSession.update({ where: { id: sessions[0].session.id }, data: { revokedAt: new Date() } });
   assert.equal((await submissions(request(sessions[0]))).status, 401);
-  console.log('PASS: real database 30-way local polling, private detail projections, 300-record judge sweep, completed-result visibility and immediate revocation.');
+  console.log(`PASS: real database ${candidateCount}-way local polling, private detail projections, bounded judge sweep, completed-result visibility and immediate revocation.`);
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {

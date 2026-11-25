@@ -4,6 +4,7 @@ param(
   [string]$PackageDirectory,
   [string]$LogPath,
   [switch]$CheckOnly,
+  [switch]$RequireUniversalCrt,
   [switch]$LibraryOnly
 )
 
@@ -38,11 +39,48 @@ function Test-PrerequisiteRegistryKey([string]$KeyPath) {
   return $true
 }
 
+function Test-WindowsUniversalCrt([bool]$Is64BitOS, [bool]$Is64BitProcess) {
+  $SystemDirectory = [Environment]::SystemDirectory
+  if ($Is64BitOS -and !$Is64BitProcess) { $SystemDirectory = Join-Path $env:SystemRoot 'Sysnative' }
+  $Runtime = Join-Path $SystemDirectory 'ucrtbase.dll'
+  if (![IO.File]::Exists($Runtime)) { return $false }
+  # KB2999226 supplies these forwarding DLLs. A partial installation may have
+  # ucrtbase.dll yet still prevent the wx executable from loading.
+  foreach ($Contract in @('conio', 'convert', 'environment', 'filesystem', 'heap', 'locale', 'math',
+      'multibyte', 'private', 'process', 'runtime', 'stdio', 'string', 'time', 'utility')) {
+    $FileName = 'api-ms-win-crt-' + $Contract + '-l1-1-0.dll'
+    if (![IO.File]::Exists((Join-Path $SystemDirectory $FileName))) { return $false }
+  }
+  $FileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($Runtime)
+  $Parts = @($FileVersion.FileMajorPart, $FileVersion.FileMinorPart, $FileVersion.FileBuildPart, $FileVersion.FilePrivatePart)
+  $Version = New-Object Version -ArgumentList $Parts
+  return ($Version -ge (New-Object Version('10.0.10240.16390')))
+}
+
 function Get-WindowsPrerequisiteState {
   $Os = Get-WmiObject -Class Win32_OperatingSystem
   $Version = New-Object Version([string]$Os.Version)
   $IsWindows7 = $Version.Major -eq 6 -and $Version.Minor -eq 1
-  if (!$IsWindows7) { return @{ IsWindows7 = $false } }
+  $UcrtOnly = $RequireUniversalCrt -and $Version.Major -eq 6 -and ($Version.Minor -eq 2 -or $Version.Minor -eq 3)
+  if (!$IsWindows7 -and !$UcrtOnly) { return @{ IsWindows7 = $false } }
+  $Pending = (Test-PrerequisiteRegistryKey 'SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
+    (Test-PrerequisiteRegistryKey 'SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+  $Renames = Read-PrerequisiteRegistryValue 'SYSTEM\CurrentControlSet\Control\Session Manager' 'PendingFileRenameOperations'
+  if ($Renames -and @($Renames | Where-Object { $_ }).Count -gt 0) { $Pending = $true }
+  $Is64BitProcess = [IntPtr]::Size -eq 8
+  $Is64BitOS = $Is64BitProcess -or [bool]$env:PROCESSOR_ARCHITEW6432
+  $UniversalCrtReady = !$RequireUniversalCrt -or (Test-WindowsUniversalCrt $Is64BitOS $Is64BitProcess)
+  $State = @{
+    IsWindows7 = $IsWindows7
+    UcrtOnly = $UcrtOnly
+    WindowsMinor = $Version.Minor
+    PendingReboot = [bool]$Pending
+    Is64BitOS = $Is64BitOS
+    Is64BitProcess = $Is64BitProcess
+    UniversalCrtReady = $UniversalCrtReady
+  }
+  if ($UcrtOnly) { return $State }
+
   $PowerShellVersion = $PSVersionTable.PSVersion
   foreach ($Key in @('SOFTWARE\Microsoft\PowerShell\3\PowerShellEngine', 'SOFTWARE\Microsoft\PowerShell\1\PowerShellEngine')) {
     $Installed = Read-PrerequisiteRegistryValue $Key 'PowerShellVersion'
@@ -54,35 +92,31 @@ function Get-WindowsPrerequisiteState {
   $NetRelease = Read-PrerequisiteRegistryValue 'SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' 'Release'
   if ((Read-PrerequisiteRegistryValue 'SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' 'Install') -ne 1) { $NetRelease = 0 }
   $Wmf3 = @(Get-WmiObject -Query "select * from Win32_QuickFixEngineering where HotFixID = 'KB2506143'")
-  $Pending = (Test-PrerequisiteRegistryKey 'SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
-    (Test-PrerequisiteRegistryKey 'SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
-  $Renames = Read-PrerequisiteRegistryValue 'SYSTEM\CurrentControlSet\Control\Session Manager' 'PendingFileRenameOperations'
-  if ($Renames -and @($Renames | Where-Object { $_ }).Count -gt 0) { $Pending = $true }
-  return @{
-    IsWindows7 = $true
-    ServicePack = [int]$Os.ServicePackMajorVersion
-    PowerShellVersion = $PowerShellVersion
-    NetRelease = [int]$NetRelease
-    Wmf3Installed = ($PowerShellVersion.Major -eq 3 -or $Wmf3.Count -gt 0)
-    PendingReboot = [bool]$Pending
-    Is64BitOS = ([IntPtr]::Size -eq 8 -or [bool]$env:PROCESSOR_ARCHITEW6432)
-    Is64BitProcess = ([IntPtr]::Size -eq 8)
-  }
+  $State.ServicePack = [int]$Os.ServicePackMajorVersion
+  $State.PowerShellVersion = $PowerShellVersion
+  $State.NetRelease = [int]$NetRelease
+  $State.Wmf3Installed = ($PowerShellVersion.Major -eq 3 -or $Wmf3.Count -gt 0)
+  return $State
 }
 
 function Read-PrerequisiteManifest([string]$Directory) {
   $ManifestPath = Join-Path $Directory 'manifest.ini'
   $Hashes = @{}
+  $Required = @('dotnet452.exe', 'wmf51-x86.msu', 'wmf51-x64.msu')
+  if ($RequireUniversalCrt) {
+    $Required += @('ucrt-x86.msu', 'ucrt-x64.msu', 'ucrt-win8-x86.msu', 'ucrt-win8-x64.msu',
+      'ucrt-win81-x86.msu', 'ucrt-win81-x64.msu')
+  }
   foreach ($Line in [IO.File]::ReadAllLines($ManifestPath)) {
     if (!$Line.Trim()) { continue }
-    if ($Line -notmatch '^(dotnet452\.exe|wmf51-x86\.msu|wmf51-x64\.msu)=([a-fA-F0-9]{64})$') {
+    if ($Line -notmatch '^([a-z0-9.-]+)=([a-fA-F0-9]{64})$' -or $Required -cnotcontains $Matches[1]) {
       throw 'The offline prerequisite manifest is invalid. Obtain a complete official client installer.'
     }
     $Name = $Matches[1]
     if ($Hashes.ContainsKey($Name)) { throw 'Duplicate prerequisite manifest entry.' }
     $Hashes[$Name] = $Matches[2].ToLowerInvariant()
   }
-  if ($Hashes.Count -ne 3) { throw 'The offline prerequisite manifest is incomplete.' }
+  if ($Hashes.Count -ne $Required.Count) { throw 'The offline prerequisite manifest is incomplete.' }
   return $Hashes
 }
 
@@ -141,20 +175,21 @@ function Test-PrerequisiteAdministrator {
 function Invoke-WindowsPrerequisites([string]$Directory, [bool]$InspectOnly) {
   try {
     $State = Get-WindowsPrerequisiteState
-    if (!$State.IsWindows7) {
-      Write-PrerequisiteMessage 'This operating system does not need the Windows 7 prerequisite bundle.'
+    if (!$State.IsWindows7 -and !$State.UcrtOnly) {
+      Write-PrerequisiteMessage 'This operating system does not need the offline Windows prerequisite bundle.'
       return 0
     }
-    if ($State.ServicePack -lt 1) {
+    if ($State.IsWindows7 -and $State.ServicePack -lt 1) {
       Write-PrerequisiteMessage 'Windows 7 SP1 is required. Ask the administrator to install SP1 before running this installer again.'
       return 3
     }
     $MinimumPowerShell = New-Object Version('5.1')
-    if ($State.PowerShellVersion -ge $MinimumPowerShell -and $State.NetRelease -ge 379893 -and !$State.PendingReboot) {
-      Write-PrerequisiteMessage 'Windows PowerShell 5.1 and .NET prerequisites are ready. Nothing needs installing.'
+    $LegacyDependenciesReady = $State.UcrtOnly -or ($State.PowerShellVersion -ge $MinimumPowerShell -and $State.NetRelease -ge 379893)
+    if ($LegacyDependenciesReady -and !$State.PendingReboot -and (!$RequireUniversalCrt -or $State.UniversalCrtReady)) {
+      Write-PrerequisiteMessage 'Windows prerequisites are ready. Nothing needs installing.'
       return 0
     }
-    if ($State.Wmf3Installed) {
+    if ($State.IsWindows7 -and $State.Wmf3Installed) {
       Write-PrerequisiteMessage 'WMF 3.0 (KB2506143) is installed. Ask the administrator to uninstall that update and restart Windows before installing WMF 5.1. This installer will not uninstall it automatically.'
       return 3
     }
@@ -163,20 +198,51 @@ function Invoke-WindowsPrerequisites([string]$Directory, [bool]$InspectOnly) {
       return 3010
     }
     if ($InspectOnly) {
-      Write-PrerequisiteMessage 'Windows 7 prerequisites are missing. The installer can install the bundled Microsoft packages with administrator privileges. A restart may be required.'
+      if ($State.IsWindows7) {
+        Write-PrerequisiteMessage 'Windows 7 prerequisites are missing. The installer can install the bundled Microsoft packages with administrator privileges. A restart may be required.'
+      } else {
+        Write-PrerequisiteMessage 'Universal CRT is missing. The installer can install the bundled Microsoft update with administrator privileges. A restart may be required.'
+      }
       return 2
     }
     if (!(Test-PrerequisiteAdministrator)) { throw 'Run the client installation wizard as an administrator to install Windows prerequisites.' }
     $Hashes = Read-PrerequisiteManifest $Directory
-    $WmfName = 'wmf51-x86.msu'
-    if ($State.Is64BitOS) { $WmfName = 'wmf51-x64.msu' }
+    $Arch = 'x86'
+    if ($State.Is64BitOS) { $Arch = 'x64' }
+    $WmfName = 'wmf51-' + $Arch + '.msu'
     $WmfFile = Join-Path $Directory $WmfName
     # Validate every package that may run before changing the system.
-    if ($State.NetRelease -lt 379893) {
+    if ($State.IsWindows7 -and $State.NetRelease -lt 379893) {
       Assert-TrustedPrerequisitePackage (Join-Path $Directory 'dotnet452.exe') $Hashes['dotnet452.exe']
     }
-    if ($State.PowerShellVersion -lt $MinimumPowerShell) {
+    if ($State.IsWindows7 -and $State.PowerShellVersion -lt $MinimumPowerShell) {
       Assert-TrustedPrerequisitePackage $WmfFile $Hashes[$WmfName]
+    }
+    if ($RequireUniversalCrt -and !$State.UniversalCrtReady) {
+      $UcrtStem = 'ucrt'
+      if ($State.WindowsMinor -eq 2) { $UcrtStem = 'ucrt-win8' }
+      if ($State.WindowsMinor -eq 3) { $UcrtStem = 'ucrt-win81' }
+      $UcrtName = $UcrtStem + '-' + $Arch + '.msu'
+      $UcrtFile = Join-Path $Directory $UcrtName
+      Assert-TrustedPrerequisitePackage $UcrtFile $Hashes[$UcrtName]
+      Write-PrerequisiteMessage 'Installing Microsoft Universal CRT (KB2999226). Windows will not be restarted automatically.'
+      $Wusa = Get-PrerequisiteWusa $State.Is64BitOS $State.Is64BitProcess
+      $Code = Invoke-PrerequisiteInstaller $Wusa ('"' + $UcrtFile + '" /quiet /norestart')
+      Write-PrerequisiteMessage ('The Universal CRT installer returned ' + $Code + '.')
+      if ($Code -eq 3010 -or $Code -eq 1641 -or $Code -eq 2359301) { return 3010 }
+      # WU_E_NOT_APPLICABLE on Windows 8.1 can mean the April 2014 servicing rollup is missing.
+      if ($State.WindowsMinor -eq 3 -and $Code -eq -2145124329) {
+        Write-PrerequisiteMessage 'KB2999226 is not applicable. Install Windows 8.1 Update (KB2919355) if missing, restart and run this installer again.'
+        return 4
+      }
+      if ($Code -ne 0 -and $Code -ne 2359302) { throw ('The Universal CRT installer failed with exit code ' + $Code + '.') }
+      $State = Get-WindowsPrerequisiteState
+      if ($State.PendingReboot) { return 3010 }
+      if (!$State.UniversalCrtReady) { throw 'The Universal CRT installer reported success but the required system files are not available.' }
+    }
+    if ($State.UcrtOnly) {
+      Write-PrerequisiteMessage 'Windows Universal CRT is ready.'
+      return 0
     }
     if ($State.NetRelease -lt 379893) {
       Write-PrerequisiteMessage 'Installing Microsoft .NET Framework 4.5.2. Please wait; Windows will not be restarted automatically.'

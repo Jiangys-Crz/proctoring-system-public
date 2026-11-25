@@ -1,5 +1,22 @@
 (function (root) {
   root.createProctorRecordingStream = function (source, options) {
+    if (options.reuseCaptureSurface) {
+      const sourceTrack = source.getVideoTracks()[0];
+      const surface = sourceTrack?.canvas;
+      if (sourceTrack?.readyState === 'live' && surface?.width === options.width && surface.height === options.height) {
+        let captured;
+        try {
+          // The Win7 FFmpeg lease fixes the frame size. This second track
+          // samples the existing capture canvas at the recording rate.
+          captured = surface.captureStream(options.frameRate);
+          if (captured.getVideoTracks().length) {
+            for (const audio of source.getAudioTracks()) captured.addTrack(audio.clone());
+            return { stream: captured, stop: () => captured.getTracks().forEach(track => track.stop()) };
+          }
+        } catch { /* The existing scaled recording path is still available. */ }
+        captured?.getTracks().forEach(track => track.stop());
+      }
+    }
     const video = document.createElement('video');
     video.muted = true; video.playsInline = true; video.srcObject = source;
     const canvas = document.createElement('canvas');

@@ -90,6 +90,17 @@ test('payload matches receiver identifiers, China-local millisecond timestamp, i
   assert.equal(externalBoardSubmission({ ...submission, status: 7, statusText: null, score: 0 }, problem, { examNumber: '1' }).status, 'Compile Error');
 });
 
+test('scored contests also send the exact source fraction and manual-score denominator', () => {
+  const weighted = { ...problem, score: 125, hydroScore: 7 };
+  const candidate = { examNumber: '1' };
+  const result = externalBoardSubmission({ ...submission, score: 2 }, weighted, candidate, 'GPLT');
+  assert.deepEqual([result.score, result.raw_score, result.raw_max_score], [29, 2, 7]);
+  const manual = externalBoardSubmission({ ...submission, manualScore: 16 }, weighted, candidate, 'LANQIAO');
+  assert.deepEqual([manual.raw_score, manual.raw_max_score], [16, 125]);
+  const compileError = externalBoardSubmission({ ...submission, status: 7 }, weighted, candidate, 'LANQIAO');
+  assert.equal(compileError.raw_score, 0);
+});
+
 test('ignored records retract earlier accepted scores using the receiver neutral verdict and stable rid', () => {
   const payload = externalBoardSubmission({ ...submission, status: 30 }, problem, { examNumber: '1' });
   assert.equal(payload.status, 'Compile Error');

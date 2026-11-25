@@ -11,7 +11,7 @@ export function createRelayWebRtcReader({ url, video, onStatus }) {
     if (old) void fetch(old, { method: 'DELETE', keepalive: true }).catch(() => {});
     video.pause(); video.srcObject = null;
   }
-  function retry(message = '连接中断，正在重连…') {
+  function retry(message = 'Connection lost. Reconnecting…') {
     if (closed) return;
     release(); status(message);
     retryTimer = setTimeout(start, Math.min(8000, 500 * 2 ** Math.min(retries++, 4)) + Math.random() * 250);
@@ -22,7 +22,7 @@ export function createRelayWebRtcReader({ url, video, onStatus }) {
     const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' });
     peer = pc; abort = new AbortController(); const signal = abort.signal;
     let offer = '', pending = [], flushing = false;
-    const media = new MediaStream(); video.srcObject = media; status('正在连接实时直播…');
+    const media = new MediaStream(); video.srcObject = media; status('Connecting to the live stream…');
     function fragment(candidates) {
       const lines = offer.split(/\r?\n/), medias = lines.filter(x => x.startsWith('m='));
       let text = lines.filter(x => /^a=ice-(ufrag|pwd):/.test(x)).slice(0, 2).join('\r\n') + '\r\n';
@@ -54,7 +54,7 @@ export function createRelayWebRtcReader({ url, video, onStatus }) {
       try { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 0; } catch {}
       try { if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } catch {}
       if (!media.getTracks().some(t => t.id === e.track.id)) media.addTrack(e.track);
-      void video.play().catch(() => status('点击播放以观看直播'));
+      void video.play().catch(() => status('Click Play to watch the stream'));
     };
     pc.onconnectionstatechange = () => {
       if (!active()) return;
@@ -67,9 +67,9 @@ export function createRelayWebRtcReader({ url, video, onStatus }) {
     try {
       await pc.setLocalDescription(await pc.createOffer()); offer = pc.localDescription.sdp;
       const response = await fetch(target, { method: 'POST', headers: { 'content-type': 'application/sdp' }, body: offer, signal });
-      if ([401, 403].includes(response.status)) { if (active()) { closed = true; release(); status('直播密钥或授权已失效'); } return; }
-      if (response.status === 404) { if (active()) retry('等待 OBS 或其他设备开始推流…'); return; }
-      if (response.status === 429) { if (active()) retry('直播连接数已达上限，稍后重试…'); return; }
+      if ([401, 403].includes(response.status)) { if (active()) { closed = true; release(); status('Playback key or authorization expired'); } return; }
+      if (response.status === 404) { if (active()) retry('Waiting for OBS or another source to go live…'); return; }
+      if (response.status === 429) { if (active()) retry('Viewer limit reached. Retrying…'); return; }
       if (response.status !== 201) throw new Error('Signaling failed');
       const next = new URL(response.headers.get('location') || '', target);
       if (next.origin !== target.origin || next.pathname !== target.pathname || !next.searchParams.get('resource')) throw new Error('Invalid resource');

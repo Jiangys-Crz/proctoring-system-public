@@ -1,0 +1,36 @@
+.alignment, .sync, .testClock, .fps, .blueScreen {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  --fine: #404040;
+  --medium: #c0c0c0;
+  --sync-ball: #ff0;
+}
+:global([data-theme="light"]) > :is(.alignment, .sync, .testClock, .fps) {
+  --fine: #c0c0c0;
+  --medium: #404040;
+  --sync-ball: #ffc800;
+}
+:global([data-theme="light"]) > .alignment { box-shadow: inset 0 0 0 1px red; }
+.alignment text, .gauge text { fill: var(--fg); }
+.alignmentTitle { font-size: 150px; font-weight: 700; }
+.timerLine, .ball, .offset, .clockFace, .localTick, .serverTick, .timeDetail, .gauge, .frameBits { position: absolute; }
+.timerLine { width: 10px; height: 100%; background: var(--fine); }
+.ball { width: 50px; height: 50px; border-radius: 50%; background: var(--sync-ball); }
+.offset { right: 18px; bottom: 34px; color: var(--fine); font: 12px Arial, sans-serif; }
+.offset::before { position: absolute; left: 50%; bottom: 100%; content: ""; width: 2px; height: 25px; background: currentColor; transform: rotate(var(--angle)); transform-origin: bottom; }
+.clockFace { top: 60%; left: 50%; width: min(88%, 150vh); transform: translate(-50%, -50%); }
+.localTick, .serverTick { width: 1%; height: 23.53%; background: #181818; }
+.serverTick { background: #00a000; }
+.timeDetail { top: 5.88%; left: 1.3%; max-width: 28%; width: 18%; }
+.timeDetail[data-right] { left: auto; right: 1.3%; }
+.timeDetail small { display: block; margin-top: .5vh; }
+.gauge { height: 100%; width: 100%; inset: 0; }
+.fpsValue { font-size: 202px; font-weight: 700; }
+.frameBits { top: 50%; left: 10px; display: flex; flex-direction: column-reverse; transform: translateY(-50%); }
+.frameBits[data-side="right"] { left: auto; right: 10px; }
+.frameBits i { width: min(6.25vw, 6.25vh); aspect-ratio: 1; border: 1px solid currentColor; }
+.frameBits [data-lit] { background: #808080; }
+.blueScreen { fill: #fff; font-family: "Segoe UI", Arial, sans-serif; font-weight: 300; }

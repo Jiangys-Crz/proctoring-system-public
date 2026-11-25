@@ -11,11 +11,12 @@ type MediaReadAccess = {
   requireFrontCamera: boolean | number;
   requireSecondCamera: boolean | number;
   allowed: boolean | number | bigint | null;
+  available: boolean | number | bigint | null;
 };
 
 const pendingMediaReads = new Map<string, Promise<MediaReadAccess | undefined>>();
 
-export async function authorizeMediaRead(user: User, sessionId: string, channel: string, checkRequired = true) {
+export async function authorizeMediaRead(user: User, sessionId: string, channel: string, checkLivePolicy = true) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) || !liveChannels.includes(channel as LiveChannel)) throw new AuthError('直播参数不正确', 400);
   // HLS requests playlists, initialization files and parts concurrently. Share
   // only the in-flight snapshot across all three channels. Each request still
@@ -31,7 +32,8 @@ export async function authorizeMediaRead(user: User, sessionId: string, channel:
   finally { if (pendingMediaReads.get(key) === pending) pendingMediaReads.delete(key); }
   if (!session) throw new AuthError('客户端会话不存在', 404);
   if (!session.allowed) throw new AuthError('无权查看该考生画面', 403);
-  if (checkRequired && channel !== 'DESKTOP_SCREEN') {
+  if (checkLivePolicy && !session.available) throw new AuthError('该客户端会话的直播已停止', 409);
+  if (checkLivePolicy && channel !== 'DESKTOP_SCREEN') {
     const required = channel === 'DESKTOP_CAMERA' ? session.requireFrontCamera : session.requireSecondCamera;
     if (!required) throw new AuthError('所在考室不要求该机位画面', 409);
   }
@@ -48,12 +50,17 @@ async function readMediaAccess(user: User, sessionId: string) {
   // All user-controlled values remain bound parameters, including the role.
   // Keep the room's WHERE EXISTS / LIMIT 1 shape used by Prisma findFirst;
   // multiple room assignments do not introduce a new ordering/policy rule.
+  const now = new Date();
   const sessions = await prisma.$queryRaw<MediaReadAccess[]>`
     SELECT cs.candidateId, cs.examId,
       e.requireFrontCamera AS examRequireFrontCamera,
       e.requireMiniProgram AS examRequireMiniProgram,
       COALESCE(r.requireFrontCamera, e.requireFrontCamera) AS requireFrontCamera,
       COALESCE(r.requireSecondCamera, e.requireMiniProgram) AS requireSecondCamera,
+      (cs.revokedAt IS NULL AND cs.status <> 'FINISHED' AND e.endAt > ${now}
+        AND (NOT e.flexible OR e.contestRule IN ('XCPC', 'ACM')
+          OR COALESCE(c.startedAt, cs.startedAt) IS NULL
+          OR TIMESTAMPADD(MINUTE, e.durationMinutes, COALESCE(c.startedAt, cs.startedAt)) > ${now})) AS available,
       (${user.role === 'SUPER_ADMIN'} OR e.createdById = ${user.id}
         OR EXISTS (SELECT 1 FROM ExamAdministrator ea WHERE ea.examId = cs.examId AND ea.userId = ${user.id})
         OR EXISTS (
@@ -64,6 +71,7 @@ async function readMediaAccess(user: User, sessionId: string) {
         )) AS allowed
     FROM ClientSession cs
     INNER JOIN Exam e ON e.id = cs.examId
+    INNER JOIN Candidate c ON c.id = cs.candidateId AND c.examId = e.id
     LEFT JOIN ExamRoom r ON r.id = (
       SELECT room.id FROM ExamRoom room
       WHERE room.examId = cs.examId AND EXISTS (

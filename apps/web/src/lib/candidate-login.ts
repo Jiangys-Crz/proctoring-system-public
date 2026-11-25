@@ -1,3 +1,4 @@
+import { candidateLoginIpEnabled } from './room-login-ip';
 import type { Exam, PairingSession, Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { createClientSessionToken } from './client-auth';
@@ -8,6 +9,8 @@ import { candidateLoginError } from './contest-rules';
 import { validatedLoginMaterials } from './upload-security';
 import { getStorageSettings } from './settings';
 import { assertLoginIp, bindCandidateLoginIp } from './login-ip';
+import { restrictHydroBrowserAccount } from './hydro-browser';
+import { stopTerminalSessionMedia } from './session-media-lifecycle';
 
 export async function candidateLoginTransaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>, options: {
   signal?: AbortSignal; deadlineAt?: number;
@@ -60,7 +63,7 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
   const requireFrontCamera = room?.requireFrontCamera ?? exam.requireFrontCamera;
   const requireSecondCamera = room?.requireSecondCamera ?? exam.requireMiniProgram;
   const autoApprove = room!.loginReviewMode === 'AUTO';
-  if (requireFrontCamera && !pairing.desktopCameraOk) throw new LoginFlowError('所在考室要求电脑摄像头，请在客户端重新完成摄像头实测后登录', 400);
+  // Front-camera settings enable capture when available; they never gate login.
   if (requireSecondCamera && (!materials.identityPhotoPath || !materials.roomVideoPath)) throw new LoginFlowError('所在考室要求第二机位，请提交身份照片和 3–15 秒环境视频', 400);
 
   const miniProgramToken = createClientSessionToken();
@@ -85,7 +88,7 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
       throw new LoginFlowError('考室设置已更新，请重新提交登录', 409);
     }
     const loginNow = new Date();
-    assertLoginIp(currentExam.ipLoginRestrictionEnabled, current.loginIp, pairing.desktopLoginIp);
+    assertLoginIp(await candidateLoginIpEnabled(tx, exam.id, candidateId), current.loginIp, pairing.desktopLoginIp);
     const teacherReleased = Boolean(current.loginIpReleasedAt && !current.loginIp);
     const firstStartedAt = current.startedAt;
     const currentTimingError = candidateLoginError(currentExam, firstStartedAt, loginNow, false, current.lateStartAllowedAt);
@@ -104,13 +107,13 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
     });
     // Reinstalling or logging in again cannot erase a proctor's active lock.
     const inheritedLock = activeSessions.find(session => session.lockdown);
+    const activeSessionIds = activeSessions.map(session => session.id);
     const claimed = await tx.pairingSession.updateMany({
       where: { id: pairing.id, purpose: 'INITIAL', pollTokenHash: pairing.pollTokenHash, claimedAt: null, expiresAt: { gt: loginNow } }, data: { claimedAt: loginNow }
     });
     if (!claimed.count) throw new LoginFlowError('登录配对已使用或过期，请返回客户端重新登录', 409);
     await bindCandidateLoginIp(tx, exam.id, candidateId, pairing.desktopLoginIp);
     if (activeSessions.length) {
-      const activeSessionIds = activeSessions.map((session) => session.id);
       const activeLoginRequestIds = activeSessions
         .map((session) => session.loginRequestId)
         .filter((id): id is string => Boolean(id));
@@ -187,9 +190,12 @@ export async function createCandidateLoginRequest({ exam, pairing, candidateId, 
       });
       if (bound.count !== 2) throw new LoginFlowError('材料已被其他会话使用，请重新提交', 409);
     }
-    return { loginRequest: { ...created, sessionId: session.id }, candidate: updatedCandidate, exam: currentExam };
+    return { loginRequest: { ...created, sessionId: session.id }, candidate: updatedCandidate, exam: currentExam,
+      supersededSessionIds: activeSessionIds };
   }, { signal, deadlineAt });
 
+  await stopTerminalSessionMedia(loginRequest.supersededSessionIds);
+  await restrictHydroBrowserAccount(loginRequest.exam, loginRequest.candidate);
   if (autoApprove) {
     void issueApprovedSessionOjTicket({
       exam: loginRequest.exam,

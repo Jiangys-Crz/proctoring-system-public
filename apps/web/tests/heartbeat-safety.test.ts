@@ -18,7 +18,8 @@ function fixture(changes: Record<string, unknown> = {}) {
     exam: { startAt: new Date(now - 120_000), endAt: new Date(now + 3_600_000), latestStartAt: new Date(now + 60_000), durationMinutes: 60, contestRule: 'XCPC', requireFrontCamera: true, requireMiniProgram: true },
     approvedAt: new Date(now - 90_000), startedAt: new Date(now - 60_000), endedAt: null,
     lastDesktopSeenAt: new Date(now - 10_000), lastMiniProgramSeenAt: new Date(now - 1_000), desktopOfflineAt: null, miniProgramOfflineAt: null,
-    lockdown: false, lockdownReason: null, peripheralsBaselineFingerprint: 'baseline', lastPeripheralsFingerprint: 'baseline',
+    lockdown: false, lockdownReason: null, unlockNonce: null as string | null,
+    peripheralsBaselineFingerprint: 'baseline', lastPeripheralsFingerprint: 'baseline',
     ...changes
   };
 }
@@ -65,6 +66,16 @@ async function heartbeat(session: ReturnType<typeof fixture>, input: Record<stri
     prisma.$transaction = transaction;
   }
 }
+
+test('missing optional front camera leaves the candidate normal even when the exam enables it', async () => {
+  const result = await heartbeat(fixture(), { capture: { screenOk: true, desktopCameraOk: false } });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.data.alertsCreated, 0);
+  assert.equal(result.body.data.requirements.requireFrontCamera, true);
+  assert.equal(result.body.data.session.lockdown, false);
+  assert.equal(result.candidateWrites.some(data => data.abnormal === true), false);
+  assert.equal(result.evidenceLookups, 0);
+});
 
 test('knowing a device/session ID never issues a missing token or writes an unauthenticated heartbeat', async () => {
   const result = await heartbeat(fixture({ desktopTokenHash: null }), {}, '');
@@ -293,7 +304,7 @@ test('format migration neither clears an existing lock nor accepts an unapproved
   for (const [oldFormat, newFormat] of [['mac-usb-v2', 'mac-usb-v3'], ['usb-v5', 'usb-v6']]) {
     const baseline = `${oldFormat}:${'a'.repeat(64)}`;
     for (const state of [
-      { lockdown: true, status: 'LOCKED', lastPeripheralsFingerprint: baseline },
+      { lockdown: true, status: 'LOCKED', lockdownReason: '监考老师锁定', lastPeripheralsFingerprint: baseline },
       { lockdown: false, status: 'IN_EXAM', lastPeripheralsFingerprint: `${oldFormat}:${'c'.repeat(64)}` }
     ]) {
       const result = await heartbeat(fixture({ peripheralsBaselineFingerprint: baseline, ...state }), {
@@ -301,9 +312,74 @@ test('format migration neither clears an existing lock nor accepts an unapproved
       });
       assert.equal(result.body.data.session.status, 'LOCKED');
       assert.equal(result.body.data.session.lockdown, true);
-      assert.equal(result.sessionWrites[0].peripheralsBaselineFingerprint, baseline);
+      if (state.lockdown) {
+        assert.equal(result.body.data.session.lockdownReason, state.lockdownReason);
+        assert.equal(result.body.data.alertsCreated, 0);
+        assert.equal('lastPeripheralsFingerprint' in result.sessionWrites[0], false);
+      } else {
+        assert.equal(result.sessionWrites[0].peripheralsBaselineFingerprint, baseline);
+      }
     }
   }
+});
+
+test('late USB samples collected before an unlock do not cause another lock', async () => {
+  const unlockNonce = 'ba599c6d-edd7-4227-8326-abf53432e457';
+  const session = fixture({ unlockNonce });
+  const earlier = await heartbeat(session, { system: { peripheralUnlockNonce: null, peripheralsFingerprint: 'before-unlock' } });
+  assert.equal(earlier.body.data.session.lockdown, false);
+  assert.equal(earlier.body.data.alertsCreated, 0);
+  assert.equal('lastPeripheralsFingerprint' in earlier.sessionWrites[0], false);
+  const fresh = await heartbeat(session, { system: { peripheralUnlockNonce: unlockNonce, peripheralsFingerprint: 'changed' } });
+  assert.equal(fresh.body.data.session.lockdown, true);
+  assert.equal(fresh.body.data.alertsCreated, 1);
+});
+
+test('an event observed before unlock is recorded once without locking again', async () => {
+  const unlockNonce = 'ba599c6d-edd7-4227-8326-abf53432e457';
+  const session = fixture({ unlockNonce });
+  const events = [{ id: 'd695ef66-9236-4666-a149-e0068ff0942d', action: 'INSERT',
+    deviceId: 'USB\\VID_1234&PID_5678\\SERIAL', unlockNonce: null }];
+  const alerts = new Map<string, Record<string, unknown>>();
+  const input = { system: { peripheralUnlockNonce: unlockNonce, peripheralEvents: events } };
+  const result = await heartbeat(session, input, token, undefined, alerts);
+  assert.equal(result.body.data.session.lockdown, false);
+  assert.equal(result.body.data.alertsCreated, 0);
+  assert.equal(alerts.size, 1);
+  assert.ok([...alerts.values()][0].acknowledgedAt instanceof Date);
+  assert.deepEqual(result.body.data.acceptedPeripheralEventIds, [events[0].id]);
+  await heartbeat(session, input, token, undefined, alerts);
+  assert.equal(alerts.size, 1);
+  const fresh = await heartbeat(session, { system: { peripheralUnlockNonce: unlockNonce, peripheralEvents: [
+    { ...events[0], id: '56acf7cc-ce81-40ac-82a8-214fc4af8bfe', unlockNonce }
+  ] } });
+  assert.equal(fresh.body.data.session.lockdown, true);
+  assert.equal(fresh.body.data.alertsCreated, 1);
+});
+
+test('a persistent watcher event supplies the fingerprint that the next unlock approves', async () => {
+  const original = `usb-v6:${'a'.repeat(64)}`;
+  const changed = `usb-v6:${'b'.repeat(64)}`;
+  const session = fixture({ peripheralsBaselineFingerprint: original, lastPeripheralsFingerprint: original });
+  const event = { id: 'd695ef66-9236-4666-a149-e0068ff0942d', action: 'REMOVE',
+    deviceId: 'USB\\VID_1234&PID_5678\\SERIAL', unlockNonce: null, inventoryFingerprint: changed };
+  const locked = await heartbeat(session, { system: { peripheralsFingerprint: original, peripheralEvents: [event] } });
+  assert.equal(locked.body.data.session.lockdown, true);
+  assert.equal(locked.body.data.session.peripheralsBaselineFingerprint, original);
+  assert.equal(locked.body.data.session.lastPeripheralsFingerprint, changed);
+  const unlockNonce = 'ba599c6d-edd7-4227-8326-abf53432e457';
+  const initialScan = await heartbeat({ ...session, unlockNonce, peripheralsBaselineFingerprint: changed, lastPeripheralsFingerprint: changed },
+    { system: { peripheralUnlockNonce: unlockNonce, peripheralsFingerprint: changed } });
+  assert.equal(initialScan.body.data.session.lockdown, false);
+  assert.equal(initialScan.body.data.alertsCreated, 0);
+});
+
+test('oversized fingerprint is a scanner diagnostic and does not block heartbeat liveness', async () => {
+  const result = await heartbeat(fixture(), { system: { peripheralsFingerprint: 'a'.repeat(192), peripheralScanOk: true } });
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.data.session.lockdown, false);
+  assert.equal('lastPeripheralsFingerprint' in result.sessionWrites[0], false);
+  assert.ok(result.sessionWrites[0].lastDesktopSeenAt instanceof Date);
 });
 
 test('missing or empty USB samples never overwrite the previous scan or report a change', async () => {

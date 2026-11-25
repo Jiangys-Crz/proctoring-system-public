@@ -8,12 +8,16 @@ const shared = globalThis as typeof globalThis & {
   gradingReadAdmission?: ReturnType<typeof createRequestAdmission>;
   gradingWriteAdmission?: ReturnType<typeof createRequestAdmission>;
   leaderboardReadAdmission?: ReturnType<typeof createRequestAdmission>;
+  contestLiveReadAdmission?: ReturnType<typeof createRequestAdmission>;
+  contestDisplayReadAdmission?: ReturnType<typeof createRequestAdmission>;
 };
 const acquireLeaderboardRequest = shared.leaderboardRequestAdmission ??= createRequestAdmission(8, 128, 3000);
 const acquireMonitor = shared.monitorReadAdmission ??= createRequestAdmission(2, 64, 3000);
 const acquireLeaderboard = shared.leaderboardReadAdmission ??= createRequestAdmission(2, 128, 3000);
 const acquireGrading = shared.gradingReadAdmission ??= createRequestAdmission(1, 16, 3000);
 const acquireGradingWrite = shared.gradingWriteAdmission ??= createRequestAdmission(2, 32, 3000);
+const acquireContestLive = shared.contestLiveReadAdmission ??= createRequestAdmission(4, 64, 3000);
+const acquireContestDisplay = shared.contestDisplayReadAdmission ??= createRequestAdmission(4, 32, 3000);
 
 async function withReadSlot<T>(acquire: ReturnType<typeof createRequestAdmission>, work: () => Promise<T>, signal?: AbortSignal) {
   const release = await acquire(signal);
@@ -45,6 +49,27 @@ async function admittedRead(request: Request, acquire: ReturnType<typeof createR
 // serialization and slow response consumers independently of login/heartbeats.
 export function admittedMonitorRead(request: Request, work: () => Promise<Response>) {
   return admittedRead(request, acquireMonitor, '监考数据加载繁忙，请稍后重试', work);
+}
+
+export function admittedContestLiveRead(request: Request, work: () => Promise<Response>) {
+  return admittedRead(request, acquireContestLive, '赛事直播数据加载繁忙，请稍后重试', work);
+}
+
+export function admittedContestDisplayRead(request: Request, work: () => Promise<Response>) {
+  return admittedRead(request, acquireContestDisplay, '大屏数据加载繁忙，请稍后重试', work);
+}
+
+export async function admittedContestDisplayConnection(request: Request, work: () => Promise<Response>) {
+  try {
+    // The display event hub limits active streams and bounds its snapshot reads.
+    // Hold this slot only while opening the connection.
+    return await withReadSlot(acquireContestDisplay, work, request.signal);
+  } catch (error) {
+    if (!isRequestAdmissionError(error)) throw error;
+    const response = fail('大屏数据加载繁忙，请稍后重试', 503);
+    response.headers.set('Retry-After', '2');
+    return response;
+  }
 }
 
 export function admittedLeaderboardRead(request: Request, work: () => Promise<Response>) {

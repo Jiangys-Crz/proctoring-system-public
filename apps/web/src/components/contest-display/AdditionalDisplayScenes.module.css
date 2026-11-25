@@ -1,0 +1,114 @@
+.scene {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: clamp(16px, 2.6vmin, 34px);
+}
+
+.logo {
+  position: absolute;
+  object-fit: contain;
+}
+
+.balloon {
+  position: absolute;
+  line-height: 1;
+  text-align: center;
+  font-family: Arial, sans-serif;
+}
+
+.balloonBody {
+  position: absolute;
+  inset: 0 0 9%;
+  display: grid;
+  place-content: center;
+  padding-bottom: 8%;
+  border-radius: 50% 50% 48% 48% / 46% 46% 54% 54%;
+  background:
+    radial-gradient(ellipse at 62% 13%, rgb(255 255 255 / 38%), transparent 17%),
+    radial-gradient(ellipse at 38% 37%, transparent 52%, rgb(0 0 0 / 28%) 95%),
+    var(--balloon-color);
+}
+
+.balloonBody::after {
+  position: absolute;
+  top: 8%;
+  right: 11%;
+  width: 21%;
+  height: 58%;
+  border-right: .035em solid rgb(255 255 255 / 49%);
+  border-radius: 50%;
+  content: '';
+}
+
+.balloonTail {
+  position: absolute;
+  top: 90%;
+  left: 47.5%;
+  width: 5%;
+  height: 5%;
+}
+
+.balloonTail::before {
+  position: absolute;
+  inset: 0;
+  background: var(--balloon-color);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  content: '';
+}
+
+.balloonTail::after {
+  position: absolute;
+  inset: 98% 45% auto;
+  height: 110%;
+  background: var(--balloon-color);
+  content: '';
+}
+
+.photo {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  visibility: hidden;
+}
+
+.photo[data-shown] {
+  visibility: visible;
+}
+
+.polarArc {
+  position: absolute;
+  border-radius: 50%;
+  mask-image: radial-gradient(circle closest-side,
+      transparent calc(100% - var(--polar-stroke)), #000 calc(100% - var(--polar-stroke) + .6px));
+}
+
+.polarClock {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 600 clamp(2.4rem, 17vw, 24rem) / 1 Arial, sans-serif;
+}
+
+.polarClock[data-remaining] {
+  --fg: #ffa766;
+  color: var(--fg);
+}
+
+.polarClock i[data-segment]:not([data-on]) {
+  visibility: hidden;
+}
+
+.polarClock i:not([data-segment]) {
+  transform: rotate(45deg) scale(.72);
+}

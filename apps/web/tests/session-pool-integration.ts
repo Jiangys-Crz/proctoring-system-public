@@ -85,19 +85,50 @@ try {
   await Promise.all([beat(abnormal.session.id, 'DESKTOP', { processes: ['qa-process'] }), beat(abnormal.session.id, 'MINIPROGRAM')]);
   assert.equal(await prisma.alert.count({ where: { sessionId: abnormal.session.id } }), 1);
   assert.equal((await prisma.candidate.findUniqueOrThrow({ where: { id: abnormal.candidate.id } })).status, 'ONLINE_ABNORMAL');
-  const ending = await Promise.all([trial.sessions[0], formal.sessions[1]].map(async ({ session, candidate }) => {
-    const response = await finish(new Request('http://localhost/api/client/session/finish', {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${desktop.token}` },
-      body: JSON.stringify({ sessionId: session.id, confirmationText: `考号${candidate.examNumber}，姓名${candidate.name}确认结束考试` }),
+  const completed = [trial.sessions[0], formal.sessions[1]];
+  const peerIds = new Map<string, string>([...completed, formal.sessions[2]].map(({ session }) => [randomUUID(), session.id]));
+  const disconnected = new Set<string>();
+  const originalFetch = globalThis.fetch;
+  process.env.MEDIA_PUBLISH_SECRET ||= marker;
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === '/v3/paths/list') {
+      return Response.json({ pageCount: 1, items: [...peerIds].filter(([id]) => !disconnected.has(id)).map(([id, sessionId]) => ({
+        name: `live/${sessionId}_DESKTOP_SCREEN`, readers: [{ type: 'webRTCSession', id }],
+      })) });
+    }
+    if (path.endsWith('/list')) return Response.json({ pageCount: 0, items: [] });
+    assert.equal(init?.method, 'POST');
+    const peer = path.split('/').at(-1)!;
+    const sessionId = peerIds.get(peer);
+    assert.ok(sessionId);
+    // With one database connection, this only succeeds after the finish write
+    // releases its transaction. The API must close the media before returning.
+    const stopped = await prisma.clientSession.findUniqueOrThrow({ where: { id: sessionId } });
+    assert.equal(stopped.status, 'FINISHED');
+    disconnected.add(peer);
+    return new Response(null, { status: 200 });
+  };
+  let ending: string[];
+  try {
+    ending = await Promise.all(completed.map(async ({ session, candidate }) => {
+      const response = await finish(new Request('http://localhost/api/client/session/finish', {
+        method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${desktop.token}` },
+        body: JSON.stringify({ sessionId: session.id, confirmationText: `考号${candidate.examNumber}，姓名${candidate.name}确认结束考试` }),
+      }));
+      assert.equal(response.status, 200);
+      assert.ok([...disconnected].some(peer => peerIds.get(peer) === session.id));
+      assert.equal((await beat(session.id, 'DESKTOP')).data.session.status, 'FINISHED');
+      return session.id;
     }));
-    assert.equal(response.status, 200);
-    assert.equal((await beat(session.id, 'DESKTOP')).data.session.status, 'FINISHED');
-    return session.id;
-  }));
+    assert.equal(disconnected.size, completed.length, 'another candidate keeps their active stream');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   assert.equal(await prisma.alert.count({ where: { sessionId: ending[0] } }), 0);
   assert.equal(await prisma.alert.count({ where: { sessionId: ending[1] } }), 1);
   assert.equal(await prisma.mediaSegment.count({ where: { examId: { in: exams } } }), 0);
-  console.log(`PASS: 300 concurrent formal/trial heartbeats with one DB connection, both tokens preserved, candidate writes skipped, abnormal alert and finish policies retained (${Math.round(performance.now() - started)} ms).`);
+  console.log(`PASS: 300 concurrent formal/trial heartbeats with one DB connection; both tokens, alert policy and neighboring media preserved; finish disconnects existing readers before response (${Math.round(performance.now() - started)} ms).`);
 } finally {
   if (markerCreated) await prisma.systemSetting.deleteMany({ where: { key: PUBLIC_TEST_MARKER } });
   await prisma.exam.deleteMany({ where: { id: { in: exams } } });

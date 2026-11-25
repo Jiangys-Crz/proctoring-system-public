@@ -9,6 +9,7 @@ import { verifySignedLocalObjectUrl } from '@/lib/storage';
 import { nodeReadableBody } from '@/lib/node-readable-body';
 import { createRequestAdmission, isRequestAdmissionError } from '@/lib/request-admission';
 import { holdAttachment } from '@/lib/attachment-admission';
+import { isSharedLiveFramePath } from '@/lib/live-frame-path';
 
 const shared = globalThis as typeof globalThis & {
   mediaFileImageAdmission?: ReturnType<typeof createRequestAdmission>;
@@ -40,6 +41,7 @@ async function downloadFile(request: Request, key: string[]) {
   if (!verifySignedLocalObjectUrl(objectKey, searchParams.get('exp'), searchParams.get('sig'))) {
     return new Response('Forbidden', { status: 403 });
   }
+  if (isSharedLiveFramePath(objectKey)) return new Response('Not found', { status: 404 });
   if (await prisma.fileDeletionJob.findFirst({ where: { kind: 'MEDIA', objectHash: objectHash(objectKey) }, select: { id: true } })) return new Response('Not found', { status: 404 });
   const settings = await getStorageSettings();
   const root = path.resolve(/* turbopackIgnore: true */ process.cwd(), settings.localUploadDir || './uploads');

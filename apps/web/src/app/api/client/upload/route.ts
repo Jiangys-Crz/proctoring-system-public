@@ -5,7 +5,7 @@ import { clientSessionTokenFromRequest, hashClientSessionToken, verifyClientToke
 import { storeBuffer, deleteStoredObject } from '@/lib/storage';
 import { options, fail, ok, toErrorMessage } from '@/lib/http';
 import { mediaUploadIdentity } from '@/lib/media-upload-policy';
-import { boundedUploadForm, hashUploadTicket, consumeRateLimit, reserveUploadBytes, acquireUploadSlot, UploadSecurityError } from '@/lib/upload-security';
+import { boundedUploadForm, hashUploadTicket, consumeRateLimit, reserveUploadBytes, enqueueRecordingUpload, UploadSecurityError } from '@/lib/upload-security';
 import { validateMedia } from '@/lib/media-validation';
 import { isPublicTestExam } from '@/lib/public-test';
 import { objectHash, queueFileDeletion, deletionStorage, mediaHasReferences } from '@/lib/file-deletion';
@@ -14,7 +14,7 @@ import { isIncidentRecording } from '@/lib/recording-policy';
 import { acquireMaterialUploadSlot } from '@/lib/upload-admission';
 import { withMediaSegmentWrite } from '@/lib/media-segment-write';
 import type { MaterialUploadGrant, Prisma } from '@prisma/client';
-import { pinReactionSegments } from '@/lib/reaction-events';
+import { activeReactionStates } from '@/lib/reaction-domain';
 import { reactionStoredBytes } from '@/lib/reaction-storage-budget';
 
 const UploadMetaSchema = z.object({
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       if (!authorizedSession) return fail('客户端会话令牌无效或已注销', 401);
     }
     if (await isPublicTestExam(grant?.examId || authorizedSession!.examId)) return fail('环境测试不上传或保存录像', 403);
-    release = grant ? await acquireMaterialUploadSlot(request.signal) : acquireUploadSlot();
+    release = await (grant ? acquireMaterialUploadSlot(request.signal) : enqueueRecordingUpload(request.signal));
     if (request.signal.aborted) throw new UploadSecurityError('上传已取消，请重试', 408);
     // Capacity rejection/queue cancellation must not exhaust a candidate's
     // attempts before either their identity photo or environment video is read.
@@ -264,9 +264,15 @@ export async function POST(request: Request) {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') return tx.mediaSegment.findUniqueOrThrow({ where: { id } });
         throw error;
       });
-      if (saved && reactionAllowed) {
-        const pending = await tx.reaction.findMany({where:{examId,candidateId:session?.candidateId,status:{in:['PENDING','TAIL','CAPTURING']}}});
-        for(const r of pending) await pinReactionSegments(tx,r.id);
+      if (reactionAllowed && session && saved.endedAt && ['DESKTOP_SCREEN', 'DESKTOP_CAMERA'].includes(saved.channel)) {
+        const pending = await tx.reaction.findMany({ where: {
+          examId, candidateId: session.candidateId, status: { in: activeReactionStates },
+          windowStart: { lt: saved.endedAt },
+          OR: [{ windowEnd: null }, { windowEnd: { gt: saved.startedAt } }],
+        }, select: { id: true } });
+        if (pending.length) await tx.reactionSegment.createMany({
+          data: pending.map(r => ({ reactionId: r.id, segmentId: saved.id })), skipDuplicates: true,
+        });
       }
       return saved;
     });

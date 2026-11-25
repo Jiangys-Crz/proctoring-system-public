@@ -29,6 +29,40 @@ export const artifacts = [
     sha256: 'c51abfc65dff5f6858c0b9f6420caa0c166df7a6d8b484f8a3c68ea99f0032b0',
   },
 ];
+// KB2999226 for Windows 7 SP1, Windows 8 and Windows 8.1. The Microsoft Download Center MSUs and their
+// timestamped SHA-256 Authenticode signatures were checked on 2026-11-15.
+export const universalCrtArtifacts = [
+  {
+    filename: 'ucrt-x86.msu',
+    url: 'https://download.microsoft.com/download/4/F/E/4FE73868-5EDD-4B47-8B33-CE1BB7B2B16A/Windows6.1-KB2999226-x86.msu',
+    sha256: '909e76c81ef0eb176144b253ddffe7a8fdfacebfaa15e97def003d2262fbf084',
+  },
+  {
+    filename: 'ucrt-x64.msu',
+    url: 'https://download.microsoft.com/download/1/1/5/11565A9A-EA09-4F0A-A57E-520D5D138140/Windows6.1-KB2999226-x64.msu',
+    sha256: '43234d2986ca9b0de75d5183977964d161a8395c3396279ddfc9b20698e5bc34',
+  },
+  {
+    filename: 'ucrt-win8-x86.msu',
+    url: 'https://download.microsoft.com/download/1/E/8/1E8AFE90-5217-464D-9292-7D0B95A56CE4/Windows8-RT-KB2999226-x86.msu',
+    sha256: '0f36750fbb06fee23131f68b4d0943841eed24730ec1d5d77dedc41d359be88d',
+  },
+  {
+    filename: 'ucrt-win8-x64.msu',
+    url: 'https://download.microsoft.com/download/A/C/1/AC15393F-A6E6-469B-B222-C44B3BB6ECCC/Windows8-RT-KB2999226-x64.msu',
+    sha256: '50cae25da33fa950222d1a803e42567291eb7feb087fa119b1c97fe9d41cd9f8',
+  },
+  {
+    filename: 'ucrt-win81-x86.msu',
+    url: 'https://download.microsoft.com/download/E/4/6/E4694323-8290-4A08-82DB-81F2EB9452C2/Windows8.1-KB2999226-x86.msu',
+    sha256: 'b83251219c5390536b02bebaf5e43a6f13381ce1db43e76483bce07c4bcf877b',
+  },
+  {
+    filename: 'ucrt-win81-x64.msu',
+    url: 'https://download.microsoft.com/download/9/6/F/96FD0525-3DDF-423D-8845-5F92F4A6883E/Windows8.1-KB2999226-x64.msu',
+    sha256: '9f707096c7d279ed4bc2a40ba695efac69c20406e0ca97e2b3e08443c6381d15',
+  },
+];
 const maxBytes = 150 * 1024 * 1024;
 const defaultDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '../build/windows-prerequisites');
 export const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -91,7 +125,8 @@ async function atomicWrite(filename, bytes) {
   finally { await rm(staging, { force: true }); }
 }
 
-export async function prepare({ directory = defaultDirectory, offline = false, fetcher = fetch, sources = artifacts, log = console.log } = {}) {
+export async function prepare({ directory = defaultDirectory, offline = false, withUniversalCrt = false, fetcher = fetch,
+  sources = withUniversalCrt ? [...artifacts, ...universalCrtArtifacts] : artifacts, log = console.log } = {}) {
   await mkdir(directory, { recursive: true });
   for (const artifact of sources) {
     if (!/^[a-z0-9.-]+$/.test(artifact.filename) || !/^[a-f0-9]{64}$/.test(artifact.sha256)) throw Error('Invalid prerequisite manifest');
@@ -108,11 +143,15 @@ export async function prepare({ directory = defaultDirectory, offline = false, f
     if (digest(bytes) !== artifact.sha256) throw Error(`Prerequisite payload SHA-256 mismatch: ${artifact.filename}`);
     await atomicWrite(destination, bytes);
   }
-  await atomicWrite(join(directory, 'manifest.ini'), sources.map(item => `${item.filename}=${item.sha256}\r\n`).join(''));
+  await atomicWrite(join(directory, withUniversalCrt ? 'manifest-ucrt.ini' : 'manifest.ini'),
+    sources.map(item => `${item.filename}=${item.sha256}\r\n`).join(''));
   log('Windows prerequisite bundle is ready; no system components were installed.');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (process.argv.slice(2).some(arg => arg !== '--offline')) throw Error('Usage: node prepare-windows-prerequisites.mjs [--offline]');
-  await prepare({ offline: process.argv.includes('--offline') || process.env.PROCTOR_PREREQUISITES_OFFLINE === '1' });
+  if (process.argv.slice(2).some(arg => !['--offline', '--with-ucrt'].includes(arg))) {
+    throw Error('Usage: node prepare-windows-prerequisites.mjs [--offline] [--with-ucrt]');
+  }
+  await prepare({ offline: process.argv.includes('--offline') || process.env.PROCTOR_PREREQUISITES_OFFLINE === '1',
+    withUniversalCrt: process.argv.includes('--with-ucrt') });
 }

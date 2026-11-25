@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { effectiveEnd } from './contest-rules';
+import { stopTerminalSessionMedia } from './session-media-lifecycle';
 import type { Candidate, Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from './db';
 import { nextExamCode } from './exam-code';
@@ -99,7 +100,7 @@ export async function enrollPublicTest(externalUserId: string, mode: PublicTestM
   const key = `public-test.account.${externalUserId}`;
   for (let attempt = 0; ; attempt++) {
     try {
-      return await prisma.$transaction(async tx => {
+      const { enrollment, closedSessionIds } = await prisma.$transaction(async tx => {
         await tx.systemSetting.upsert({ where: { key }, create: { key, value: {} }, update: {} });
         await tx.$queryRaw`SELECT \`key\` FROM SystemSetting WHERE \`key\` = ${key} FOR UPDATE`;
         const binding = await tx.publicTestAccount.findUnique({ where: { externalUserId } });
@@ -116,12 +117,15 @@ export async function enrollPublicTest(externalUserId: string, mode: PublicTestM
         if (!candidate) throw new PublicTestError('绑定的测试账号不可用，请联系管理员', 503);
         await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${candidate.id} FOR UPDATE`;
         candidate = await tx.candidate.findUniqueOrThrow({ where: { id: candidate.id } });
+        let closedSessionIds: string[] = [];
         if (candidate.status === 'FINISHED' || new Date() >= effectiveEnd(exam, candidate.startedAt)) {
-          candidate = await resetPublicTestCandidate(tx, candidate);
+          ({ candidate, closedSessionIds } = await resetPublicTestCandidate(tx, candidate));
         }
-        return { examCode: exam.examCode, examName: exam.name, name: candidate.name!, examNumber: candidate.examNumber,
-          password: candidate.password, durationMinutes: exam.durationMinutes, mode, roomName: room.name };
+        return { enrollment: { examCode: exam.examCode, examName: exam.name, name: candidate.name!, examNumber: candidate.examNumber,
+          password: candidate.password, durationMinutes: exam.durationMinutes, mode, roomName: room.name }, closedSessionIds };
       }, { isolationLevel: 'ReadCommitted', maxWait: 10_000, timeout: 15_000 });
+      await stopTerminalSessionMedia(closedSessionIds);
+      return enrollment;
     } catch (error) { if (attempt >= 2 || !retryable(error)) throw error; }
   }
 }
@@ -134,7 +138,10 @@ export async function resetPublicTestCandidate(tx: Prisma.TransactionClient, can
   await tx.clientSession.deleteMany({ where: { candidateId: candidate.id } });
   await tx.loginRequest.deleteMany({ where: { candidateId: candidate.id } });
   await tx.contestSubmission.deleteMany({ where: { candidateId: candidate.id } });
-  return tx.candidate.update({ where: { id: candidate.id }, data: { startedAt: null, status: 'NOT_REQUESTED', abnormal: false } });
+  return {
+    candidate: await tx.candidate.update({ where: { id: candidate.id }, data: { startedAt: null, status: 'NOT_REQUESTED', abnormal: false } }),
+    closedSessionIds: sessions.map(row => row.id),
+  };
 }
 
 /** Retain only the short-lived connection state needed to run the current experience. */
@@ -153,29 +160,36 @@ export async function cleanupPublicTestState(now = new Date()) {
     { startedAt: null, updatedAt: { lt: unusedBefore }, sessions: { none: { status: { not: 'FINISHED' } } },
       OR: [{ publicTestAccount: { is: null } }, { status: { not: 'NOT_REQUESTED' } }] },
   ] }, select: { id: true }, take: 500 });
-  if (candidates.length) await prisma.$transaction(async tx => {
-    const ids = candidates.map(candidate => candidate.id);
-    for (const id of ids) {
-      await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${id} FOR UPDATE`;
-      const current = await tx.candidate.findUnique({ where: { id }, include: { publicTestAccount: true } });
-      if (!current || current.examId !== examId) continue;
-      const finished = current.status === 'FINISHED' && current.updatedAt < finishedBefore;
-      const expired = Boolean(current.startedAt && current.startedAt < startedBefore);
-      // Permanent accounts can be older than the cleanup window even during a
-      // new login. Use current activity and recheck sessions under the row lock.
-      const unused = !current.startedAt && current.updatedAt < unusedBefore && (await tx.clientSession.count({
-        where: { candidateId: id, status: { not: 'FINISHED' } },
-      })) === 0;
-      if (!finished && !expired && !unused) continue;
-      if (current.publicTestAccount) {
-        // Unused, reset permanent accounts need no further writes on every cleanup tick.
-        if (current.status !== 'NOT_REQUESTED' || current.startedAt || await tx.clientSession.count({ where: { candidateId: id } })) await resetPublicTestCandidate(tx, current);
-      } else {
-        await resetPublicTestCandidate(tx, current);
-        await tx.candidate.delete({ where: { id } });
+  if (candidates.length) {
+    const closedSessionIds = await prisma.$transaction(async tx => {
+      const closed: string[] = [];
+      const ids = candidates.map(candidate => candidate.id);
+      for (const id of ids) {
+        await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${id} FOR UPDATE`;
+        const current = await tx.candidate.findUnique({ where: { id }, include: { publicTestAccount: true } });
+        if (!current || current.examId !== examId) continue;
+        const finished = current.status === 'FINISHED' && current.updatedAt < finishedBefore;
+        const expired = Boolean(current.startedAt && current.startedAt < startedBefore);
+        // Permanent accounts can be older than the cleanup window even during a
+        // new login. Use current activity and recheck sessions under the row lock.
+        const unused = !current.startedAt && current.updatedAt < unusedBefore && (await tx.clientSession.count({
+          where: { candidateId: id, status: { not: 'FINISHED' } },
+        })) === 0;
+        if (!finished && !expired && !unused) continue;
+        if (current.publicTestAccount) {
+          // Unused, reset permanent accounts need no further writes on every cleanup tick.
+          if (current.status !== 'NOT_REQUESTED' || current.startedAt || await tx.clientSession.count({ where: { candidateId: id } })) {
+            closed.push(...(await resetPublicTestCandidate(tx, current)).closedSessionIds);
+          }
+        } else {
+          closed.push(...(await resetPublicTestCandidate(tx, current)).closedSessionIds);
+          await tx.candidate.delete({ where: { id } });
+        }
       }
-    }
-  });
+      return closed;
+    });
+    await stopTerminalSessionMedia(closedSessionIds);
+  }
   await prisma.systemSetting.deleteMany({ where: { key: { startsWith: 'public-test.enrollment.' }, updatedAt: { lt: unusedBefore } } });
 }
 

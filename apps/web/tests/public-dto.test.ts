@@ -5,7 +5,7 @@ import { ok } from '../src/lib/http';
 
 test('public DTO strips nested credentials and preserves dates without changing the original', () => {
   const date = new Date();
-  const input = { monitoringAlertState: { private: 'state' }, createdAt: date, password: 'private', passwordHash: 'hash', apiKey: 'key', externalBoardApiKey: 'push-key', nested: [{
+  const input = { monitoringAlertState: { private: 'state' }, createdAt: date, password: 'private', passwordHash: 'hash', apiKey: 'key', externalBoardApiKey: 'push-key', hydroBrowserApiKey: 'browser-key', hydroBrowserEventFeedApiKey: 'event-feed-key', nested: [{
     miniProgramTokenHash: 'mobile-hash', desktopTokenHash: 'desktop-hash', signingSecret: 'private', credentialTicket: 'ticket',
     user: { id: 'public-id', username: 'public-name', passwordHash: 'hash' },
   }] };
@@ -18,7 +18,7 @@ test('public DTO strips nested credentials and preserves dates without changing 
 
 test('response safety net removes hashes while preserving explicitly authorized credential issuance/configuration', async () => {
   const issued = { desktopSessionToken: 'issued-desktop', miniProgramSessionToken: 'issued-mobile', pollToken: 'issued-poll', recoverySecret: 'issued-recovery',
-    credentialTicket: 'issued-ticket', sharedSecret: 'authorized-settings', password: 'authorized-managed-candidate', externalBoardApiKey: 'must-never-leak', nested: { passwordHash: 'hash', desktopTokenHash: 'hash', monitoringAlertState: { private: 'state' } } };
+    credentialTicket: 'issued-ticket', sharedSecret: 'authorized-settings', password: 'authorized-managed-candidate', externalBoardApiKey: 'must-never-leak', hydroBrowserApiKey: 'browser-key-must-never-leak', hydroBrowserEventFeedApiKey: 'event-feed-key-must-never-leak', nested: { passwordHash: 'hash', desktopTokenHash: 'hash', monitoringAlertState: { private: 'state' } } };
   const safe = stripCredentialHashes(issued);
   assert.deepEqual(safe.nested, {});
   const response = await ok(issued).json();
@@ -30,4 +30,6 @@ test('response safety net removes hashes while preserving explicitly authorized 
   assert.equal(response.data.password, issued.password);
   assert.deepEqual(response.data.nested, {});
   assert.equal(response.data.externalBoardApiKey, undefined);
+  assert.equal(response.data.hydroBrowserApiKey, undefined);
+  assert.equal(response.data.hydroBrowserEventFeedApiKey, undefined);
 });

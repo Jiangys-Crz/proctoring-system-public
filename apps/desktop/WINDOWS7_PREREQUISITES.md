@@ -2,7 +2,7 @@
 
 Windows 安装向导会在替换旧客户端前检查 Windows 7 的系统组件。已具备 PowerShell 5.1、
 .NET Framework 4.5.2 或更高版本且不需要重启的电脑直接继续安装。
-Windows 8 及以上不会执行这个 Win7 依赖安装流程；本次不改变其他系统的要求。
+Windows 8 及以上由系统自带命令行环境，安装器会跳过 Win7 的 .NET 和 WMF 安装流程。
 
 ## 机房管理员操作
 
@@ -28,6 +28,14 @@ Windows 8 及以上不会执行这个 Win7 依赖安装流程；本次不改变�
 有效 NovaJudge 监考登录后自动安装并绑定；公网行为不变。取消依赖准备会取消本次客户端更新。
 
 ## 发布者构建
+
+wxWidgets 安装包也会为 Windows 7 SP1、8 和 8.1 准备 Universal CRT。安装器按系统版本及
+x86 或 x64 位数选择微软 KB2999226 离线包。Windows 10 和 11 已包含 Universal CRT。
+Windows 8.1 缺少 2014 年 4 月更新（KB2919355）时，请管理员先安装该更新并重启，再运行
+客户端安装包。[微软 Universal CRT 更新说明](https://support.microsoft.com/en-us/servicing/os/windows/2020/04/update-for-universal-c-runtime-in-windows)
+
+wxWidgets 构建以 `--with-ucrt` 准备上述离线包，并生成 `manifest-ucrt.ini`。
+Electron 构建沿用只包含 .NET 和 WMF 的 `manifest.ini`。
 
 正式 Windows 打包命令会先运行依赖准备脚本：
 

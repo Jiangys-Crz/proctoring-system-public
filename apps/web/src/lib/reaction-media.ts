@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, rm, realpath, copyFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, realpath, copyFile, stat, rename } from 'node:fs/promises';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { prisma } from './db';
 import { getStorageSettings } from './settings';
@@ -13,10 +13,13 @@ import { generateReactionVideo } from './reaction-generator';
 import { reactionObjectBytes, releaseReactionOutput, reserveReactionOutput } from './reaction-storage-budget';
 import { reactionPresentationFromJson, readReactionAsset } from './reaction-presentation';
 import { readBuiltinReactionBadge, resolveReactionBrandingLogo } from './reaction-branding';
+import { normalizeReactionOrganizationName } from './reaction-branding-contract';
+import { reactionLogoOrganizationName } from './reaction-render-settings';
 import { parseReactionRankContext } from './reaction-ranking';
 import { auditReactionFrameTiming, reactionIncompleteReason, type DecodedFrameTime } from './reaction-frame-timing';
 import { resolveReactionTeamIdentity } from './reaction-team-name';
 import { cameraPlaceholderReason } from './reaction-camera-source';
+import { deletionStorage, queueFileDeletion } from './file-deletion';
 
 export async function runMedia(executable:string,args:string[],timeout=180000) {
   return new Promise<string>((resolve,reject)=>{
@@ -31,7 +34,7 @@ export async function probeReactionVideo(filename:string) {
   const p=JSON.parse(await runMedia(process.env.FFPROBE_PATH||'ffprobe',['-v','error','-show_streams','-show_format','-of','json',filename],30000));
   const video=p.streams?.find((s:{codec_type:string})=>s.codec_type==='video'); const duration=Number(p.format?.duration);
   if(!video || !Number.isFinite(duration) || duration<=0) throw new Error('VIDEO_INVALID');
-  await runMedia(process.env.FFMPEG_PATH||'ffmpeg',['-v','error','-xerror','-i',filename,'-map','0:v:0','-f','null','-'],180000);
+  await runMedia(process.env.FFMPEG_PATH||'ffmpeg',['-v','error','-xerror','-threads','2','-i',filename,'-map','0:v:0','-f','null','-'],180000);
   return {duration,width:video.width,height:video.height,codec:video.codec_name};
 }
 export async function probeReactionFrameTiming(filename: string, from: number, duration: number) {
@@ -73,7 +76,7 @@ async function contestTiming(examId: string, submissionId: string, sourceSubmitt
   const source = ccsContestTimeMs(value);
   return { sourceContestTime: typeof value === 'string' ? value : null,
     contestTimeMs: source ?? Math.max(0, +sourceSubmittedAt - +examStartAt),
-    contestTimeBasis: source !== null ? 'CCS submissions.contest_time' : 'fallback: proctoring exam elapsed time (CCS duration unavailable)' };
+    contestTimeBasis: source !== null ? 'CCS submissions.contest_time' : 'fallback: proctoring exam elapsed time (source contest duration unavailable)' };
 }
 
 /** Preserve the common timeline; missing intervals are black, never shortened. */
@@ -83,12 +86,16 @@ export async function renderReactionTimeline(
 ) {
   const pieces = reactionTimelineFrames(report.slices, durationSeconds);
   const chunks: string[] = [];
+  const audioSources: (string | null)[] = [];
   let decodedPieces = 0;
+  // Keep video frame limits separate from audio encoding: -frames:v can end
+  // audio early. The PCM timeline is muxed after all video frames are rendered.
   const encode = ['-an', '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '2', '-bf', '0', '-avoid_negative_ts', 'make_zero', '-pix_fmt', 'yuv420p', '-video_track_timescale', '12800'];
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i], output = path.join(directory, `${name}-part-${i}.mp4`);
     const background = `color=c=black:s=1280x720:r=25:d=${piece.frames / 25}`;
     let rendered = false;
+    let source: string | null = null;
     if (piece.id) {
       try {
         const input = await resolveSource(piece.id);
@@ -96,8 +103,10 @@ export async function renderReactionTimeline(
         // owns the frame count, preventing a damaged/short source from moving
         // all later footage earlier on this channel.
         const filter = `[0:v]setpts=PTS-STARTPTS,trim=start=${piece.from}:duration=${piece.frames / 25},setpts=PTS-${piece.from}/TB,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25[clip];[1:v][clip]overlay=eof_action=pass:repeatlast=0:shortest=0,setsar=1[out]`;
-        await runMedia(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-xerror', '-y', '-i', input, '-f', 'lavfi', '-i', background, '-filter_complex_threads', '2', '-filter_complex', filter, '-map', '[out]', '-frames:v', String(piece.frames), ...encode, output]);
+        await runMedia(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-xerror', '-y', '-threads', '2', '-i', input, '-f', 'lavfi', '-i', background, '-filter_complex_threads', '2', '-filter_complex', filter, '-map', '[out]', '-frames:v', String(piece.frames), ...encode, output]);
         rendered = true; decodedPieces++;
+        const audio = JSON.parse(await runMedia(process.env.FFPROBE_PATH || 'ffprobe', ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=index', '-of', 'json', input], 30000));
+        if (audio.streams?.length) source = input;
       } catch {
         report.complete = false;
         report.issues.push(`SOURCE_UNAVAILABLE_OR_UNDECODABLE:${piece.id}`);
@@ -105,17 +114,61 @@ export async function renderReactionTimeline(
     }
     if (!rendered) await runMedia(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-y', '-f', 'lavfi', '-i', background, '-vf', 'setsar=1', '-frames:v', String(piece.frames), ...encode, output]);
     chunks.push(output);
+    audioSources.push(source);
   }
   if (!decodedPieces) return null;
   const list = path.join(directory, `${name}.txt`);
   await writeFile(list, chunks.map(p => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
   const output = path.join(directory, `${name}.mp4`);
-  // Independent WebM/MP4 pieces may carry different encoder delay or B-frame
-  // DTS. Re-encode onto the shared frame clock; stream-copy can make a valid
-  // collection of fragments into a non-monotonic, unplayable MP4.
+  const videoOutput = path.join(directory, `${name}-video.mp4`);
   const totalFrames=pieces.reduce((sum,piece)=>sum+piece.frames,0);
-  await runMedia(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-xerror', '-y', '-f', 'concat', '-safe', '0', '-i', list, '-vf', 'setpts=N/(25*TB),fps=25,setsar=1', '-frames:v', String(totalFrames), ...encode, '-movflags', '+faststart', output]);
-  const probe = await probeReactionVideo(output);
+  const concat = ['-nostdin', '-v', 'error', '-xerror', '-y', '-f', 'concat', '-safe', '0', '-i', list];
+  const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+  let copiedProbe: Awaited<ReturnType<typeof probeReactionVideo>> | undefined;
+  try {
+    // These are already normalized H.264 pieces without B-frames. Verify
+    // the joined packet clock before accepting stream copy across boundaries.
+    await runMedia(ffmpeg, [...concat, '-an', '-c:v', 'copy', '-movflags', '+faststart', videoOutput]);
+    const stdout = await runMedia(process.env.FFPROBE_PATH || 'ffprobe', [
+      '-v', 'error', '-select_streams', 'v:0', '-show_packets',
+      '-show_entries', 'packet=pts,dts,duration', '-of', 'csv=p=0', videoOutput,
+    ], 30_000);
+    const packets = stdout.trim().split(/\r?\n/);
+    if (packets.length === totalFrames && packets.every((packet, index) => packet === `${index * 512},${index * 512},512`)) {
+      copiedProbe = await probeReactionVideo(videoOutput);
+    }
+  } catch { /* Fall back to encoding if the pieces cannot safely be joined. */ }
+  if (!copiedProbe) {
+    await runMedia(ffmpeg, [...concat, '-vf', 'setpts=N/(25*TB),fps=25,setsar=1', '-frames:v', String(totalFrames), ...encode, '-movflags', '+faststart', videoOutput]);
+  }
+  if (audioSources.some(Boolean)) {
+    const audioChunks: string[] = [];
+    for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i], seconds = piece.frames / 25;
+      const audioOutput = path.join(directory, `${name}-audio-${i}.wav`);
+      let saved = false;
+      if (audioSources[i]) {
+        try {
+          // Match the video's origin and cut interval. Lossless pieces avoid
+          // accumulating AAC encoder padding at every segment join.
+          await runMedia(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-xerror', '-y', '-threads', '2', '-i', audioSources[i]!, '-map', '0:a:0', '-vn',
+            '-af', `asetpts=PTS-STARTPTS,atrim=start=${piece.from}:duration=${seconds},asetpts=PTS-STARTPTS,aresample=48000,apad,atrim=duration=${seconds}`,
+            '-t', String(seconds), '-ar', '48000', '-ac', '1', '-c:a', 'pcm_s16le', audioOutput]);
+          saved = true;
+        } catch {
+          report.complete = false;
+          report.issues.push(`AUDIO_SOURCE_UNAVAILABLE:${piece.id}`);
+        }
+      }
+      if (!saved) await runMedia(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=mono', '-t', String(seconds), '-c:a', 'pcm_s16le', audioOutput]);
+      audioChunks.push(audioOutput);
+    }
+    const audioList = path.join(directory, `${name}-audio.txt`);
+    await writeFile(audioList, audioChunks.map(p => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
+    await runMedia(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-xerror', '-y', '-i', videoOutput, '-f', 'concat', '-safe', '0', '-i', audioList,
+      '-map', '0:v:0', '-map', '1:a:0', '-t', String(totalFrames / 25), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-movflags', '+faststart', output]);
+  } else await rename(videoOutput, output);
+  const probe = !audioSources.some(Boolean) && copiedProbe ? copiedProbe : await probeReactionVideo(output);
   if (Math.abs(probe.duration - durationSeconds) > 0.08) { report.complete = false; report.issues.push('OUTPUT_TIMELINE_MISMATCH'); }
   return { output, probe, pieces };
 }
@@ -123,6 +176,7 @@ export async function captureReaction(id:string) {
   const r=await prisma.reaction.findUniqueOrThrow({where:{id},include:{segments:{include:{segment:true}},exam:true}});
   if(r.status!=='CAPTURING') return;
   if(!r.windowEnd) throw new Error('REACTION_WINDOW_NOT_CLOSED');
+  const storage = r.metadataPath ? deletionStorage(await getStorageSettings()) : null;
   const temporary=await mkdtemp(path.join(os.tmpdir(),'proctor-reaction-'));
   const prefix=`reactions/${r.examId}/${r.id}/capture-${randomUUID()}`;
   const published: string[] = []; let adopted = false, settled = false; let reserved = 0n;
@@ -162,14 +216,30 @@ export async function captureReaction(id:string) {
     const timing=await contestTiming(r.examId,r.submissionId,r.sourceSubmittedAt,r.exam.startAt);
     const metadata={schemaVersion:1,examId:r.examId,contestId:r.contestId,submissionId:r.submissionId,teamId:r.teamId,teamName:r.teamName,schoolName:r.schoolName,problemId:r.problemId,verdict:r.originalVerdict,...timing,
       sourceSubmittedAt:r.sourceSubmittedAt,submissionObservedAt:r.submissionObservedAt,judgementObservedAt:r.judgementObservedAt,sourceJudgementEndAt:r.sourceJudgementEndAt,
-      endTimeBasis:'server-observed-final-judgement (CCS synthetic end_time ignored)',eventOffsetMs:r.eventOffsetMs,windowStart:r.windowStart,windowEnd:r.windowEnd,status,incompleteReason,rankContext:r.rankContext,channels};
+      endTimeBasis:'server-observed-final-judgement (source end_time retained for audit only)',eventOffsetMs:r.eventOffsetMs,windowStart:r.windowStart,windowEnd:r.windowEnd,status,incompleteReason,rankContext:r.rankContext,channels};
     const metadataFile=path.join(temporary,'metadata.json'); await writeFile(metadataFile,JSON.stringify(metadata,null,2));
     const metadataPath=await publishReserved(metadataFile,'metadata.json');
     adopted=await prisma.$transaction(async tx=>{
       await tx.$queryRaw`SELECT id FROM Exam WHERE id = ${r.examId} FOR UPDATE`;
       const config=await tx.reactionConfig.findUnique({where:{examId:r.examId}});
-      const result=await tx.reaction.updateMany({where:{id,status:'CAPTURING',windowStart:r.windowStart,windowEnd:r.windowEnd,originalVerdict:r.originalVerdict,reservedBytes:{gte:reserved}},data:{status,error:incompleteReason,cameraPath:paths.DESKTOP_CAMERA||null,desktopPath:paths.DESKTOP_SCREEN||null,metadataPath,outputBytes:reserved,durationSeconds:(+r.windowEnd!-+r.windowStart)/1000,finalizedAt:new Date(),generationStatus:config?.autoGenerate&&paths.DESKTOP_SCREEN&&r.judgementObservedAt&&(status==='PARTIAL'||paths.DESKTOP_CAMERA)?'QUEUED':'IDLE'}});
+      const where = { id, status: 'CAPTURING', windowStart: r.windowStart, windowEnd: r.windowEnd,
+        originalVerdict: r.originalVerdict, metadataPath: r.metadataPath, reservedBytes: { gte: reserved } };
+      // Uploads pin segments under the same exam lock. If one arrived during
+      // rendering, take a fresh snapshot before publishing an incomplete clip.
+      const late = !allComplete && await tx.reactionSegment.findFirst({ where: {
+        reactionId: id, segmentId: { notIn: r.segments.map(x => x.segmentId) },
+        segment: { deletedAt: null },
+      }, select: { segmentId: true } });
+      if (late) {
+        const retried = await tx.reaction.updateMany({ where, data: { status: 'TAIL', reservedBytes: { decrement: reserved } } });
+        if (!retried.count) throw new Error('REACTION_JOB_CANCELLED');
+        return false;
+      }
+      const result=await tx.reaction.updateMany({where,data:{status,error:incompleteReason,cameraPath:paths.DESKTOP_CAMERA||null,desktopPath:paths.DESKTOP_SCREEN||null,metadataPath,outputBytes:reserved,durationSeconds:(+r.windowEnd!-+r.windowStart)/1000,finalizedAt:new Date(),generationStatus:config?.autoGenerate&&paths.DESKTOP_SCREEN&&r.judgementObservedAt&&(status==='PARTIAL'||paths.DESKTOP_CAMERA)?'QUEUED':'IDLE'}});
       await tx.reaction.updateMany({where:{id,reservedBytes:{gte:reserved}},data:{reservedBytes:{decrement:reserved}}});
+      if (result.count && r.metadataPath && storage) await queueFileDeletion(tx, {
+        kind: 'MEDIA', examId: r.examId, objectPath: r.metadataPath, storage, requestedById: 'reaction-recapture',
+      }, true);
       return result.count===1;
     },{isolationLevel:'ReadCommitted',timeout:15000});settled=true;
   } finally {try{if(!adopted) await discardObjects(published);if(!settled) await releaseReactionOutput(id,reserved);}finally{await removeTemporary(temporary,'proctor-reaction-');}}
@@ -198,14 +268,18 @@ export async function generateStoredReaction(id:string) {
     // Organization badges are managed only in System settings. Legacy manual
     // logo JSON remains readable for audit but never overrides system matching.
     const [candidate,teamEvent]=await Promise.all([
-      prisma.candidate.findFirst({where:{examId:r.examId,examNumber:r.teamId},select:{examId:true,examNumber:true,teamName:true,school:true}}),
+      prisma.candidate.findFirst({where:{examId:r.examId,examNumber:r.teamId},select:{examId:true,examNumber:true,teamName:true,school:true,college:true}}),
       prisma.reactionEvent.findUnique({where:{examId_type_remoteId:{examId:r.examId,type:'teams',remoteId:r.teamId}}}),
     ]);
     const teamIdentity=resolveReactionTeamIdentity({examId:r.examId,teamId:r.teamId,candidate,teamEvent});
     const currentCandidate=candidate?.examId===r.examId&&candidate.examNumber===r.teamId;
     const schoolName=currentCandidate?candidate!.school:r.schoolName;
     const schoolSource=currentCandidate?'current-candidate':'recording-snapshot';
-    const resolvedLogo=await resolveReactionBrandingLogo(schoolName);
+    const collegeName=currentCandidate?candidate!.college:r.collegeName;
+    const matchBy=r.exam.reactionLogoMatchBy;
+    const organizationName=reactionLogoOrganizationName(matchBy,{school:schoolName,college:collegeName});
+    const resolvedLogo=await resolveReactionBrandingLogo(organizationName);
+    const normalizedSchoolName=schoolName?normalizeReactionOrganizationName(schoolName)||null:null;
     async function asset(key:string|undefined,name:string,namespace=r.examId) {
       if(!key) return null;
       const buffer=await readReactionAsset(namespace,key),filename=path.join(temporary,name);
@@ -218,8 +292,8 @@ export async function generateStoredReaction(id:string) {
     const backgroundAsset=await asset(presentation.backgroundPath,'background.png');
     const rankContext=parseReactionRankContext(r.rankContext,{contestId:r.contestId,teamId:r.teamId,submissionId:r.submissionId,verdict:r.originalVerdict});
     const ranks=rankContext?.status==='AVAILABLE'?{rankBefore:rankContext.beforeRank,rankAfter:rankContext.afterRank}:{rankBefore:null,rankAfter:null};
-    const generated=await generateReactionVideo({cameraPath,desktopPath,outputPath,cameraPlaceholderReason:placeholderReason??undefined,teamName:teamIdentity.teamName,schoolName:resolvedLogo.normalizedSchoolName||undefined,problemLabel:r.problemLabel,verdict:r.originalVerdict||r.verdict||'',contestTimeMs:timing.contestTimeMs,judgementOffsetSeconds:(+r.judgementObservedAt-+r.windowStart)/1000,allowPartial:r.status==='PARTIAL',windowDurationSeconds:originalWindowDurationSeconds,...ranks,presentation:{fontPreset:presentation.fontPreset,logoPath:logoAsset.filename,backgroundPath:backgroundAsset?.filename}});
-    const renderMetadata={generatedAt:new Date().toISOString(),renderer:'icpc/reactions-generator',submissionId:r.submissionId,teamName:teamIdentity.teamName,teamNameSource:teamIdentity.source,degraded:r.status==='PARTIAL',sourceStatus:r.status,incompleteReason:r.error,cameraSource:generated.cameraSource,cameraPlaceholderReason:generated.cameraPlaceholderReason,cameraTemplateBasis:generated.cameraTemplateBasis,generationWindow:generated.generationWindow,outputDurationSeconds:generated.duration,alignedWindowStart:r.windowStart.toISOString(),selectedWindowEnd:new Date(+r.windowStart+generated.duration*1000).toISOString(),fontPreset:presentation.fontPreset,logo:{basis:resolvedLogo.basis,source:'system-reaction-branding',organizationName:resolvedLogo.organizationName,normalizedSchoolName:resolvedLogo.normalizedSchoolName,schoolName,schoolSource,logoId:resolvedLogo.logoId,sha256:logoAsset.sha256},background:backgroundAsset?{basis:'uploaded',sha256:backgroundAsset.sha256}:{basis:'built-in'},rankContext:rankContext as unknown as import('@prisma/client').Prisma.InputJsonValue};
+    const generated=await generateReactionVideo({cameraPath,desktopPath,outputPath,cameraPlaceholderReason:placeholderReason??undefined,teamName:teamIdentity.teamName,schoolName:normalizedSchoolName||undefined,problemLabel:r.problemLabel,verdict:r.originalVerdict||r.verdict||'',contestTimeMs:timing.contestTimeMs,judgementOffsetSeconds:(+r.judgementObservedAt-+r.windowStart)/1000,allowPartial:r.status==='PARTIAL',windowDurationSeconds:originalWindowDurationSeconds,...ranks,presentation:{fontPreset:presentation.fontPreset,logoPath:logoAsset.filename,backgroundPath:backgroundAsset?.filename}});
+    const renderMetadata={generatedAt:new Date().toISOString(),renderer:'icpc/reactions-generator',submissionId:r.submissionId,teamName:teamIdentity.teamName,teamNameSource:teamIdentity.source,degraded:r.status==='PARTIAL',sourceStatus:r.status,incompleteReason:r.error,cameraSource:generated.cameraSource,cameraPlaceholderReason:generated.cameraPlaceholderReason,cameraTemplateBasis:generated.cameraTemplateBasis,generationWindow:generated.generationWindow,outputDurationSeconds:generated.duration,alignedWindowStart:r.windowStart.toISOString(),selectedWindowEnd:new Date(+r.windowStart+generated.duration*1000).toISOString(),fontPreset:presentation.fontPreset,logo:{basis:resolvedLogo.basis,source:'system-reaction-branding',matchBy,organizationName:resolvedLogo.organizationName,normalizedOrganizationName:resolvedLogo.normalizedOrganizationName,normalizedSchoolName,schoolName,schoolSource,logoId:resolvedLogo.logoId,sha256:logoAsset.sha256},background:backgroundAsset?{basis:'uploaded',sha256:backgroundAsset.sha256}:{basis:'built-in'},rankContext:rankContext as unknown as import('@prisma/client').Prisma.InputJsonValue};
     const originalTeamNameSnapshot=typeof metadata.originalTeamNameSnapshot==='string'?metadata.originalTeamNameSnapshot:typeof metadata.teamName==='string'?metadata.teamName:r.teamName;
     await writeFile(metadataFile,JSON.stringify({...metadata,teamName:teamIdentity.teamName,originalTeamNameSnapshot,rankContext:r.rankContext,generation:renderMetadata},null,2));
     const oldVideoBytes=r.reactionPath?await reactionObjectBytes(r.reactionPath):0n;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CreateExamSchema } from '@cwnupaa/proctor-shared';
-import { normalizeExamSettings } from '../src/lib/exam-settings';
+import { assertNovaJudgeOriginKey, normalizeExamSettings } from '../src/lib/exam-settings';
 import { canCandidateLogin, candidateLoginError, candidateLoginOpensAt, candidateStartDeadline, effectiveEnd, judgeObjectiveImmediately, scoreRows } from '../src/lib/contest-rules';
 import { allowedProblemLanguages, languageFamily } from '../src/lib/exam-languages';
 import { submissionVisibility } from '../src/lib/submission-visibility';
@@ -12,6 +12,14 @@ import { canCandidateSubmit, canViewTeamSubmissions } from '../src/lib/contest-f
 import { candidateIdentityLookup } from '../src/lib/candidate-identity';
 
 const base = CreateExamSchema.parse({ name: '考试', startAt: '2026-09-25T08:00:00Z', latestStartAt: '2026-09-25T09:00:00Z', endAt: '2030-01-01', durationMinutes: 120, platform: 'HYDRO', contestType: 'INDIVIDUAL', contestRule: 'IOI' });
+test('NovaJudge credentials are retained only within the configured origin', () => {
+  assert.doesNotThrow(() => assertNovaJudgeOriginKey('https://NOVA.example.test:443/', 'https://nova.example.test'));
+  for (const nextOrigin of ['http://nova.example.test', 'https://nova.example.test:8443', 'https://replacement.example.test']) {
+    assert.throws(() => assertNovaJudgeOriginKey('https://nova.example.test', nextOrigin), /请填写该站点/);
+    assert.throws(() => assertNovaJudgeOriginKey('https://nova.example.test', nextOrigin, ' '), /请填写该站点/);
+    assert.doesNotThrow(() => assertNovaJudgeOriginKey('https://nova.example.test', nextOrigin, 'new-key-fixture'));
+  }
+});
 test('full recording is opt-in and is independent of camera requirements', () => {
   assert.equal(base.saveFullRecording, false);
   const enabled = CreateExamSchema.parse({ ...base, saveFullRecording: true, requireMiniProgram: false, requireFrontCamera: false });

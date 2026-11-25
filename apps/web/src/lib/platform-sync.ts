@@ -11,8 +11,9 @@ import { captureBank, mergeBank } from './platform-sync-bank';
 import { captureExam, mergeExamItem } from './platform-sync-exams';
 import { getPlatformSyncSettings, peerConnection, type PlatformSyncSettings } from './platform-sync-settings';
 import { PLATFORM_SYNC_PROTOCOL, PlatformItemSchema, comparePlatformVersion, PlatformReplySchema, platformRequest, type PlatformItem } from './platform-sync-protocol';
-import { itemHash, readPlatformPage, retainPlatformConflict, wireItem } from './platform-sync-store';
+import { itemHash, readPlatformPage, hasPlatformBacklog, retainPlatformConflict, wireItem } from './platform-sync-store';
 import { countPlatformPending } from './platform-sync-status';
+import { LOCAL_PLATFORM_KINDS, isSynchronizedPlatformKind } from './platform-sync-policy';
 
 export async function authenticatePlatformSync(request: Request) {
   const settings = await getPlatformSyncSettings();
@@ -22,10 +23,10 @@ export async function authenticatePlatformSync(request: Request) {
   if (!settings.enabled || !expected || !equalHash(keyHash(received), keyHash(expected))) throw new FederationError('同步认证失败或同步已关闭', 401);
   return settings;
 }
-export async function capturePlatform(settings: PlatformSyncSettings) {
-  const capture = async (scope: string, work: () => Promise<void>) => {
+export async function capturePlatform(settings: PlatformSyncSettings, refreshBank = false) {
+  const capture = async (scope: string, work: () => Promise<void | boolean>) => {
     const key = `platform-capture-error:${scope}`;
-    try { await work(); await platformTransaction(tx => tx.systemSetting.deleteMany({ where: { key } })); }
+    try { if (await work() !== false) await platformTransaction(tx => tx.systemSetting.deleteMany({ where: { key } })); }
     catch (error) {
       // The transaction still fences the lease/configuration. A failed bank or
       // one poisoned exam must not prevent unrelated scopes being journaled.
@@ -33,7 +34,7 @@ export async function capturePlatform(settings: PlatformSyncSettings) {
       await platformTransaction(tx => tx.systemSetting.upsert({ where: { key }, create: { key, value }, update: { value } }));
     }
   };
-  await capture('bank', () => captureBank(settings));
+  await capture('bank', () => captureBank(settings, !refreshBank));
   const exams = await prisma.examFederation.findMany({ where: { managedGlobally: true, enabled: true }, select: { examId: true } });
   for (const exam of exams) await capture(exam.examId, async () => { await captureExam(exam.examId, settings); await captureExtras(exam.examId, settings); });
   const active = new Set(['bank', ...exams.map(exam => exam.examId)]);
@@ -82,6 +83,11 @@ async function queueIncoming(value: PlatformItem) {
   });
 }
 export async function drainPlatformInbox(settings: PlatformSyncSettings) {
+  // Retire only transport copies. Candidate media and login approvals in
+  // their owning tables remain untouched; session history still synchronizes.
+  await platformTransaction(tx => tx.platformSyncInbox.deleteMany({ where: {
+    OR: LOCAL_PLATFORM_KINDS.map(kind => ({ snapshot: { path: '$.kind', equals: kind } })),
+  } }));
   // Reserve ordinary-record capacity separately from one file-heavy bank item.
   const rows = await prisma.$queryRaw<Array<{id:string;kind:string}>>`(SELECT id, JSON_UNQUOTE(JSON_EXTRACT(snapshot, '$.kind')) AS kind FROM PlatformSyncInbox
     WHERE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(snapshot, '$.kind')), '') <> 'BANK' ORDER BY lastAttemptAt ASC, id ASC LIMIT 32)
@@ -106,6 +112,7 @@ export async function drainPlatformInbox(settings: PlatformSyncSettings) {
 export async function mergePlatformItems(entries: PlatformItem[], settings: PlatformSyncSettings, creatorId?: string) {
   const sorted = [...entries].sort((a,b) => (order[a.kind] ?? 10) - (order[b.kind] ?? 10));
   for (const value of sorted) {
+    if (!isSynchronizedPlatformKind(value.kind)) continue;
     if (value.kind !== 'BANK') {
       const exam = await prisma.exam.findUnique({ where: { examCode: value.scope }, select: { federation: { select: { managedGlobally: true } } } });
       if (!creatorId && !exam?.federation?.managedGlobally) continue;
@@ -126,7 +133,14 @@ export async function runPlatformSync() {
   }
   return withPlatformLease(async () => {
     try {
-      await capturePlatform(settings);
+      const [outbound, boundPeer] = await Promise.all([
+        prisma.platformSyncState.findUnique({ where: { id: 'peer' }, select: { pushCursor: true } }),
+        prisma.systemSetting.findUnique({ where: { key: 'platform-peer' } }),
+      ]);
+      const peerNodeId = (boundPeer?.value as { nodeId?: string } | undefined)?.nodeId;
+      // Keep the existing journal stable across bounded runs as well as pages.
+      // Grade and Q&A exchanges have independent workers and remain active.
+      if (!peerNodeId || !await hasPlatformBacklog(outbound?.pushCursor ?? 0n, peerNodeId)) await capturePlatform(settings);
       await drainPlatformInbox(settings);
       if (settings.role === 'LOCAL') {
         const peer = peerConnection(settings);
@@ -138,7 +152,7 @@ export async function runPlatformSync() {
           const bound = await prisma.systemSetting.findUnique({ where: { key: 'platform-peer' } });
           const page = await readPlatformPage(state.pushCursor, (bound?.value as { nodeId?: string } | undefined)?.nodeId);
           await queueBankFilePushes(page.entries, settings);
-          const response = await platformRequest(peer.baseUrl, peer.apiKey, '/api/platform-sync', { action: 'exchange', nodeId: settings.nodeId, peerId: hello.nodeId, after: state.pullCursor.toString(), entries: page.entries }, PlatformReplySchema);
+          const response = await platformRequest(peer.baseUrl, peer.apiKey, '/api/platform-sync', { action: 'exchange', nodeId: settings.nodeId, peerId: hello.nodeId, after: state.pullCursor.toString(), entries: page.entries, captureChanges: round === 0 }, PlatformReplySchema);
           if (response.nodeId === settings.nodeId || BigInt(response.after) < state.pullCursor) throw new FederationError('同步节点或进度异常');
           await bindPlatformPeer(response.nodeId, settings);
           await mergePlatformItems(response.entries, settings);
@@ -164,7 +178,7 @@ export async function publicExamBundle(ref: string, settings: PlatformSyncSettin
   if (!exam || settings.role !== 'PUBLIC') throw new FederationError('公网考试不存在或尚未开启同步', 404);
   if (!snapshot) {
     if (after !== '0') throw new FederationError('导入快照缺失，请重新导入', 409);
-    await capturePlatform(settings);
+    await capturePlatform(settings, true);
     if (await prisma.systemSetting.count({ where: { OR: [{ key: { startsWith: `platform-problem-error:${exam.id}:` } }, { key: { in: ['platform-capture-error:bank', `platform-capture-error:${exam.id}`] } }] } })) throw new FederationError('本场考试资料或题库映射尚未补齐，请处理同步提示后再导入');
     snapshot = randomUUID();
     const token = snapshot;
@@ -184,7 +198,7 @@ export async function publicExamBundle(ref: string, settings: PlatformSyncSettin
         await tx.systemSetting.create({ data: { key: `platform-export:${token}:${page++}`, value: entries as Prisma.InputJsonValue } });
         entries = []; bytes = Buffer.byteLength(JSON.stringify(definition));
       };
-      const kinds = Object.keys(order).concat(['PRINT','CHEATING','RECEIPT','MESSAGE_RECEIPT','ALERT']).sort((a,b) => (order[a] ?? 10) - (order[b] ?? 10));
+      const kinds = Object.keys(order).concat(['PRINT','CHEATING','RECEIPT','MESSAGE_RECEIPT','ALERT']).filter(isSynchronizedPlatformKind).sort((a,b) => (order[a] ?? 10) - (order[b] ?? 10));
       for (const kind of kinds) {
         let cursor = 0n;
         for (;;) {
@@ -208,7 +222,8 @@ export async function publicExamBundle(ref: string, settings: PlatformSyncSettin
   const page = Number(after);
   if (!meta || meta.scope !== exam.examCode || meta.expiresAt < Date.now() || !Number.isSafeInteger(page) || page < 0 || page >= meta.pages) throw new FederationError('导入快照已过期，请重新导入', 409);
   const content = await prisma.systemSetting.findUniqueOrThrow({ where: { key: `platform-export:${snapshot}:${page}` } });
-  return { protocol: PLATFORM_SYNC_PROTOCOL, nodeId: settings.nodeId, snapshot, after: String(page + 1), entries: content.value as unknown as PlatformItem[], definition: meta.definition, hasMore: page + 1 < meta.pages };
+  const entries = (content.value as unknown as PlatformItem[]).filter(value => isSynchronizedPlatformKind(value.kind));
+  return { protocol: PLATFORM_SYNC_PROTOCOL, nodeId: settings.nodeId, snapshot, after: String(page + 1), entries, definition: meta.definition, hasMore: page + 1 < meta.pages };
 }
 
 export async function importPublicExam(link: string, creatorId: string) {
@@ -249,7 +264,7 @@ export async function importPublicExam(link: string, creatorId: string) {
     await platformTransaction(tx => tx.examFederation.update({ where: { examId: exam.id }, data: { enabled: true, nextAttemptAt: new Date() } }));
     await drainPlatformInbox(settings);
     return exam;
-  }, settings.revision);
+  }, settings.revision, 30_000);
 }
 const shared = globalThis as typeof globalThis & { platformSyncTimer?: ReturnType<typeof setInterval>; platformSyncTask?: Promise<unknown>; platformFilePushTask?: Promise<unknown> };
 export function startPlatformSyncWorker() {

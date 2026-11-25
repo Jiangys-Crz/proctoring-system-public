@@ -14,7 +14,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       '考试管理',
       '发布考试、选择题目和编辑考试信息'
     ] as const,
-    ...(user.role === 'SUPER_ADMIN' ? [['/dashboard/live', '直播管理', '管理外部直播接收与转发'] as const] : []),
+    [user.role === 'SUPER_ADMIN' ? '/dashboard/live' : '/dashboard/live/contests', 'XCPC 工具', '管理推流、赛事直播和大屏'] as const,
     ...(user.role === 'SUPER_ADMIN' ? [[
       '/dashboard/problems',
       '题库管理',

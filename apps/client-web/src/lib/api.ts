@@ -16,9 +16,33 @@ function isLocalNetworkHost(hostname: string) {
   return parts[0] === 10 || parts[0] === 192 && parts[1] === 168 || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31 || parts[0] === 169 && parts[1] === 254;
 }
 
+function deploymentApiOrigin() {
+  if (typeof window === 'undefined') return '';
+  // A shared client-web image may contain the other node's build-time URL.
+  // The known public/LAN entry points always stay with their own backend.
+  const origins: Record<string, string> = {
+    'https://proctorstu.example.test': 'https://proctoring.example.test',
+    'https://proctoring.example.test': 'https://proctoring.example.test',
+    'https://proctorstu.example.org': 'https://proctoring.example.org',
+    'https://proctoring.example.org': 'https://proctoring.example.org',
+  };
+  const known = origins[window.location.origin];
+  if (known) return known;
+  const host = window.location.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // Direct LAN-IP entrances must also ignore a public URL embedded in the
+  // shared image. Keep loopback development URLs configurable.
+  if (isLocalNetworkHost(host) && host !== 'localhost' && host !== '::1' && !/^127\./.test(host)) {
+    if (window.location.protocol === 'https:') return window.location.origin;
+    if (window.location.protocol === 'http:') return `http://${window.location.hostname}:4031`;
+  }
+  return '';
+}
+
 export function defaultApiBase(configured: string) {
   const normalized = normalizeApiBase(configured);
   if (typeof window === 'undefined') return 'http://localhost:4031';
+  const deployment = deploymentApiOrigin();
+  if (deployment) return deployment;
   // The LAN HTTPS entry proxies both the candidate app and every /api request.
   // Keeping a previously saved http://...:4031 address on an HTTPS page makes
   // mobile Safari/Chrome reject all API calls as mixed content ("Load failed").
@@ -50,7 +74,9 @@ export function defaultApiBase(configured: string) {
 export function trustedApiBase(configured: string, requested?: string | null) {
   const fallback = defaultApiBase(configured);
   if (!requested) return fallback;
-  const candidate = defaultApiBase(requested);
+  // Validate QR addresses as supplied on a pinned deployment; do not silently
+  // reinterpret a public session token as belonging to the LAN (or vice versa).
+  const candidate = deploymentApiOrigin() ? normalizeApiBase(requested) : defaultApiBase(requested);
   const parsed = new URL(candidate);
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error('服务器地址不符合当前部署配置，请重新扫描客户端二维码');
@@ -100,10 +126,13 @@ export function absoluteMediaUrl(apiBase: string, value: string) {
 }
 
 export class ClientApi {
-  private serverClock?: { serverAt: number; observedAt: number };
+  private serverClock?: { serverAt: number; observedAt: number; lastRead: number };
 
   now() {
-    return this.serverClock ? this.serverClock.serverAt + Math.max(0, performance.now() - this.serverClock.observedAt) : Date.now();
+    const clock = this.serverClock;
+    if (!clock) return Date.now();
+    clock.lastRead = Math.max(clock.lastRead, clock.serverAt + Math.max(0, performance.now() - clock.observedAt));
+    return clock.lastRead;
   }
 
   constructor(
@@ -145,7 +174,10 @@ export class ClientApi {
       const data = body.data;
       if (data && typeof data === 'object' && 'serverNow' in data && typeof data.serverNow === 'string') {
         const serverAt = Date.parse(data.serverNow);
-        if (Number.isFinite(serverAt)) this.serverClock = { serverAt, observedAt: performance.now() };
+        const previous = this.serverClock;
+        if (Number.isFinite(serverAt) && (!previous || serverAt > previous.serverAt)) {
+          this.serverClock = { serverAt, observedAt: performance.now(), lastRead: previous?.lastRead ?? serverAt };
+        }
       }
       return data;
     } finally {

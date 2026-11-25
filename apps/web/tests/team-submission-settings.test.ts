@@ -12,15 +12,17 @@ import { prisma } from '../src/lib/db';
 const base = CreateExamSchema.parse({ name: '共享配置测试', startAt: '2026-10-11T08:00:00Z', latestStartAt: '2026-10-11T08:00:00Z',
   endAt: '2026-10-11T10:00:00Z', durationMinutes: 120, platform: 'HYDRO', contestType: 'TEAM', contestRule: 'IOI' });
 
-test('sharing remains opt-in and both choices survive every team format/account normalization', () => {
+test('sharing remains opt-in for supported team formats after account normalization', () => {
   assert.equal(base.allowTeamSubmissionView, false);
   for (const contestRule of ['GPLT', 'XCPC', 'ACM', 'IOI', 'OI', 'LANQIAO', 'KS'] as const) {
     for (const teamAccountMode of ['MEMBER_ACCOUNTS', 'TEAM_ACCOUNT'] as const) {
       for (const enabled of [true, false]) {
         const normalized = normalizeExamSettings({ ...base, contestRule, teamAccountMode, allowTeamSubmissionView: enabled });
-        assert.equal(normalized.allowTeamSubmissionView, enabled, `${contestRule}/${teamAccountMode}/${enabled}`);
-        assert.equal(canViewTeamSubmissions(normalized), enabled && normalized.teamAccountMode === 'MEMBER_ACCOUNTS');
-        assert.equal(normalizeContestFormat(normalized).allowTeamSubmissionView, enabled, 'repeated saves cannot silently reset the choice');
+        const available = ['GPLT', 'XCPC', 'ACM'].includes(contestRule);
+        const stored = available && enabled;
+        assert.equal(normalized.allowTeamSubmissionView, stored, `${contestRule}/${teamAccountMode}/${enabled}`);
+        assert.equal(canViewTeamSubmissions(normalized), stored && normalized.teamAccountMode === 'MEMBER_ACCOUNTS');
+        assert.equal(normalizeContestFormat(normalized).allowTeamSubmissionView, stored, 'repeated saves cannot silently reset the choice');
       }
     }
   }
@@ -68,9 +70,11 @@ test('the ordinary exam-save transaction persists explicit on/off without resett
   const saved: Array<Record<string, unknown>> = [];
   replace(prisma.systemSetting, 'findUnique', async () => ({ value: { baseUrl: 'https://judge.invalid', apiKey: 'test', problemDomainId: 'Problems' } }));
   replace(prisma.examProblem, 'findMany', async () => []);
-  replace(prisma, '$transaction', async (operation: (client: unknown) => Promise<unknown>) => operation({ $queryRaw: async () => [], examFederation: { findUnique: async () => null }, exam: {
-    update: async ({ data }: { data: Record<string, unknown> }) => { saved.push(data); return { id: 'exam', ...data }; }
-  } }));
+  replace(prisma, '$transaction', async (operation: (client: unknown) => Promise<unknown>) => operation({
+    $queryRaw: async () => [], examFederation: { findUnique: async () => null },
+    contestLiveSettings: { findUnique: async () => null },
+    exam: { update: async ({ data }: { data: Record<string, unknown> }) => { saved.push(data); return { id: 'exam', ...data }; } }
+  }));
   const enabled = CreateExamSchema.parse({ ...base, contestRule: 'XCPC', allowTeamSubmissionView: true });
   await saveExam(enabled, 'admin', 'exam');
   await saveExam({ ...enabled, name: '只修改标题' }, 'admin', 'exam');

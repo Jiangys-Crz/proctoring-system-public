@@ -111,7 +111,7 @@ try {
   const secondCandidate = await prisma.candidate.findFirstOrThrow({ where: { examId, examNumber: b.examNumber } });
   ids.push(secondCandidate.id);
   const normalSecret = createPairSecret('RECOVERY');
-  const normalQr = await prisma.pairingSession.create({ data: { pairCode: String(randomInt(100000, 1000000)), desktopDeviceId: pair.desktopDeviceId, purpose: 'INITIAL', recoveryTokenHash: normalSecret.hash, pollTokenHash: pollSecret.hash, screenOk: true, desktopCameraOk: true, expiresAt: new Date(Date.now() + 300000) } });
+  const normalQr = await prisma.pairingSession.create({ data: { pairCode: String(randomInt(100000, 1000000)), desktopDeviceId: pair.desktopDeviceId, purpose: 'INITIAL', recoveryTokenHash: normalSecret.hash, pollTokenHash: pollSecret.hash, screenOk: true, desktopCameraOk: false, expiresAt: new Date(Date.now() + 300000) } });
   pairs.push(normalQr.id);
   const normalLogin = await call(scan, '/api/client/public-test-login', { ...scanInput, examCode: b.examCode, name: b.name, examNumber: b.examNumber, password: b.password, pairCode: normalQr.pairCode, testSecret: normalSecret.secret });
   assert.equal(normalLogin.status, 201);
@@ -137,7 +137,7 @@ try {
   assert.equal(await prisma.loginRequest.count({ where: { candidateId: manualCandidate.id } }), 0);
   assert.equal((await call(scan, '/api/client/public-test-login', manualInput)).status, 410);
   const notConnected = await call(start, '/api/client/session/start', { sessionId, confirm: true }, desktopToken);
-  assert.equal(notConnected.status, 409); assert.match(notConnected.body.message, /全部通过推流检测/);
+  assert.equal(notConnected.status, 409); assert.match(notConnected.body.message, /屏幕和手机第二机位通过推流检测/);
   const hb = await call(heartbeat, '/api/client/heartbeat', { sessionId, deviceId: pair.desktopDeviceId, side: 'DESKTOP', capture: { screenOk: false, desktopCameraOk: false },
     system: { processes: ['test-forbidden'], peripheralsFingerprint: 'changed' } }, desktopToken);
   assert.equal(hb.status, 200); assert.equal(hb.body.data.session.lockdown, false); assert.equal(hb.body.data.alertsCreated, 0);

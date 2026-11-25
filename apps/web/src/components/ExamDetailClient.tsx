@@ -52,6 +52,10 @@ interface Exam {
   durationMinutes: number;
   platform: ExamPlatform;
   novaJudgeApiKey?: string;
+  hydroBrowserApiKey?: string;
+  hydroBrowserApiKeyConfigured?: boolean;
+  hydroBrowserEventFeedApiKey?: string;
+  hydroBrowserEventFeedApiKeyConfigured?: boolean;
   novaJudgeTimezone: string;
   platformBaseUrl: string;
   platformContestId: string;
@@ -118,9 +122,11 @@ interface LoginRequest {
 interface Session {
   id: string;
   candidateId: string;
+  loginRequestId: string | null;
   memberStudentId: string | null;
   memberName: string | null;
   status: string;
+  revokedAt: string | null;
   lockdown: boolean;
   lockdownReason: string | null;
   unlockNonce?: string | null;
@@ -408,8 +414,9 @@ function MonitorFeed({
       </div>
     );
   }
-  const badgeClass = playing ? 'live-badge' : hasSession ? 'live-badge waiting' : 'live-badge stale';
-  const badgeText = playing ? '实时' : hasSession ? '等待推流' : '无信号';
+  const streaming = Boolean(sessionId && playing);
+  const badgeClass = streaming ? 'live-badge' : hasSession ? 'live-badge waiting' : 'live-badge stale';
+  const badgeText = streaming ? '实时' : hasSession ? channel === 'DESKTOP_CAMERA' ? '可选 · 未推流' : '等待推流' : '无信号';
 
   return (
     <div className={`feed live-feed ${screenFeed ? 'screen-feed' : ''} ${expanded ? 'monitor-feed-expanded' : ''}`}
@@ -756,17 +763,6 @@ export function ExamDetailClient({
     return map;
   }, [state]);
 
-  const liveFrameByCandidate = useMemo(() => {
-    const map = new Map<string, Partial<Record<LiveFrame['channel'], LiveFrame>>>();
-    state?.liveFrames?.forEach((frame) => {
-      if (!frame.candidateId) return;
-      const current = map.get(frame.candidateId) || {};
-      if (!current[frame.channel]) current[frame.channel] = frame;
-      map.set(frame.candidateId, current);
-    });
-    return map;
-  }, [state]);
-
   const recentMediaByCandidate = useMemo(() => {
     const map = new Map<string, MediaSegment[]>();
     state?.mediaSegments.forEach((segment) => {
@@ -870,8 +866,14 @@ export function ExamDetailClient({
   );
   const allLoginRequestsSelected = filteredLoginRequests.length > 0 && filteredLoginRequests.every((request) => selectedLoginRequestIds.includes(request.id));
   const activeLoginRequest = filteredLoginRequests.find((request) => request.id === activeLoginRequestId) || null;
-  const activeLoginLiveFrames: Partial<Record<LiveFrame['channel'], LiveFrame>> = activeLoginRequest ? liveFrameByCandidate.get(activeLoginRequest.candidate.id) || {} : {};
-  const activeLoginSession = activeLoginRequest ? sessionByCandidate.get(activeLoginRequest.candidate.id) || null : null;
+  const activeLoginSession = activeLoginRequest && state?.sessions.find(session =>
+    session.loginRequestId === activeLoginRequest.id && session.candidateId === activeLoginRequest.candidate.id &&
+    !session.revokedAt && session.status !== 'FINISHED');
+  const loginFrames = activeLoginSession ? state?.liveFrames.filter(frame => frame.sessionId === activeLoginSession.id) || [] : [];
+  const reviewFrame = (channel: LiveFrame['channel']) => knownLiveSessions?.has(activeLoginSession?.id || '') ? undefined
+    : loginFrames.find(frame => frame.channel === channel)?.objectPath;
+  const reviewScreenFrame = reviewFrame('DESKTOP_SCREEN');
+  const reviewCameraFrame = reviewFrame('DESKTOP_CAMERA');
   const activeLoginRoom = activeLoginRequest ? roomByCandidateId.get(activeLoginRequest.candidate.id) : null;
   const activeLoginRequiresFrontCamera = activeLoginRoom?.requireFrontCamera ?? state?.exam.requireFrontCamera ?? true;
   const pendingLoginRequestCount = state?.loginRequests.length || 0;
@@ -1411,7 +1413,7 @@ export function ExamDetailClient({
           endAt: datetimeLocalToIso(examForm.endAt),
           durationMinutes: examForm.durationMinutes,
           platform: examForm.platform,
-          ...(examForm.platform === 'NOVAJUDGE' ? { platformBaseUrl: examForm.platformBaseUrl, platformContestId: examForm.platformContestId, novaJudgeTimezone: examForm.novaJudgeTimezone, ...(examForm.novaJudgeApiKey?.trim() ? { novaJudgeApiKey: examForm.novaJudgeApiKey.trim() } : {}) } : examForm.platform === 'HYDRO_BROWSER' ? { platformBaseUrl: examForm.platformBaseUrl, platformContestId: examForm.platformContestId } : {}),
+          ...(examForm.platform === 'NOVAJUDGE' ? { platformBaseUrl: examForm.platformBaseUrl, platformContestId: examForm.platformContestId, novaJudgeTimezone: examForm.novaJudgeTimezone, ...(examForm.novaJudgeApiKey?.trim() ? { novaJudgeApiKey: examForm.novaJudgeApiKey.trim() } : {}) } : examForm.platform === 'HYDRO_BROWSER' ? { platformBaseUrl: examForm.platformBaseUrl, platformContestId: examForm.platformContestId, ...(examForm.hydroBrowserApiKey?.trim() ? { hydroBrowserApiKey: examForm.hydroBrowserApiKey.trim() } : {}), ...(examForm.hydroBrowserEventFeedApiKey?.trim() ? { hydroBrowserEventFeedApiKey: examForm.hydroBrowserEventFeedApiKey.trim() } : {}) } : {}),
           contestType: examForm.contestType,
           teamAccountMode: examForm.teamAccountMode,
           contestRule: examForm.contestRule,
@@ -1740,33 +1742,33 @@ export function ExamDetailClient({
                 </div>
                 <div className="review-live-title">请求登录实时画面</div>
                 <div className="review-media review-live-media">
-                  {activeLoginSession ? (
+                  {reviewScreenFrame ? (
+                    <div className="review-live-frame">
+                      <span className="review-live-label">电脑屏幕 · 快照</span>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={reviewScreenFrame} alt="请求登录电脑屏幕快照" />
+                    </div>
+                  ) : activeLoginSession ? (
                     <div className="review-live-frame">
                       <span className="review-live-label">电脑屏幕 · 实时</span>
                       <LiveStreamVideo sessionId={activeLoginSession.id} channel="DESKTOP_SCREEN" />
                     </div>
-                  ) : activeLoginLiveFrames.DESKTOP_SCREEN?.objectPath ? (
-                    <div className="review-live-frame">
-                      <span className="review-live-label">电脑屏幕</span>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={activeLoginLiveFrames.DESKTOP_SCREEN.objectPath} alt="请求登录电脑屏幕实时画面" />
-                    </div>
                   ) : (
                     <div className="review-media-empty">电脑屏幕等待采集</div>
                   )}
-                  {activeLoginSession && activeLoginRequiresFrontCamera ? (
+                  {activeLoginRequiresFrontCamera && reviewCameraFrame ? (
+                    <div className="review-live-frame">
+                      <span className="review-live-label">电脑摄像头 · 快照</span>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={reviewCameraFrame} alt="请求登录电脑摄像头快照" />
+                    </div>
+                  ) : activeLoginSession && activeLoginRequiresFrontCamera ? (
                     <div className="review-live-frame">
                       <span className="review-live-label">电脑摄像头 · 实时</span>
                       <LiveStreamVideo sessionId={activeLoginSession.id} channel="DESKTOP_CAMERA" />
                     </div>
-                  ) : activeLoginLiveFrames.DESKTOP_CAMERA?.objectPath ? (
-                    <div className="review-live-frame">
-                      <span className="review-live-label">电脑摄像头</span>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={activeLoginLiveFrames.DESKTOP_CAMERA.objectPath} alt="请求登录电脑摄像头实时画面" />
-                    </div>
                   ) : (
-                    <div className="review-media-empty">{activeLoginRequiresFrontCamera ? '电脑摄像头等待采集' : '所在考室不要求前置摄像头'}</div>
+                    <div className="review-media-empty">{activeLoginRequiresFrontCamera ? '前置摄像头可选，可用时显示画面' : '所在考室未启用前置摄像头'}</div>
                   )}
                 </div>
                 <div className="modal-actions">
@@ -1875,7 +1877,7 @@ export function ExamDetailClient({
                 const room = roomByCandidateId.get(candidate.id);
                 const requiresFrontCamera = room?.requireFrontCamera ?? state.exam.requireFrontCamera;
                 const requiresSecondCamera = room?.requireSecondCamera ?? state.exam.requireMiniProgram;
-                const sessionFinished = session?.status === 'FINISHED';
+                const sessionFinished = Boolean(session?.status === 'FINISHED' || session?.revokedAt || candidate.status === 'FINISHED');
                 const desktopConnection = session
                   ? connectionText(session.lastDesktopSeenAt, session.desktopOfflineAt, sessionFinished)
                   : '未连接';
@@ -1885,7 +1887,7 @@ export function ExamDetailClient({
                     ? connectionText(session.lastMiniProgramSeenAt, session.miniProgramOfflineAt, sessionFinished)
                     : '未连接';
                 const feed = (label: string, channel: LiveFrame['channel'], required = true, unavailableText = '') => {
-                  const hasSession = Boolean(session && session.status !== 'FINISHED');
+                  const hasSession = Boolean(session && !sessionFinished);
                   const sessionId = hasSession && session ? session.id : '';
                   return <MonitorFeed
                     label={label}
@@ -1960,7 +1962,7 @@ export function ExamDetailClient({
                 return (
                   <div className="monitor-card" key={candidate.id}>
                     <div className="monitor-tile">
-                      <div className="monitor-cell desktop-camera-cell">{feed('电脑前置摄像头', 'DESKTOP_CAMERA', requiresFrontCamera, '所在考室不要求前置摄像头')}</div>
+                      <div className="monitor-cell desktop-camera-cell">{feed('电脑前置摄像头', 'DESKTOP_CAMERA', requiresFrontCamera, '所在考室未启用前置摄像头')}</div>
                       <div className="monitor-cell desktop-screen-cell">{feed('电脑屏幕', 'DESKTOP_SCREEN')}</div>
                       <div className="monitor-cell mobile-camera-cell">{feed('第二机位', 'MOBILE_CAMERA', requiresSecondCamera, '所在考室不要求第二机位')}</div>
                       <div className="monitor-cell candidate-info-cell">{statusPanel}</div>
@@ -2120,10 +2122,10 @@ export function ExamDetailClient({
             <button className={`button ${settingsTab === 'problems' ? '' : 'secondary'}`} onClick={() => routeToSettings('problems')}>题目管理</button>
             <button className={`button ${settingsTab === 'rooms' ? '' : 'secondary'}`} onClick={() => routeToSettings('rooms')}>考室管理</button>
             <button className={`button ${settingsTab === 'candidates' ? '' : 'secondary'}`} onClick={() => routeToSettings('candidates')}>考生管理</button>
-            {state.exam.platform !== 'HYDRO_BROWSER' ? <button className={`button ${settingsTab === 'external-board' ? '' : 'secondary'}`} onClick={() => routeToSettings('external-board')}>外榜推送</button> : null}
+            <button className={`button ${settingsTab === 'external-board' ? '' : 'secondary'}`} onClick={() => routeToSettings('external-board')}>外榜推送</button>
           </nav>
 
-          {settingsTab === 'external-board' ? state.exam.platform === 'HYDRO_BROWSER' ? <p>本场考试的榜单由 HydroOJ 管理。</p> : <ExternalBoardSettings key={examId} examId={examId} /> : null}
+          {settingsTab === 'external-board' ? <ExternalBoardSettings key={examId} examId={examId} hydroBrowser={state.exam.platform === 'HYDRO_BROWSER'} /> : null}
 
           {settingsTab === 'problems' && isBrowserExam(state.exam.platform) ? <section className="card"><h2>{browserExamPlatformName(state.exam.platform)} 题目管理</h2><p>本场考试的题目、提交、判题、排行榜、答疑和打印由 {browserExamPlatformName(state.exam.platform)} 管理。</p><a className="button secondary" href={`${state.exam.platformBaseUrl}/contest/${state.exam.platformContestId}`} target="_blank" rel="noreferrer">打开 {browserExamPlatformName(state.exam.platform)} 比赛</a></section> : null}
           {settingsTab === 'problems' && !isBrowserExam(state.exam.platform) ? (
@@ -2149,16 +2151,16 @@ export function ExamDetailClient({
                 {examForm.platform === 'NOVAJUDGE' ? <>
                   <label>NovaJudge 平台域名<input value={examForm.platformBaseUrl} onChange={event => updateExamForm({ ...examForm, platformBaseUrl: event.target.value })} /></label>
                   <label>NovaJudge 比赛 ID<input inputMode="numeric" value={examForm.platformContestId} onChange={event => updateExamForm({ ...examForm, platformContestId: event.target.value })} /></label>
-                  <label>NovaJudge 外榜 API Key<input type="password" autoComplete="new-password" placeholder="留空保留原密钥" value={examForm.novaJudgeApiKey || ''} onChange={event => updateExamForm({ ...examForm, novaJudgeApiKey: event.target.value })} /></label>
+                  <label>NovaJudge 外榜 API Key<input type="password" autoComplete="new-password" placeholder="同一站点留空保留原密钥" value={examForm.novaJudgeApiKey || ''} onChange={event => updateExamForm({ ...examForm, novaJudgeApiKey: event.target.value })} /></label>
                   <label>NovaJudge 数据时区<input value={examForm.novaJudgeTimezone || 'Asia/Shanghai'} placeholder="Asia/Shanghai" onChange={event => updateExamForm({ ...examForm, novaJudgeTimezone: event.target.value })} /></label>
                   <p className="muted">监考、控屏和考生管理在本平台进行。答题设置由 NovaJudge 管理，请保持双方比赛时间及考生账号一致。</p>
                 </> : null}
-                {examForm.platform === 'HYDRO_BROWSER' ? <HydroBrowserFields baseUrl={examForm.platformBaseUrl} contestId={examForm.platformContestId} onBaseUrl={platformBaseUrl => updateExamForm({ ...examForm, platformBaseUrl })} onContestId={platformContestId => updateExamForm({ ...examForm, platformContestId })} /> : null}
+                {examForm.platform === 'HYDRO_BROWSER' ? <HydroBrowserFields baseUrl={examForm.platformBaseUrl} contestId={examForm.platformContestId} apiKey={examForm.hydroBrowserApiKey || ''} apiKeyConfigured={examForm.hydroBrowserApiKeyConfigured} eventFeedApiKey={examForm.hydroBrowserEventFeedApiKey || ''} eventFeedApiKeyConfigured={examForm.hydroBrowserEventFeedApiKeyConfigured} onApiKey={hydroBrowserApiKey => updateExamForm({ ...examForm, hydroBrowserApiKey })} onEventFeedApiKey={hydroBrowserEventFeedApiKey => updateExamForm({ ...examForm, hydroBrowserEventFeedApiKey })} onBaseUrl={platformBaseUrl => updateExamForm({ ...examForm, platformBaseUrl })} onContestId={platformContestId => updateExamForm({ ...examForm, platformContestId })} /> : null}
                 <label>
                   考试名称
                   <input value={examForm.name} onChange={(event) => updateExamForm({ ...examForm, name: event.target.value })} />
                 </label>
-                <label>
+                {examForm.platform !== 'HYDRO_BROWSER' ? <><label>
                   比赛类型
                   <select value={examForm.contestType} disabled={examForm.platform !== 'NOVAJUDGE' && examForm.contestRule !== 'XCPC'} onChange={(event) => updateExamForm({ ...examForm, contestType: event.target.value as 'INDIVIDUAL' | 'TEAM' })}>
                     {examForm.platform === 'NOVAJUDGE' || examForm.contestRule !== 'GPLT' ? <option value="INDIVIDUAL">个人赛</option> : null}
@@ -2175,8 +2177,8 @@ export function ExamDetailClient({
                     <option value="OI">OI</option>
                     <option value="KS">KS</option>
                   </select>
-                </label>
-                {examForm.contestType === 'TEAM' ? <label>团队账号方式<select value={examForm.teamAccountMode} disabled={examForm.platform !== 'NOVAJUDGE' && examForm.contestRule === 'GPLT'} onChange={(event) => updateExamForm({ ...examForm, teamAccountMode: event.target.value as 'MEMBER_ACCOUNTS' | 'TEAM_ACCOUNT' })}><option value="MEMBER_ACCOUNTS">每名成员一个账号</option>{examForm.platform === 'NOVAJUDGE' || examForm.contestRule !== 'GPLT' ? <option value="TEAM_ACCOUNT">全队共用一个账号</option> : null}</select></label> : null}
+                </label></> : null}
+                {examForm.platform !== 'HYDRO_BROWSER' && examForm.contestType === 'TEAM' ? <label>团队账号方式<select value={examForm.teamAccountMode} disabled={examForm.platform !== 'NOVAJUDGE' && examForm.contestRule === 'GPLT'} onChange={(event) => updateExamForm({ ...examForm, teamAccountMode: event.target.value as 'MEMBER_ACCOUNTS' | 'TEAM_ACCOUNT' })}><option value="MEMBER_ACCOUNTS">每名成员一个账号</option>{examForm.platform === 'NOVAJUDGE' || examForm.contestRule !== 'GPLT' ? <option value="TEAM_ACCOUNT">全队共用一个账号</option> : null}</select></label> : null}
                 <label>
                   开始时间
                   <input type="datetime-local" value={examForm.startAt} onChange={(event) => updateExamForm({ ...examForm, startAt: event.target.value })} />
@@ -2450,7 +2452,7 @@ export function ExamDetailClient({
                       </div>
                       <div className="room-config-summary">
                         <span>第二机位：{room.requireSecondCamera ? '需要' : '不需要'}</span>
-                        <span>前置摄像头：{room.requireFrontCamera ? '需要' : '不需要'}</span>
+                        <span>前置摄像头：{room.requireFrontCamera ? '可用时启用' : '不启用'}</span>
                         <span>登录方式：{room.loginMode === 'SECOND_CAMERA_QR' ? '第二机位扫码' : '考试编号＋考号＋密码'}</span>
                         <span>登录请求审核：{room.loginReviewMode === 'AUTO' ? '自动通过' : '手动审核'}</span>
                       </div>
@@ -2484,7 +2486,7 @@ export function ExamDetailClient({
                     </label>
                     <div className="grid two room-security-fields">
                       <label className="exam-checkbox"><input type="checkbox" checked={roomRequireSecondCamera} onChange={(event) => setRoomRequireSecondCamera(event.target.checked)} /> 需要第二机位</label>
-                      <label className="exam-checkbox"><input type="checkbox" checked={roomRequireFrontCamera} onChange={(event) => setRoomRequireFrontCamera(event.target.checked)} /> 需要前置摄像头</label>
+                      <label className="exam-checkbox"><input type="checkbox" checked={roomRequireFrontCamera} onChange={(event) => setRoomRequireFrontCamera(event.target.checked)} /> 启用前置摄像头（可选，无可用设备时跳过）</label>
                       <label>登录方式<select value={roomLoginMode} onChange={(event) => setRoomLoginMode(event.target.value as 'CREDENTIALS' | 'SECOND_CAMERA_QR')}><option value="CREDENTIALS">考试编号＋考号＋密码</option><option value="SECOND_CAMERA_QR">第二机位扫码</option></select></label>
                       <label>登录请求审核方式<select value={roomLoginReviewMode} onChange={(event) => setRoomLoginReviewMode(event.target.value as 'MANUAL' | 'AUTO')}><option value="MANUAL">手动审核</option><option value="AUTO">自动通过</option></select></label>
                     </div>
@@ -2625,7 +2627,7 @@ export function ExamDetailClient({
                     <button type="button" className="nova-dialog-close" aria-label="关闭考室详情" onClick={() => roomDetailDialog.current?.close()}><X size={20} /></button>
                   </header>
                   <div className="nova-dialog-body room-detail-content">
-                    <dl className="room-detail-facts"><div><dt>第二机位</dt><dd>{roomDetail.requireSecondCamera ? '需要' : '不需要'}</dd></div><div><dt>前置摄像头</dt><dd>{roomDetail.requireFrontCamera ? '需要' : '不需要'}</dd></div><div><dt>登录方式</dt><dd>{roomDetail.loginMode === 'SECOND_CAMERA_QR' ? '第二机位扫码' : '考试编号＋考号＋密码'}</dd></div><div><dt>登录请求审核</dt><dd>{roomDetail.loginReviewMode === 'AUTO' ? '自动通过' : '手动审核'}</dd></div></dl>
+                    <dl className="room-detail-facts"><div><dt>第二机位</dt><dd>{roomDetail.requireSecondCamera ? '需要' : '不需要'}</dd></div><div><dt>前置摄像头</dt><dd>{roomDetail.requireFrontCamera ? '可用时启用' : '不启用'}</dd></div><div><dt>登录方式</dt><dd>{roomDetail.loginMode === 'SECOND_CAMERA_QR' ? '第二机位扫码' : '考试编号＋考号＋密码'}</dd></div><div><dt>登录请求审核</dt><dd>{roomDetail.loginReviewMode === 'AUTO' ? '自动通过' : '手动审核'}</dd></div></dl>
                     <section><h3>考室监考</h3><div className="room-detail-list">{roomDetail.proctors.map(({ user }) => <div className="room-detail-row" key={user.id}><strong>{user.realName || user.nickname || user.username || '暂未更新'}</strong><span>{user.numberId || '-'}</span></div>)}{!roomDetail.proctors.length ? <div className="muted">暂无监考</div> : null}</div></section>
                     <section><h3>考室考生</h3><div className="room-detail-list">{roomDetail.candidates.map(({ candidate }) => <div className="room-detail-row" key={candidate.id}><strong>{displayName(candidate)}</strong><span>{candidate.studentId || candidate.examNumber} · 座位 {candidate.seatNo || '-'}</span></div>)}{!roomDetail.candidates.length ? <div className="muted">暂无考生</div> : null}</div></section>
                   </div>

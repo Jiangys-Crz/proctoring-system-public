@@ -133,7 +133,7 @@ export async function saveHydroSettings(input: HydroConnectionSettings) {
     await tx.$queryRaw`SELECT id FROM PlatformSyncState WHERE id = 'peer' FOR UPDATE`;
     const binding = await tx.systemSetting.findUnique({ where: { key: 'platform-bank-binding' } });
     const bank = binding?.value as { baseUrl: string; domain: string } | undefined;
-    if (bank && (bank.baseUrl !== value.baseUrl || bank.domain !== value.problemDomainId)) throw new FederationError('已有题库同步映射，不能直接更换评测服务或题库域', 409);
+    if (bank && (bank.baseUrl !== value.baseUrl || bank.domain !== value.problemDomainId)) throw new FederationError('已有题库同步映射，不能直接更换评测服务或题库域；如仅为 HydroOJ 浏览器比赛使用其他站点，请在本场考试填写该站点监考插件 API-Key，无需修改此处', 409);
     await tx.systemSetting.upsert({ where: { key: 'hydro' }, update: { value }, create: { key: 'hydro', value } });
   }, { isolationLevel: 'ReadCommitted' });
   hydroCache.invalidate();

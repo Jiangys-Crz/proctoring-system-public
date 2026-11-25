@@ -45,3 +45,36 @@
 .screen-control-preview-dialog > img { max-width: 100%; max-height: calc(100dvh - 140px); object-fit: contain; }
 .screen-control-preview-dialog > button { align-self: flex-end; }
 @media (max-width: 760px) { .screen-control-form-grid { grid-template-columns: 1fr; } .screen-control-heading, .screen-control-section-heading, .screen-control-submit, .screen-control-group header { align-items: flex-start; flex-direction: column; } .screen-control-section-heading { gap: 8px; } .screen-control-panel .card { padding: 16px; } }
+
+.screen-control-participant-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  cursor: pointer;
+}
+
+.screen-control-original-dialog {
+  width: min(1000px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #fff;
+  color: #172033;
+}
+
+.screen-control-original-dialog::backdrop { background: rgb(15 23 42 / 62%); }
+.screen-control-original-dialog header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.screen-control-original-dialog strong { margin-right: auto; overflow-wrap: anywhere; }
+.screen-control-original-dialog img {
+  display: block;
+  width: 100%;
+  max-height: calc(100vh - 125px);
+  object-fit: contain;
+}

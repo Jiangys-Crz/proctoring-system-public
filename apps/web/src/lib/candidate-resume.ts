@@ -3,11 +3,12 @@ import { prisma } from './db';
 import { effectiveEnd } from './contest-rules';
 import { isPublicTestExam } from './public-test';
 import { LoginFlowError } from './room-login-policy';
+import { stopTerminalSessionMedia } from './session-media-lifecycle';
 
 export async function resumeCandidateExam(candidateId: string, actor: User, sessionId?: string) {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await prisma.$transaction(async tx => {
+      const { result, closedSessionIds } = await prisma.$transaction(async tx => {
         // Match heartbeat/health writes: lock sessions before their candidate.
         await tx.$queryRaw`SELECT id FROM ClientSession WHERE candidateId = ${candidateId} ORDER BY id FOR UPDATE`;
         await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${candidateId} FOR UPDATE`;
@@ -23,8 +24,11 @@ export async function resumeCandidateExam(candidateId: string, actor: User, sess
         const requiresRelogin = candidate.status === 'FINISHED' || !await tx.clientSession.count({
           where: { candidateId, status: { not: 'FINISHED' }, revokedAt: null }
         });
+        let closedSessionIds: string[] = [];
         if (candidate.status === 'FINISHED') {
           // Ended tokens remain ended. Resuming requires a fresh, reviewed login.
+          const active = await tx.clientSession.findMany({ where: { candidateId, status: { not: 'FINISHED' } }, select: { id: true } });
+          closedSessionIds = active.map(row => row.id);
           await tx.clientSession.updateMany({
             where: { candidateId, status: { not: 'FINISHED' } },
             data: { status: 'FINISHED', endedAt: now, lockdown: false, lockdownReason: null }
@@ -39,8 +43,10 @@ export async function resumeCandidateExam(candidateId: string, actor: User, sess
           type: 'MANUAL_NOTE', severity: 3,
           message: `监考老师 ${actor.realName || actor.username || actor.numberId || actor.id} 已允许该考生继续考试${startedAt ? '，保留原考试计时' : '，允许超过最晚开考时间后登录并确认开始'}${requiresRelogin ? '，请重新登录' : ''}`
         } });
-        return { candidateId, lateStartAllowedAt: updated.lateStartAllowedAt, requiresRelogin };
+        return { result: { candidateId, lateStartAllowedAt: updated.lateStartAllowedAt, requiresRelogin }, closedSessionIds };
       }, { isolationLevel: 'ReadCommitted', maxWait: 10_000, timeout: 15_000 });
+      await stopTerminalSessionMedia(closedSessionIds);
+      return result;
     } catch (error) {
       if (attempt >= 2 || !error || typeof error !== 'object' || !('code' in error) || error.code !== 'P2034') throw error;
       await new Promise(resolve => setTimeout(resolve, 20 * (attempt + 1)));

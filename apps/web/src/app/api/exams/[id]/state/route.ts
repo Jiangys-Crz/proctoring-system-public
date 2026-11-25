@@ -5,6 +5,7 @@ import { loadMonitorData, loadMonitorExam } from '@/lib/monitor-state-data';
 import { finalizeEndedExam, markStaleSessionsOffline } from '@/lib/session-health';
 import { publicClientSession } from '@/lib/client-auth';
 import { publicObjectUrl } from '@/lib/storage';
+import { isSharedLiveFramePath } from '@/lib/live-frame-path';
 import { options, fail, ok, toErrorMessage } from '@/lib/http';
 import { flexibleExam } from '@/lib/contest-rules';
 import { evidenceForAlerts } from '@/lib/alert-evidence';
@@ -27,6 +28,7 @@ async function loadState(_request: Request, context: { params: Promise<{ id: str
     }
     const { candidates, loginRequests, sessions, alerts, mediaSegments, rooms, cheatingRecords, printJobs, liveFrames } =
       await loadMonitorData(id, user.id, manageable);
+    const availableLiveSessions = new Set(sessions.filter(session => !session.revokedAt && session.status !== 'FINISHED').map(session => session.id));
 
     const [evidence, liveStatus] = await Promise.all([evidenceForAlerts(alerts), monitorLiveStatus(sessions)]);
     const [safeLoginRequests, safeAlerts, safeMediaSegments, safeLiveFrames] = await Promise.all([
@@ -51,7 +53,7 @@ async function loadState(_request: Request, context: { params: Promise<{ id: str
         }))
       ),
       Promise.all(
-        liveFrames.map(async (item) => ({
+        liveFrames.filter(item => availableLiveSessions.has(item.sessionId) && !isSharedLiveFramePath(item.objectPath)).map(async (item) => ({
           ...item,
           objectPath: (await publicObjectUrl(item.objectPath)) || item.objectPath
         }))

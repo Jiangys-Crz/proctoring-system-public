@@ -38,7 +38,7 @@ function harness(request: (path: string, token: string, init?: RequestInit) => P
     form: {}, identityPhoto: null, roomVideo: null,
     joiningPairRef: { current: false }, testDisconnectingRef: { current: false },
     connectionGenerationRef: { current: 0 }, captureOwnedElsewhereRef: { current: false },
-    recordingBuffersRef: { current: new Map() }, readWithDeadline,
+    recordingBuffersRef: { current: new Map() }, heartbeatFailuresRef: { current: 0 }, readWithDeadline,
     trustedApiBase: (_configured: string, base: string) => base,
     isExpiredClientSessionError,
     ClientApi: class {

@@ -11,6 +11,7 @@ import { getStorageSettings } from '@/lib/settings';
 import type { Prisma } from '@prisma/client';
 import { publicClientSession } from '@/lib/client-auth';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
+import { stopTerminalSessionMedia } from '@/lib/session-media-lifecycle';
 
 const ReviewSchema = z.object({
   approved: z.boolean(),
@@ -50,6 +51,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!input.approved) {
       const rejected = await withSessionWrite(boundSession.id, async (tx) => {
         await requirePending(tx);
+        const linked = await tx.clientSession.findMany({ where: { loginRequestId: id }, select: { id: true } });
         const updated = await tx.loginRequest.update({
           where: { id },
           data: {
@@ -67,9 +69,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           where: { loginRequestId: id },
           data: { status: 'FINISHED', endedAt: new Date(), revokedAt: new Date(), desktopTokenHash: null, miniProgramTokenHash: null, lockdown: false, lockdownReason: null }
         });
-        return updated;
+        return { updated, sessionIds: linked.map(item => item.id) };
       });
-      return ok(rejected);
+      await stopTerminalSessionMedia(rejected.sessionIds);
+      return ok(rejected.updated);
     }
 
     const pairing = loginRequest.pairingSessions[0];

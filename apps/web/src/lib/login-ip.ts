@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import type { Prisma } from '@prisma/client';
 import { LoginFlowError } from './room-login-policy';
+import { candidateLoginIpEnabled } from './room-login-ip';
 
 export function normalizeLoginIp(input: string | null | undefined): string | null {
   const trimmed = input?.trim() || '';
@@ -37,12 +38,12 @@ export function assertLoginIp(enabled: boolean, boundIp: string | null, incoming
  * Row locking makes an unlock usable by exactly the next successful login. */
 export async function bindCandidateLoginIp(tx: Prisma.TransactionClient, examId: string, candidateId: string, incomingIp: string | null) {
   await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${candidateId} FOR UPDATE`;
-  const [exam, candidate] = await Promise.all([
-    tx.exam.findUnique({ where: { id: examId }, select: { ipLoginRestrictionEnabled: true } }),
+  const [enabled, candidate] = await Promise.all([
+    candidateLoginIpEnabled(tx, examId, candidateId),
     tx.candidate.findUnique({ where: { id: candidateId }, select: { examId: true, loginIp: true } })
   ]);
-  if (!exam || !candidate || candidate.examId !== examId) throw new LoginFlowError('考生不存在', 404);
-  assertLoginIp(exam.ipLoginRestrictionEnabled, candidate.loginIp, incomingIp);
+  if (!candidate || candidate.examId !== examId) throw new LoginFlowError('考生不存在', 404);
+  assertLoginIp(enabled, candidate.loginIp, incomingIp);
   // While disabled, record the latest successful login so enabling the switch
   // immediately restricts subsequent logins to that IP.
   if (incomingIp) await tx.candidate.update({ where: { id: candidateId }, data: {

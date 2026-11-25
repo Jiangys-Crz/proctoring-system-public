@@ -5,6 +5,22 @@ import { hydroBrowserTarget } from './hydro-browser';
 
 export class ExamSettingsError extends Error {}
 
+export function assertNovaJudgeOriginKey(currentBaseUrl: string, nextOrigin: string, suppliedKey?: string | null) {
+  if (suppliedKey?.trim()) return;
+  let currentOrigin: string | undefined;
+  try { currentOrigin = novaJudgeOrigin(currentBaseUrl); } catch { /* An invalid legacy origin cannot authorize key reuse. */ }
+  if (currentOrigin !== nextOrigin) throw new ExamSettingsError('更换 NovaJudge 站点时，请填写该站点的外榜 API Key');
+}
+
+export function sameUrlOrigin(left: string, right: string) {
+  try { return new URL(left).origin === new URL(right).origin; } catch { return false; }
+}
+
+export function assertHydroBrowserOriginKey(currentBaseUrl: string, nextBaseUrl: string, suppliedKey?: string | null) {
+  if (suppliedKey?.trim()) return;
+  if (!sameUrlOrigin(currentBaseUrl, nextBaseUrl)) throw new ExamSettingsError('更换 HydroOJ 站点时，请填写该站点的监考插件 API-Key');
+}
+
 // Both creation and editing calculate authoritative times on the server.
 export function normalizeExamSettings(input: Omit<CreateExamInput, 'contestRule'> & { contestRule: CreateExamInput['contestRule'] | 'ACM' }) {
   const nova = input.platform === 'NOVAJUDGE';
@@ -18,7 +34,11 @@ export function normalizeExamSettings(input: Omit<CreateExamInput, 'contestRule'
   if (input.platform === 'HYDRO_BROWSER') {
     try { platformBaseUrl = hydroBrowserTarget(input.platformBaseUrl, input.platformContestId).base; }
     catch (error) { throw new ExamSettingsError(error instanceof Error ? error.message : 'HydroOJ 配置无效'); }
-    if (input.externalBoardEnabled) throw new ExamSettingsError('HydroOJ 浏览器考试请在 HydroOJ 查看榜单');
+  }
+  const hydroBrowserEventFeedApiKey = input.platform === 'HYDRO_BROWSER'
+    ? input.hydroBrowserEventFeedApiKey?.trim() || null : null;
+  if (hydroBrowserEventFeedApiKey && !/^[\x21-\x7e]{32,1024}$/.test(hydroBrowserEventFeedApiKey)) {
+    throw new ExamSettingsError('HydroOJ EventFeed 密钥应为 32 到 1024 个可打印字符');
   }
   if (browser && input.problemIds?.length) {
     const platform = browserExamPlatformName(input.platform);
@@ -47,6 +67,8 @@ export function normalizeExamSettings(input: Omit<CreateExamInput, 'contestRule'
     platformContestId: nova ? String(novaJudgeContestId(input.platformContestId))
       : input.platform === 'HYDRO_BROWSER' ? input.platformContestId.toLowerCase() : 'local',
     novaJudgeApiKey: nova ? input.novaJudgeApiKey!.trim() : null,
+    hydroBrowserApiKey: input.platform === 'HYDRO_BROWSER' ? input.hydroBrowserApiKey?.trim() || null : null,
+    hydroBrowserEventFeedApiKey,
     externalBoardEnabled: input.externalBoardEnabled,
     externalBoardIntervalSeconds: input.externalBoardIntervalSeconds,
     externalBoardBaseUrl,

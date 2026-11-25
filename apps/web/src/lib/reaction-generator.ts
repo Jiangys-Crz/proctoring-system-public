@@ -31,7 +31,7 @@ export type ReactionGeneratorInput = {
   };
 };
 
-export type ReactionVideoProbe = { duration: number; width: number; height: number; codec: string; bytes: number };
+export type ReactionVideoProbe = { duration: number; width: number; height: number; codec: string; bytes: number; hasAudio?: boolean };
 export type ReactionGenerationWindow = ReturnType<typeof planReactionGeneration>;
 export type ReactionGenerationResult = ReactionVideoProbe & { generationWindow: ReactionGenerationWindow;
   cameraSource: 'recording' | 'placeholder'; cameraPlaceholderReason: ReactionGeneratorInput['cameraPlaceholderReason'] | null;
@@ -101,7 +101,7 @@ export async function probeReactionVideo(file: string): Promise<ReactionVideoPro
   const video = result.streams?.find((stream) => stream.codec_type === 'video');
   const duration = Number(video?.duration || result.format?.duration);
   if (!video?.width || !video.height || !video.codec_name || !Number.isFinite(duration) || duration <= 0) throw new Error('REACTION_VIDEO_INVALID');
-  return { duration, width: video.width, height: video.height, codec: video.codec_name, bytes: info.size };
+  return { duration, width: video.width, height: video.height, codec: video.codec_name, bytes: info.size, hasAudio: result.streams?.some(stream => stream.codec_type === 'audio') === true };
 }
 
 async function validatePlayable(file: string) {
@@ -194,7 +194,21 @@ export async function generateReactionVideo(input: ReactionGeneratorInput): Prom
     const timeout = Number.isFinite(configuredTimeout) ? Math.max(30, Math.min(7200, configuredTimeout)) * 1000 : 1_800_000;
     await run(python, [adapter, specFile], root, timeout);
     const finalOutput = path.join(temporary, 'reaction.mp4');
-    await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', officialOutput, '-t', String(duration), '-c', 'copy', '-movflags', '+faststart', finalOutput]);
+    const official = await probeReactionVideo(officialOutput);
+    const audioInputs = desktop.hasAudio ? ['-i', path.resolve(input.desktopPath)] : [];
+    const audioFilters: string[] = [];
+    if (desktop.hasAudio) audioFilters.push(`[1:a:0]asetpts=PTS-STARTPTS,aresample=48000,apad,atrim=duration=${duration}[mic]`);
+    if (official.hasAudio) audioFilters.push(`[0:a:0]asetpts=PTS-STARTPTS,aresample=48000,volume=${camera?.hasAudio ? 1 : 2.5},apad,atrim=duration=${duration}[effect]`);
+    // Desktop microphone audio is recorded with the screen, whereas the
+    // upstream compositor only reads webcam audio. Preserve it even when a
+    // partial clip ends before the judgement sound is allowed to play.
+    if (audioFilters.length) {
+      const mix = desktop.hasAudio && official.hasAudio ? '[mic][effect]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,' : desktop.hasAudio ? '[mic]' : '[effect]';
+      audioFilters.push(`${mix}alimiter=limit=0.95:level=0:latency=1[audio]`);
+      await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', officialOutput, ...audioInputs,
+        '-filter_complex_threads', '2', '-filter_complex', audioFilters.join(';'), '-map', '0:v:0', '-map', '[audio]', '-t', String(duration),
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-movflags', '+faststart', finalOutput]);
+    } else await run(process.env.FFMPEG_PATH || 'ffmpeg', ['-nostdin', '-v', 'error', '-y', '-i', officialOutput, '-t', String(duration), '-c', 'copy', '-movflags', '+faststart', finalOutput]);
     const output = await validatePlayable(finalOutput);
     if (output.width !== 1080 || output.height !== 1920 || output.codec !== 'h264' || Math.abs(output.duration - duration) > 0.25) throw new Error('REACTION_GENERATOR_OUTPUT_INVALID');
     if (input.allowPartial && output.duration > generationWindow.minimumAvailableDurationSeconds + 1e-6) throw new Error('REACTION_GENERATOR_OUTPUT_EXCEEDS_AVAILABLE_VIDEO');

@@ -23,9 +23,10 @@ const state = patch => {
   const values = { IsWindows7: '$true', ServicePack: '1', PowerShellVersion: "(New-Object Version('2.0'))", NetRelease: '0', Wmf3Installed: '$false', PendingReboot: '$false', Is64BitOS: '$true', Is64BitProcess: '$true', ...patch };
   return '@{ ' + Object.entries(values).map(([key, value]) => `${key}=${value}`).join('; ') + ' }';
 };
-function simulate({ states = [win7()], codes = [], checkOnly = false, admin = true, verificationFailure = false } = {}) {
+function simulate({ states = [win7()], codes = [], checkOnly = false, admin = true, verificationFailure = false,
+  requireUniversalCrt = false } = {}) {
   return powershell(`
-    . $env:PREREQUISITE_SCRIPT -LibraryOnly
+    . $env:PREREQUISITE_SCRIPT -LibraryOnly ${requireUniversalCrt ? '-RequireUniversalCrt' : ''}
     $script:States=@(${states.join(',')}); $script:StateReads=0
     $script:Codes=@(${codes.join(',')}); $script:CodeIndex=0; $script:Calls=@(); $script:Verified=@()
     function Get-WindowsPrerequisiteState {
@@ -33,7 +34,7 @@ function simulate({ states = [win7()], codes = [], checkOnly = false, admin = tr
       return $script:States[$index]
     }
     function Test-PrerequisiteAdministrator { return $${admin} }
-    function Read-PrerequisiteManifest { return @{ 'dotnet452.exe'='hash'; 'wmf51-x86.msu'='hash'; 'wmf51-x64.msu'='hash' } }
+    function Read-PrerequisiteManifest { return @{ 'dotnet452.exe'='hash'; 'wmf51-x86.msu'='hash'; 'wmf51-x64.msu'='hash'; 'ucrt-x86.msu'='hash'; 'ucrt-x64.msu'='hash' } }
     function Assert-TrustedPrerequisitePackage($Filename, $ExpectedHash) {
       $script:Verified+=([IO.Path]::GetFileName($Filename))
       ${verificationFailure ? "throw 'Signature verification rejected the package.'" : ''}
@@ -69,6 +70,28 @@ test('CheckOnly never installs, validates packages, or requires the offline reso
     assert.deepEqual(result.calls, []);
     assert.deepEqual(result.verified, []);
   }
+});
+
+test('wx Win7 checks the Universal CRT before replacing the client and leaves legacy bundling unchanged', windows, () => {
+  const currentPowerShell = { PowerShellVersion: "(New-Object Version('5.1'))", NetRelease: '379893' };
+  const missing = state({ ...currentPowerShell, UniversalCrtReady: '$false' });
+  assert.equal(simulate({ states: [missing], checkOnly: true }).code, 0);
+  assert.equal(simulate({ states: [missing], checkOnly: true, requireUniversalCrt: true }).code, 2);
+  assert.equal(simulate({ states: ['@{IsWindows7=$false}'], requireUniversalCrt: true }).code, 0);
+  for (const [bits, x64] of [['x64', '$true'], ['x86', '$false']]) {
+    const starting = state({ ...currentPowerShell, Is64BitOS: x64, UniversalCrtReady: '$false' });
+    const installed = state({ ...currentPowerShell, Is64BitOS: x64, UniversalCrtReady: '$true' });
+    const ready = simulate({ states: [starting, installed], codes: [0], requireUniversalCrt: true });
+    assert.equal(ready.code, 0);
+    assert.deepEqual(ready.verified, [`ucrt-${bits}.msu`]);
+    assert.match(ready.calls[0].file, /\\wusa\.exe$/i);
+    assert.equal(ready.calls[0].arguments, `"C:\\offline bundle\\ucrt-${bits}.msu" /quiet /norestart`);
+  }
+  assert.equal(simulate({ states: [missing], codes: [3010], requireUniversalCrt: true }).code, 3010);
+  assert.equal(simulate({ states: [missing], codes: [2359302], requireUniversalCrt: true }).code, 1);
+  const badSignature = simulate({ states: [missing], verificationFailure: true, requireUniversalCrt: true });
+  assert.equal(badSignature.code, 1);
+  assert.deepEqual(badSignature.calls, []);
 });
 
 test('a current Win7 environment skips packages while unprepared, WMF3 and pending restart states remain blocked', windows, () => {

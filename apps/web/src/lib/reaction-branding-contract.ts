@@ -16,7 +16,7 @@ export type ReactionBrandingLogoSelection = {
   logoId: string | null;
   basis: 'system-organization' | 'system-default' | 'built-in-default';
   organizationName: string | null;
-  normalizedSchoolName: string | null;
+  normalizedOrganizationName: string | null;
 };
 export function normalizeReactionOrganizationName(value: string) {
   return value.normalize('NFKC').trim().replace(/\s+/gu, ' ');

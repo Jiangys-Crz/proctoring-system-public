@@ -11,6 +11,7 @@ import { verifyLiveApiReadToken } from '@/lib/live-api-token';
 import { verifyVoiceMediaToken } from '@/lib/voice-call-token';
 import { voiceCallEndReason } from '@/lib/voice-call';
 import { canAccessCandidate } from '@/lib/permissions';
+import { authorizeContestLiveMediaToken } from '@/lib/contest-live-media';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,11 +50,15 @@ export async function POST(request: Request) {
   if (!match) return unauthorized();
   const [, sessionId, channel] = match;
   if (parsed.data.action === 'read' && ['hls', 'webrtc'].includes(parsed.data.protocol)) {
+    if (parsed.data.token.startsWith('contest-live.')) {
+      if (parsed.data.protocol !== 'webrtc' || !await authorizeContestLiveMediaToken(parsed.data.token, sessionId, channel)) return unauthorized();
+      return new Response(null, { status: 204 });
+    }
     const liveClaims = verifyLiveApiReadToken(parsed.data.token, sessionId, channel);
     if (liveClaims) {
       const key = await prisma.liveApiKey.findUnique({ where: { id: liveClaims.keyId }, select: { enabled: true } });
       if (!key?.enabled) return unauthorized();
-      const session = await prisma.clientSession.findUnique({ where: { id: sessionId }, select: { examId: true, candidateId: true, status: true, revokedAt: true } });
+      const session = await prisma.clientSession.findUnique({ where: { id: sessionId }, select: { examId: true, candidateId: true, startedAt: true, status: true, revokedAt: true } });
       if (!session || !['APPROVED', 'IN_EXAM', 'LOCKED', 'OFFLINE'].includes(session.status) || !await canPublishChannel(session, channel)) return unauthorized();
       return new Response(null, { status: 204 });
     }
@@ -68,7 +73,7 @@ export async function POST(request: Request) {
   if (parsed.data.action !== 'publish' || !['rtmp', 'webrtc'].includes(parsed.data.protocol)) return unauthorized();
   const session = await prisma.clientSession.findUnique({
     where: { id: sessionId },
-    select: { id: true, examId: true, candidateId: true, status: true, revokedAt: true, desktopTokenHash: true, miniProgramTokenHash: true }
+    select: { id: true, examId: true, candidateId: true, startedAt: true, status: true, revokedAt: true, desktopTokenHash: true, miniProgramTokenHash: true }
   });
   if (!session || session.status === 'FINISHED') return unauthorized();
   if (!verifyMediaPublishToken(parsed.data.token, session, channel) || !await canPublishChannel(session, channel)) return unauthorized();

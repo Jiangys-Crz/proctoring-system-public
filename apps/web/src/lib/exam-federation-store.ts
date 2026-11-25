@@ -3,6 +3,7 @@ import { Prisma, type ContestSubmission, type ExamFederation } from '@prisma/cli
 import { prisma } from './db';
 import { assertPlatformLease } from './platform-sync-lock';
 import { syncProblemNumber } from './exam-federation-problems';
+import { sameJudgement } from './contest-judgement';
 import { compareSnapshotVersion, digest, FederationError, SnapshotSchema, SYNC_BATCH, SYNC_BYTES, type SyncSnapshot } from './exam-federation-protocol';
 
 export const federationChange = () => ({ federationDirty: true, federationAttemptAt: null, federationError: null, federationRevision: { increment: 1 }, federationWriteToken: randomUUID() } as const);
@@ -78,7 +79,7 @@ export async function materializeSubmission(tx: Prisma.TransactionClient, config
     include: { problem: { select: { order: true, hydroProblemId: true, syncKey: true } }, candidate: { select: { examNumber: true, syncKey: true } } } });
   if (row) await materializeRow(tx, config, row, syncProblemNumber(config));
 }
-/** Called only while holding the Exam lock. Imports never acquire a local Hydro record or enter its judge queue. */
+/** Called only while holding the Exam lock. New imports never acquire a local Hydro record or enter its judge queue. */
 export async function mergeSnapshots(tx: Prisma.TransactionClient, config: ExamFederation, entries: SyncSnapshot[], sourceNodeId?: string) {
   const number = syncProblemNumber(config);
   for (const value of entries) {
@@ -120,16 +121,24 @@ export async function mergeSnapshots(tx: Prisma.TransactionClient, config: ExamF
     // Points and results travel in independent streams. Preserve an already
     // valid historical grade even if a points edit arrived before/after it.
     // New manual grades are bounded by the grading endpoint at the writer.
+    // A peer can change just the manual grade. Keep this node's Hydro record
+    // and queued/claimed task when the underlying judgement is unchanged.
+    // Actual remote rejudges/cancellations invalidate those local handles.
+    const hasLocalJudge = occupied && (occupied.hydroRecordId || occupied.deferredJudge || occupied.judgeClaimedAt || occupied.judgeError || occupied.judgeForced);
+    const localJudge = hasLocalJudge && sameJudgement(occupied, value) ? {
+      hydroRecordId: occupied.hydroRecordId, deferredJudge: occupied.deferredJudge,
+      judgeClaimedAt: occupied.judgeClaimedAt, judgeError: occupied.judgeError, judgeForced: occupied.judgeForced,
+    } : { hydroRecordId: null, deferredJudge: false, judgeClaimedAt: null, judgeError: null, judgeForced: false };
     const data = {
       examId: config.examId, candidateId: candidate.id, problemId: problem.id, candidateExamNumber: candidate.examNumber,
       candidateName: candidate.name, teamName: candidate.teamName, teamMembers: candidate.teamMembers, teamMemberStudentIds: candidate.teamMemberStudentIds,
-      actorKey: `${exam.examCode}:${candidate.examNumber}`, hydroRecordId: null, deferredJudge: false, judgeClaimedAt: null, judgeError: null,
+      actorKey: `${exam.examCode}:${candidate.examNumber}`, ...localJudge,
       lang: value.lang, code: value.code, status: value.status, statusText: value.statusText, score: value.score, manualScore: value.manualScore,
       manualScoreUpdatedAt: value.manualScoreUpdatedAt ? new Date(value.manualScoreUpdatedAt) : null,
       totalTestCases: value.totalTestCases, passedTestCases: value.passedTestCases, time: value.time, memory: value.memory,
       testCases: (value.testCases ?? Prisma.JsonNull) as Prisma.InputJsonValue, subtasks: (value.subtasks ?? Prisma.JsonNull) as Prisma.InputJsonValue,
       judgeAt: value.judgeAt ? new Date(value.judgeAt) : null, createdAt: new Date(value.createdAt),
-      syncImported: occupied?.syncImported ?? true, syncOriginNodeId: value.originNodeId, federationDirty: false, federationAttemptAt: null, federationError: null, federationRevision: value.revision - 1, federationWriteToken: randomUUID(), judgeForced: false,
+      syncImported: occupied?.syncImported ?? true, syncOriginNodeId: value.originNodeId, federationDirty: false, federationAttemptAt: null, federationError: null, federationRevision: value.revision - 1, federationWriteToken: randomUUID(),
     };
     if (occupied) {
       const changed = await tx.contestSubmission.updateMany({ where: { id: value.id, examId: config.examId, syncOriginNodeId: value.originNodeId }, data });

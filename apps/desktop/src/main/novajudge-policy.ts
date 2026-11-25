@@ -31,11 +31,18 @@ export function novaJudgeFileUrl(value: string, scope: NovaJudgeScope) {
   } catch { return false; }
 }
 
+export function novaJudgeInlinePdf(value: string, scope: NovaJudgeScope) {
+  try {
+    const url = new URL(value);
+    return url.origin === scope.origin && url.pathname === '/api/contests/' + scope.contestId + '/editorial';
+  } catch { return false; }
+}
+
 export function novaJudgeNavigationAllowed(value: string, scope: NovaJudgeScope) {
   try {
     const url = new URL(value);
     const prefix = `/contest/${scope.contestId}`;
-    return url.origin === scope.origin && (url.pathname === prefix || url.pathname.startsWith(`${prefix}/`));
+    return url.origin === scope.origin && (url.pathname === prefix || url.pathname.startsWith(`${prefix}/`) || novaJudgeInlinePdf(value, scope));
   } catch { return false; }
 }
 

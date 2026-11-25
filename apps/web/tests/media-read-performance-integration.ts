@@ -11,7 +11,9 @@ assert.match(database.pathname, /^\/proctor_[a-z_]*qa(?:_[a-z_]+)?$/, 'requires 
 const db = new PrismaClient({ datasourceUrl: process.env.PERFORMANCE_TEST_DATABASE_URL, log: [{ level: 'query', emit: 'event' }] });
 (globalThis as typeof globalThis & { prisma?: PrismaClient }).prisma = db;
 const { authorizeMediaRead } = await import('../src/lib/media-read-access');
-const { canManageExam } = await import('../src/lib/permissions');
+const { loadMonitorData } = await import('../src/lib/monitor-state-data');
+const { canAccessCandidate, canManageExam, candidateRoomScope, proctoredCandidateIds } = await import('../src/lib/permissions');
+const { effectiveEnd } = await import('../src/lib/contest-rules');
 const channels = ['DESKTOP_SCREEN', 'DESKTOP_CAMERA', 'MOBILE_CAMERA'];
 let queries = 0;
 db.$on('query', () => { queries++; });
@@ -22,11 +24,15 @@ const examIds: string[] = [], userIds: string[] = [];
 // the optimized SQL must preserve its permission and room-policy decisions.
 async function previousAuthorization(user: User, sessionId: string, channel: string, checkRequired = true) {
   const session = await db.clientSession.findUnique({ where: { id: sessionId },
-    select: { candidateId: true, examId: true, exam: { select: { requireFrontCamera: true, requireMiniProgram: true } } } });
+    select: { candidateId: true, examId: true, status: true, revokedAt: true, startedAt: true,
+      candidate: { select: { startedAt: true } },
+      exam: { select: { requireFrontCamera: true, requireMiniProgram: true, startAt: true, latestStartAt: true, endAt: true,
+        durationMinutes: true, contestRule: true, flexible: true } } } });
   if (!session) return 404;
   if (!(await canManageExam(user, session.examId)) && !(await db.examRoomCandidate.count({ where: {
     candidateId: session.candidateId, room: { examId: session.examId, proctors: { some: { userId: user.id } } }
   } }))) return 403;
+  if (checkRequired && (session.revokedAt || session.status === 'FINISHED' || effectiveEnd(session.exam, session.candidate.startedAt || session.startedAt) <= new Date())) return 409;
   if (checkRequired && channel !== 'DESKTOP_SCREEN') {
     const room = await db.examRoom.findFirst({ where: { examId: session.examId, candidates: { some: { candidateId: session.candidateId } } },
       select: { requireFrontCamera: true, requireSecondCamera: true } });
@@ -76,6 +82,14 @@ try {
   await db.examRoomCandidate.createMany({ data: candidates.slice(0, 30).map((candidate, i) => ({ candidateId: candidate.id, roomId: rooms[i % 4].id })) });
   // Even a malformed cross-exam room assignment cannot grant stream access.
   await db.examRoomCandidate.create({ data: { candidateId: candidates[0].id, roomId: foreignRoom.id } });
+  assert.equal(await canAccessCandidate(otherExamProctor, candidates[0].id), false);
+  assert.equal(await canAccessCandidate(proctor, candidates[0].id), true);
+  assert.deepEqual(await proctoredCandidateIds(otherExamProctor.id), []);
+  assert.equal(await db.candidate.count({ where: { id: candidates[0].id, ...candidateRoomScope(exam.id, otherExamProctor.id) } }), 0);
+  assert.equal((await proctoredCandidateIds(proctor.id)).length, 30);
+  const foreignMonitor = await loadMonitorData(otherExam.id, otherExamProctor.id, false);
+  assert.equal(foreignMonitor.rooms.length, 1);
+  assert.deepEqual(foreignMonitor.rooms[0].candidates, [], 'a monitor must not list foreign candidates attached to its room');
   const sessions = candidates.map((candidate, i) => ({ id: `${prefix}-s${i}`, candidateId: candidate.id, examId: exam.id, status: 'IN_EXAM' as const }));
   await db.clientSession.createMany({ data: sessions });
 
@@ -108,8 +122,15 @@ try {
   await db.examAdministrator.delete({ where: { examId_userId: { examId: exam.id, userId: administrator.id } } });
   assert.equal(await currentAuthorization(administrator, sessions[0].id, 'DESKTOP_SCREEN'), 403, 'removed administrator loses access immediately');
   await db.clientSession.update({ where: { id: sessions[0].id }, data: { status: 'FINISHED', revokedAt: now } });
+  assert.equal(await currentAuthorization(creator, sessions[0].id, 'DESKTOP_SCREEN'), 409, 'revocation blocks the next live read');
+  assert.equal(await currentAuthorization(creator, sessions[0].id, 'DESKTOP_SCREEN', false), 200, 'resource cleanup survives revocation');
   await db.exam.update({ where: { id: exam.id }, data: { endAt: new Date(now.getTime() - 1) } });
-  assert.equal(await currentAuthorization(creator, sessions[0].id, 'DESKTOP_SCREEN'), await previousAuthorization(creator, sessions[0].id, 'DESKTOP_SCREEN'), 'read authorization preserves the existing historical-session behavior');
+  assert.equal(await currentAuthorization(creator, sessions[1].id, 'DESKTOP_SCREEN'), 409, 'the exam deadline stops live reads before the session is finalized');
+  await db.exam.update({ where: { id: exam.id }, data: { endAt: exam.endAt, flexible: true, contestRule: 'OI' } });
+  await db.candidate.update({ where: { id: candidates[1].id }, data: { startedAt: new Date(now.getTime() - 3_600_001) } });
+  assert.equal(await currentAuthorization(creator, sessions[1].id, 'DESKTOP_SCREEN'), 409, 'the individual deadline applies to flexible contests');
+  await db.candidate.update({ where: { id: candidates[1].id }, data: { startedAt: null } });
+  await db.clientSession.update({ where: { id: sessions[0].id }, data: { status: 'IN_EXAM', revokedAt: null } });
 
   await db.examRoom.updateMany({ where: { examId: exam.id }, data: { requireFrontCamera: true, requireSecondCamera: true } });
   async function measure(name: string, authorize: typeof previousAuthorization) {

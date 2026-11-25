@@ -1,6 +1,8 @@
-# NovaJudge 自动 Reaction
+# 自动 Reaction
 
-Reaction 默认关闭，仅适用于 NovaJudge 考试。考试详情 → Reaction 录像中开启；客户端必须更新到包含本次改动的版本。它复用现有桌面/摄像头采集、独立约 10 秒 MediaRecorder 片段、认证上传、MediaSegment 和本地/S3 存储。MediaMTX 不开启重复录制，也不新增 WHEP 录制服务。
+Reaction 默认关闭，支持 NovaJudge、本平台 Hydro 评测考试和 HydroOJ 原生浏览器比赛。考试详情 → Reaction 录像中开启；客户端必须更新到支持 Reaction 的版本。它复用现有桌面/摄像头采集、独立约 10 秒 MediaRecorder 片段、认证上传、MediaSegment 和本地/S3 存储。MediaMTX 不开启重复录制，也不新增 WHEP 录制服务。
+
+Hydro 的接入和升级步骤见 [Hydro Reaction](reaction-hydro.md)，原生 XCPC 使用 [独立 Hydro CCS](hydro-ccs.md) 与独立未封榜读取密钥，并保存判题前后名次。下文的 CCS 账号、Event Feed 路径、UUID 和 NovaJudge 排名细节专用于 NovaJudge。两类平台共用录像、外观、生成和权限控制。
 
 ## 先配置 CCS 授权：服务端 `.env`
 

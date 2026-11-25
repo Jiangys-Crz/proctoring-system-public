@@ -62,8 +62,8 @@ export async function prepareReactionExport(examId: string, signal: AbortSignal)
   if (!rows.length) throw new UploadSecurityError('暂无已生成的竖屏视频，请先生成视频', 409);
   const seen = new Set<string>();
   for (const row of rows) {
-    if (!isReactionSubmissionId(row.submissionId)) throw new UploadSecurityError('部分视频的 Submission UUID 无效，请检查原始提交记录', 409);
-    if (seen.has(row.submissionId.toLowerCase())) throw new UploadSecurityError('Submission UUID 重复，无法安全导出', 409);
+    if (!isReactionSubmissionId(row.submissionId)) throw new UploadSecurityError('部分视频的 Submission ID 无效，请检查原始提交记录', 409);
+    if (seen.has(row.submissionId.toLowerCase())) throw new UploadSecurityError('Submission ID 重复，无法安全导出', 409);
     seen.add(row.submissionId.toLowerCase());
     const key = row.reactionPath!;
     if (!key.startsWith('reactions/') || key.includes('\\') || key.includes('\0') || key.split('/').some(part => !part || part === '.' || part === '..')) throw new UploadSecurityError('录像存储路径无效', 409);
@@ -84,7 +84,8 @@ export async function prepareReactionExport(examId: string, signal: AbortSignal)
           local = await realpath(path.join(root, key));
           const relative = path.relative(root, local);
           if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) throw new Error('Invalid path');
-          const info = await stat(local);
+          // Uploaded recordings are runtime data, never part of the server bundle.
+          const info = await stat(/* turbopackIgnore: true */ local);
           if (!info.isFile()) throw new Error('Not a file');
           size = info.size;
         } else {
@@ -93,7 +94,7 @@ export async function prepareReactionExport(examId: string, signal: AbortSignal)
         }
         if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Invalid size');
         return { submissionId: row.submissionId, size, modifiedAt: row.updatedAt, open: async (abortSignal: AbortSignal) => {
-          if (local) return createReadStream(local, { signal: abortSignal });
+          if (local) return createReadStream(/* turbopackIgnore: true */ local, { signal: abortSignal });
           return openReactionExportS3Object(settings, key, abortSignal);
         } };
       })));

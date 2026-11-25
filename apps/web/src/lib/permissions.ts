@@ -1,4 +1,4 @@
-import type { User } from '@prisma/client';
+import type { Prisma, User } from '@prisma/client';
 import { prisma } from './db';
 
 export async function canManageExam(user: User, examId: string) {
@@ -51,6 +51,7 @@ export async function canAccessCandidate(user: User, candidateId: string) {
     where: {
       candidateId,
       room: {
+        examId: candidate.examId,
         proctors: {
           some: { userId: user.id }
         }
@@ -58,4 +59,18 @@ export async function canAccessCandidate(user: User, candidateId: string) {
     }
   });
   return count > 0;
+}
+
+export function candidateRoomScope(examId: string, userId: string): Prisma.CandidateWhereInput {
+  return { examId, rooms: { some: { room: { examId, proctors: { some: { userId } } } } } };
+}
+
+export async function proctoredCandidateIds(userId: string) {
+  const rows = await prisma.$queryRaw<{ candidateId: string }[]>`
+    SELECT DISTINCT rc.candidateId FROM ExamRoomCandidate rc
+    INNER JOIN Candidate c ON c.id = rc.candidateId
+    INNER JOIN ExamRoom r ON r.id = rc.roomId AND r.examId = c.examId
+    INNER JOIN ExamRoomProctor p ON p.roomId = r.id AND p.userId = ${userId}
+  `;
+  return rows.map(row => row.candidateId);
 }

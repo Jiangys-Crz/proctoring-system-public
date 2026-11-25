@@ -15,6 +15,6 @@ export function reactionSubmissionLabel(item: Pick<ReactionItemView, 'submission
 export function reactionExportBlockReason(summary?: ReactionExportSummary): string | null {
   if (!summary) return '正在读取本场导出信息';
   if (!summary.generatedCount) return '本场暂无已生成的竖屏视频';
-  if (summary.invalidSubmissionIds) return `有 ${summary.invalidSubmissionIds} 个已生成视频的 Submission UUID 无效，无法导出，请检查原始提交记录`;
+  if (summary.invalidSubmissionIds) return `有 ${summary.invalidSubmissionIds} 个已生成视频的 Submission ID 无效，无法导出，请检查原始提交记录`;
   return null;
 }

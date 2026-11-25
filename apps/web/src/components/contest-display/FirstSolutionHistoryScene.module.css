@@ -1,0 +1,148 @@
+.scene {
+  --solution-title-height: 3.3333vh;
+  --solution-header-height: 2vh;
+  --solution-row-height: 9.4667vh;
+  --solution-font-size: min(4.453vh, 5vw);
+  --solution-year-width: min(calc(3.22 * var(--solution-font-size)), 26vw);
+  --solution-logo-width: min(var(--solution-row-height), 15vw);
+  --solution-time-width: min(calc(2.22 * var(--solution-font-size)), 15vw);
+  --solution-inset: min(8px, .75vw);
+  --solution-stripe: #3c3c3c;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg, #000);
+  color: var(--fg, #fff);
+  font-family: Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.scene[data-theme='light'] { --solution-stripe: #c0c0c0; }
+
+.titleRow {
+  position: relative;
+  height: var(--solution-title-height);
+  text-align: center;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.title {
+  display: block;
+  font-size: min(4.62vh, 5vw);
+  transform: translateY(-.4vh);
+}
+
+.leftClock, .rightClock {
+  position: absolute;
+  top: 2px;
+  width: 22%;
+  font-size: min(2.625vh, 3.2vw);
+  white-space: nowrap;
+}
+
+.leftClock { left: 8.333%; transform: translateX(-50%); }
+.rightClock { right: 8.333%; transform: translateX(50%); }
+.leftClock[data-frozen], .rightClock[data-frozen] { color: var(--frozen-text, #69aaff); }
+
+.columns, .row {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: var(--solution-year-width) var(--solution-logo-width) minmax(0, 1fr) var(--solution-time-width);
+  padding-inline: var(--solution-inset);
+}
+
+.columns {
+  align-items: end;
+  height: var(--solution-header-height);
+  font-size: min(1.96vh, 2.9vw);
+  line-height: 1;
+  font-weight: 700;
+  border-bottom: 1px solid var(--fg, #fff);
+  padding-bottom: min(2px, .22vh);
+}
+
+.columns > :first-child { padding-left: min(1.2vw, 1.8vh); }
+.columns > :nth-child(2) { grid-column: 3; }
+.columns > :last-child { text-align: center; }
+
+.lanes {
+  position: relative;
+  height: calc(100vh - var(--solution-title-height) - var(--solution-header-height));
+  overflow: hidden;
+  background: repeating-linear-gradient(to bottom, var(--solution-stripe) 0 var(--solution-row-height),
+    transparent var(--solution-row-height) calc(2 * var(--solution-row-height)));
+}
+
+.row {
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--solution-row-height);
+  padding-top: min(5px, .5vh);
+  font-size: var(--solution-font-size);
+  font-weight: 700;
+  line-height: 1.04;
+  transform: translateY(calc(var(--solution-row) * var(--solution-row-height)));
+  transition: transform 650ms cubic-bezier(.25, .7, .3, 1);
+}
+
+.row[data-live] { animation: enter 650ms cubic-bezier(.25, .7, .3, 1) backwards; }
+
+.contestLabel, .team > :first-child, .duration {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.school {
+  display: grid;
+  height: calc(var(--solution-row-height) - min(5px, .5vh));
+  justify-items: center;
+  align-items: center;
+  padding-inline: 3%;
+}
+
+.school img {
+  width: 100%;
+  height: min(96%, var(--solution-logo-width));
+  object-fit: contain;
+}
+
+.team {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+}
+
+.duration { text-align: center; }
+
+.chip {
+  position: absolute;
+  top: 51%;
+  left: 0;
+  height: calc(var(--solution-row-height) / 2.5 - min(5px, .5vh));
+  width: min(7vw, 100%);
+  min-width: min(2.15em, 100%);
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border-radius: min(7px, .65vh);
+  background: var(--pending, #f6d900);
+  color: #fff;
+  font-size: min(1.82vh, 2.1vw);
+  text-shadow: 0 1px 1px #000;
+}
+
+.chip[data-status='first'] { background: #006400; border: 1px solid #00e600; }
+.chip[data-status='solved'] { background: var(--solved, #00e600); }
+.chip[data-status='failed'] { background: var(--rejected, #f00000); }
+.chip[data-status='frozen'] { background: var(--frozen, #246bd0); }
+
+.divider {
+  position: absolute;
+  inset: calc(var(--solution-row) * var(--solution-row-height)) 0 auto;
+  border-top: 1px solid var(--fg, #fff);
+}
+
+@keyframes enter { from { translate: 0 calc(2 * var(--solution-row-height)); opacity: 0; } }

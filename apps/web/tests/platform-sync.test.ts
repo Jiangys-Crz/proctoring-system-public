@@ -4,7 +4,7 @@ import test from 'node:test';
 import { hydroProblemDocId } from '../src/lib/hydro-problem-identity';
 import { parseCandidateCsv, mergeTeamCandidateRows } from '../src/lib/candidate-import';
 import { digest } from '../src/lib/exam-federation-protocol';
-import { comparePlatformVersion } from '../src/lib/platform-sync-protocol';
+import { comparePlatformVersion, PlatformExchangeSchema } from '../src/lib/platform-sync-protocol';
 import { scaledSubmissionScore } from '../src/lib/contest-rules';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
@@ -15,6 +15,13 @@ import * as asyncHooks from 'node:async_hooks';
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
 import * as problemAuthoring from '../../../hydro-plugin/cwnupaa-proctor-auth/problem-authoring';
+
+test('rolling peers can omit the capture hint, while new peers retain the pagination hint',()=>{
+ const legacy={action:'exchange',nodeId:'00000000-0000-4000-8000-000000000001',peerId:'00000000-0000-4000-8000-000000000002',after:'0',entries:[]};
+ assert.deepEqual(PlatformExchangeSchema.parse(legacy),legacy);
+ assert.deepEqual(PlatformExchangeSchema.parse({...legacy,captureChanges:false}),{...legacy,captureChanges:false});
+ assert.equal(PlatformExchangeSchema.safeParse({...legacy,captureChanges:'false'}).success,false);
+});
 
 test('Hydro custom pid never replaces its immutable numeric docId',()=>{
  assert.equal(hydroProblemDocId({docId:42,id:'L1-1'}),'42');assert.equal(hydroProblemDocId({id:'42'}),'42');

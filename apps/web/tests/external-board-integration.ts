@@ -84,7 +84,8 @@ try {
   assert.ok(+state.nextAttemptAt! - Date.now() > 119000, 'per-exam interval controls the next batch');
   const before = calls.length;
   await tick(exam.id);
-  assert.equal(calls.length, before, 'unchanged old records and problems are not resent');
+  assert.equal(calls.length, before + 1, 'unchanged old submissions are resent and unchanged problems are skipped');
+  assert.equal(calls.at(-1)!.body.submissions[0].rid, `proctor:${submission.id}`);
   await prisma.exam.update({ where: { id: exam.id }, data: { externalBoardApiKey: 'custom-push-key' } });
   expectedKey = 'custom-push-key'; await tick(exam.id);
   assert.equal(calls.at(-1)!.body.api_key, 'custom-push-key');
@@ -93,7 +94,9 @@ try {
   assert.equal(calls.at(-1)!.body.api_key, 'fixture-app-key', 'blank key falls back to external-login key');
   const oldCheckpoint = (await prisma.externalBoardSync.findUniqueOrThrow({ where: { examId: exam.id } })).syncedThrough;
 
-  await prisma.contestSubmission.update({ where: { id: submission.id }, data: { status: 2, statusText: 'Wrong Answer', score: 25 } });
+  await prisma.contestSubmission.update({ where: { id: submission.id }, data: {
+    status: 2, statusText: 'Wrong Answer', score: 25, updatedAt: new Date(Date.now() - 60_000),
+  } });
   mode = 'network'; await tick(exam.id);
   state = await prisma.externalBoardSync.findUniqueOrThrow({ where: { examId: exam.id } });
   assert.equal(+state.syncedThrough!, +oldCheckpoint!);
@@ -148,14 +151,46 @@ try {
     createdAt: new Date(+startAt + 120_000), updatedAt: stamp,
   })) });
   const pending = await prisma.contestSubmission.create({ data: { examId: exam.id, candidateId: candidate.id, problemId: exam.problems[0].id, lang: 'cpp', code: '// pending', createdAt: stamp, updatedAt: stamp } });
+  const beforeMultiPage = calls.length;
   await tick(exam.id);
-  assert.ok((await prisma.externalBoardSync.findUniqueOrThrow({ where: { examId: exam.id } })).scanUntil);
+  const midScan = await prisma.externalBoardSync.findUniqueOrThrow({ where: { examId: exam.id } });
+  assert.ok(midScan.scanUntil);
+  assert.ok(+midScan.nextAttemptAt! - Date.now() <= 1000, 'the next page is scheduled without waiting the full interval');
   await tick(exam.id);
   assert.equal(received.size, 56);
+  assert.equal(calls.slice(beforeMultiPage).flatMap(call => call.body.submissions ?? []).length, 56);
   assert.ok(calls.every(call => !call.body.submissions || call.body.submissions.length <= 50));
   assert.ok(!received.has(`proctor:${pending.id}`), 'pending results are not advertised as judged scores');
   await prisma.contestSubmission.update({ where: { id: pending.id }, data: { judgeAt: new Date(), status: 1, score: 200 } });
   await tick(exam.id); await tick(exam.id); assert.ok(received.has(`proctor:${pending.id}`));
+
+  const nova = await prisma.exam.create({ data: {
+    examCode: '2099010102', name: 'NovaJudge external board QA', startAt, latestStartAt: startAt, endAt, durationMinutes: 120,
+    platform: 'NOVAJUDGE', platformBaseUrl: 'https://nova-fixture.example', platformContestId: '1',
+    novaJudgeApiKey: 'nova-fixture-key', contestType: 'INDIVIDUAL', rules: '',
+    externalBoardEnabled: true, externalBoardBaseUrl: 'https://board-fixture.example/api', externalBoardEventId: '124',
+    candidates: { create: { examNumber: candidate.examNumber, password: 'qa-password', seatNo: '1' } },
+  } });
+  examIds.push(nova.id);
+  const targetFetch = globalThis.fetch;
+  const novaRecords = Array.from({ length: 55 }, (_, index) => ({
+    rid: index % 2 ? `A${index}` : `a${index}`, username: candidate.examNumber, problem: 'Nova problem',
+    status: 'Accepted', score: 100, submittedAt: new Date(+stamp - 1000).toISOString(),
+  }));
+  globalThis.fetch = async (url, options) => {
+    if (new URL(String(url)).hostname !== 'nova-fixture.example') return targetFetch(url, options);
+    return Response.json(String(url).endsWith('/problems') ? [{ displayId: 'A', name: 'Nova problem', score: 100 }] : novaRecords);
+  };
+  for (let round = 0; round < 2; round++) {
+    const beforeNova: number = calls.length;
+    await tick(nova.id);
+    await tick(nova.id);
+    const pushed: Array<{ rid: string }> = calls.slice(beforeNova).flatMap(call => call.body.submissions ?? []);
+    assert.equal(pushed.length, novaRecords.length);
+    assert.deepEqual(new Set(pushed.map(row => row.rid)), new Set(novaRecords.map(row => `novajudge:${nova.id}:${row.rid}`)));
+  }
+  globalThis.fetch = targetFetch;
+  await prisma.exam.update({ where: { id: nova.id }, data: { externalBoardEnabled: false } });
 
   // A second process cannot POST while the first owns the database lease.
   let release!: () => void, entered!: () => void;
@@ -205,7 +240,7 @@ try {
   assert.equal(readExternalBoardLogs(exam.id).length, 100);
   assert.equal(readExternalBoardLogs(exam.id)[0].message, 'retention fixture 104');
 
-  console.log('PASS: disabled gate, per-exam domain/event, payload ordering, incremental updates, retry checkpoints, manual scores, ignored results, target replay, switch checks, permission/count errors, durable pagination, pending judging, worker lease and transactional switch save.');
+  console.log('PASS: full submission replay, rejudge, retry, durable pagination, and transactional switch.');
 } finally {
   for (const id of examIds) cancelExternalBoardPush(id);
   globalThis.fetch = realFetch;

@@ -75,10 +75,12 @@ export const CreateExamSchema = z.object({
   platformBaseUrl: z.string().trim().max(512).default('http://localhost'),
   platformContestId: z.string().min(1).default('local'),
   novaJudgeApiKey: z.string().trim().max(2000).nullable().optional(),
+  hydroBrowserApiKey: z.string().trim().max(2000).nullable().optional(),
+  hydroBrowserEventFeedApiKey: z.string().trim().max(2000).nullable().optional(),
   novaJudgeTimezone: z.string().trim().max(100).default('Asia/Shanghai').refine(value => {
     try { new Intl.DateTimeFormat('en', { timeZone: value }); return true; } catch { return false; }
   }, 'NovaJudge 数据时区必须是有效的 IANA 时区'),
-  contestType: ContestTypeSchema,
+  contestType: ContestTypeSchema.default('INDIVIDUAL'),
   teamAccountMode: TeamAccountModeSchema.default('MEMBER_ACCOUNTS'),
   contestRule: ContestRuleSchema.default('IOI'),
   flexible: z.boolean().default(false),
@@ -151,7 +153,7 @@ export const DesktopPairRequestSchema = z.object({
   clientVersion: z.string().optional(),
   screenOk: z.boolean().optional().default(false),
   desktopCameraOk: z.boolean().optional().default(false),
-  peripheralsFingerprint: z.string().optional()
+  peripheralsFingerprint: z.string().trim().max(191).optional()
 });
 
 export const ClientReconnectSchema = z.object({
@@ -194,9 +196,12 @@ export const ClientHeartbeatSchema = z.object({
     networkRemotes: z.array(z.string()).optional(),
     peripheralsFingerprint: z.string().optional(),
     peripheralScanOk: z.boolean().optional(),
+    peripheralUnlockNonce: z.uuid().nullable().optional(),
     peripheralEvents: z.array(z.object({
       id: z.uuid(), action: z.enum(['INSERT', 'REMOVE']),
-      deviceId: z.string().max(2048).regex(/^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}[^\\]*\\[^\\]+$/i)
+      deviceId: z.string().max(2048).regex(/^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}[^\\]*\\[^\\]+$/i),
+      unlockNonce: z.uuid().nullable().optional(),
+      inventoryFingerprint: z.string().regex(/^usb-v6:[0-9a-f]{64}$/).optional()
     })).max(64).optional(),
     vmSignals: z.array(z.string()).optional()
   }).optional()

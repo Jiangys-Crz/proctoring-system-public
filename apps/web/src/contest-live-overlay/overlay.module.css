@@ -1,0 +1,36 @@
+:global(html):has(.overlay),
+:global(body):has(.overlay) {
+  background: transparent;
+  overflow: hidden;
+}
+.overlay {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  color: #fff;
+  font: 16px Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.canvas {
+  width: 1920px;
+  height: 1080px;
+  transform-origin: top left;
+}
+:where(.canvas) * {
+  box-sizing: content-box;
+  scrollbar-width: none;
+}
+.canvas *::-webkit-scrollbar {
+  display: none;
+}
+.notice {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: #242425;
+  font: 16px Helvetica, sans-serif;
+}

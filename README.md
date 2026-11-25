@@ -8,7 +8,19 @@
 首次部署请先阅读 [开源版本配置说明](OPEN_SOURCE.md)。文档和客户端中的 `example.org`、`example.test` 及局域网 IP 均为示例；请替换为自己的服务地址、密钥、AppID 和签名配置。仓库不提供现成的公网服务或安装包。
 
 
-从不含 Reaction 的旧版升级，或在新服务器启用 NovaJudge Reaction，请按下方 [Reaction 完整升级流程](#novajudge-reaction-自动录像与-ccs-授权) 完成数据库迁移、生成器安装、环境配置和独立 Recorder 部署。后台没有 CCS 账号密码输入框。
+从不含 Reaction 的旧版升级，请按下方 [Reaction 完整升级流程](#novajudge-reaction-自动录像与-ccs-授权) 完成数据库迁移、生成器安装和独立 Recorder 部署。NovaJudge 的 CCS 凭据在服务端环境配置；Hydro 原生 Reaction 使用独立 `hydro-ccs-api` 的未封榜读取密钥，见 [独立 CCS 接入](docs/hydro-ccs.md)。Hydro **直播** CCS 账号在 Hydro 系统设置中填写，ICPC Live 可以直接连接，无需 CDS。完整步骤和配置模板见 [Hydro XCPC 直播与 Reaction 使用部署说明](docs/hydro-live-deployment.md)。
+
+### Hydro 功能选择与文档入口
+
+| 使用方式 | 在哪里创建比赛、提交 | Reaction | CCS 直播数据 | 官网外榜推送 |
+| --- | --- | --- | --- | --- |
+| 本平台考试，Hydro 只负责评测（`HYDRO/local`） | 监考后台创建考试，客户端使用本平台答题页 | 支持录制、生成、导出；暂不显示前后名次 | 本次未提供此模式的 CCS | 支持，在本场「外榜推送」开启 |
+| HydroOJ（监考与浏览器）（`HYDRO_BROWSER`） | Hydro 创建原生比赛，监考考试关联其 ID，客户端打开 Hydro 题目 | 固定时间 XCPC 支持；可靠基线后的判题保存前后名次 | 支持原生固定时间 `acm`（XCPC），ICPC Live 可直连 | 支持，在同一「外榜推送」开启 |
+
+- **搭建直播与 Reaction**：[完整部署、鉴权、ICPC Live/CDS、WHEP、OBS 和启动顺序](docs/hydro-live-deployment.md)。
+- **只配置录像**：[Hydro Reaction 启用步骤与名次范围](docs/reaction-hydro.md)、[MP4/ZIP 导出](docs/reaction-export.md)。
+- **只配置官网榜单**：[Hydro 外榜开关、账号匹配与接收接口](docs/hydro-external-board.md)。
+- **接入其他直播软件**：[CCS 资源、封榜规则与事件续传](docs/hydro-ccs.md)、[ICPC Live/CDS 配置模板](deployment/icpclive-hydro)。
 
 ## 项目结构
 
@@ -16,7 +28,7 @@
 - `apps/client-web`：独立考生网页端（默认端口 `4032`），完整替代微信小程序并通过 WHIP 推送第二机位视频。
 - `apps/desktop`：Windows/macOS 桌面监考客户端，基于 Electron 22，兼容 Windows 7 到 Windows 11。
 - `apps/miniprogram`：原微信小程序实现，保留用于兼容；新部署优先使用 `apps/client-web`。
-- `hydro-plugin/cwnupaa-proctor-auth`：独立 HydroOJ 自动登录插件源码；不会自动修改旁边的 `Hydro-master` 工作区。
+- `hydro-plugin/cwnupaa-proctor-auth`：Hydro 题库/评测、浏览器监考与外榜数据插件。XCPC CCS 在独立 `hydro-ccs-api` 仓库维护，监考仅通过 HTTP 消费；不会自动修改旁边的 Hydro 工作区。
 - `packages/shared`：三端共享枚举、类型和校验 schema。
 
 Windows 安装/更新向导会检查 Win7 SP1 的 PowerShell 5.1 环境，按需安装随包的微软离线组件。
@@ -56,11 +68,11 @@ Mock 模式只在开发环境默认允许；生产构建需要显式设置 `NEXT
 
 ### HydroOJ 浏览器监考考试
 
-在 HydroOJ 创建原生比赛并将选手加入比赛名单。发布监考考试时选择「HydroOJ（监考与浏览器）」，填写 HydroOJ 站点地址及比赛链接中 `/contest/` 后的 24 位 ID。域内比赛的地址填到 `/d/域ID`，例如 `http://127.0.0.1:8888/d/example`。站点的协议、主机和端口须与系统设置中的评测服务地址一致。两边的开考和结束时间应一致，监考名单使用与 HydroOJ 相同的用户名和密码。
+在 HydroOJ 创建原生比赛并将选手加入比赛名单。发布监考考试时选择「HydroOJ（监考与浏览器）」，填写 HydroOJ 站点地址及比赛链接中 `/contest/` 后的 24 位 ID。域内比赛的地址填到 `/d/域ID`，例如 `http://127.0.0.1:8888/d/example`。在考试中填写该 HydroOJ 监考插件的 API-Key，即可使用与系统评测服务不同的站点，无须修改全局评测服务或题库同步映射。已有同站考试未单独配置 Key 时继续使用全局评测 Key；编辑时留空保留已保存的 Key，更换站点须重新填写。直播或大屏如使用该站点的 CCS EventFeed，也在同一场考试中填写 EventFeed 密钥；只填密钥，站点地址和比赛 ID 沿用考试配置，系统设置只保留 NovaJudge 的 EventFeed 凭据。赛制、比赛类型及判题均由 HydroOJ 管理，监考考试无须填写或读取这些配置。两边的开考和结束时间应一致，监考名单使用与 HydroOJ 相同的用户名和密码。
 
 考生通过审核并确认开考后，客户端自动打开 HydroOJ 的比赛页面。题目、提交、评测及榜单由 HydroOJ 处理，监考、锁定和重连仍由监考平台处理。内置浏览器仅放行当前比赛所需页面和同站资源，客户端退出考试时清理浏览器中的 HydroOJ 会话。
 
-此模式需要 HydroOJ 原生密码登录、已加入比赛的选手账号，以及监考后台已配置的评测 API-Key。发布时会在 HydroOJ 启用比赛保护。HydroOJ 原生开考至结束期间，普通浏览器无法进入此比赛，复制 Cookie 也无法进入。比赛管理人员保留管理权限，比赛结束后自动恢复 HydroOJ 原有访问规则。升级 HydroOJ 插件、监考后台和桌面客户端，并执行 `pnpm db:push` 增加考试平台类型。
+此模式需要 HydroOJ 原生密码登录、已加入比赛的选手账号，以及该站点监考插件配置的 API-Key。发布时会在 HydroOJ 启用比赛保护。HydroOJ 原生开考至结束期间，普通浏览器无法进入此比赛，复制 Cookie 也无法进入。比赛管理人员保留管理权限，比赛结束后自动恢复 HydroOJ 原有访问规则。首次部署此模式需升级 HydroOJ 插件、监考后台和桌面客户端，并执行 `pnpm db:push` 增加考试平台类型。仅本次 HydroOJ 考试独立密钥功能只需要更新监考后台并执行 `deployment/migrations/20261124-hydro-browser-exam-api-key.sql` 和 `deployment/migrations/20261124-hydro-browser-event-feed-key.sql`，无须修改或重打包客户端。
 
 ### NovaJudge 监考考试
 
@@ -81,6 +93,33 @@ NovaJudge 当前导出的 `submit_time` 没有时区，发布页的「NovaJudge 
 内网 NovaJudge 使用私有域名和 Caddy 内部证书时，监考网页容器也必须能解析该域名并信任该服务器的 CA。按 `deployment/docker-compose.host.example.yml` 在对应服务器创建 `deployment/docker-compose.host.yml`，填写本服务器的 DNS 映射与 CA 路径；该文件不提交到仓库，`scripts/deploy-caddy.sh` 会同时加载它。每台服务器单独保留自己的 `.env` 和覆盖配置；直接执行 Compose 命令时也需带上 `-f deployment/docker-compose.host.yml`。不关闭 HTTPS 证书校验。
 
 验证命令：`pnpm --filter @cwnupaa/proctor-web test:novajudge`；隔离 MySQL 数据库名必须为 `proctor_novajudge_qa` 才能运行 `test:novajudge:integration`；构建桌面后运行 `test:novajudge:desktop`，使用本机 HTTP 测试服务验证真实 Electron Cookie、浏览器限制、文件下载、锁定与结束清理，不采集真实监考视频。
+
+### Hydro Reaction 自动录像
+
+Reaction 支持上表两种 Hydro 考试。本平台考试读取本地已同步的提交结果，目前没有前后名次；原生固定时间 XCPC 通过独立 `hydro-ccs-api 1.x` 的 HTTP 事件流获取提交、判题和前后名次。CCS 的功能更新只在独立仓库完成，监考不包含其服务端实现。历史结果、打星队及名次依据不足时隐藏数字名次。所有模式均须提前启用并保持客户端上传录像，开启前的提交不会补录。
+
+#### 升级与操作顺序
+
+1. 用 `hydrooj addon list` 确认 Hydro **实际启用的插件目录**。监考插件升级至 **0.4.1**，原生 Reaction 另安装独立 **`hydro-ccs-api 1.x`**，配置比赛清单和独立未封榜读取密钥。迁移顺序与以后只更新 CCS 的方法见 [独立 CCS 接入](docs/hydro-ccs.md)。仅更新监考 Web 不会更新 Hydro 插件。
+2. 更新监考 Web 与 Recorder 的代码、依赖，执行 `pnpm db:generate`、`pnpm build:web`，按原部署方式重启 Web。已有 Reaction 和外榜表的部署，本次不新增 MySQL 结构；旧版缺表时按下方迁移流程处理，不能重置数据库。
+3. 选手机器更新监考客户端。本次修复了 Hydro 资源加载、点击题目新窗口和后退回到登录页的问题，发布时执行 `pnpm build:desktop` / `pnpm dist:desktop:win` 并安装包含这些修复的客户端；无需给 Hydro 页面另打临时兼容补丁。
+4. 在 Web 和 Recorder 配置相同数据库、存储及 CCS 环境。原生比赛填写 `REACTION_HYDRO_CCS_ORIGIN`、`REACTION_HYDRO_CCS_API_KEY`，后者与独立插件 `hydroCcsApi.adminApiKey` 一致。按[生成器部署说明](docs/reaction-generator.md)准备 Python、FFmpeg/FFprobe 和字体。在 **`apps/web` 工作目录**常驻运行 `node --env-file=.env --import tsx scripts/reaction-recorder.ts`；只启动 Web 不会处理录像队列。Docker 须显式注入配置、增加 Recorder 服务并共享存储，见下方 [Docker 说明](#5-docker-部署需要补齐的内容)。
+5. 在「考试详情 → Reaction 录像」开启并保存，等待“已连接”。原生比赛的监考考号须与实际 Hydro 提交用户名完全一致；本平台考试按本平台考号匹配，无需在 Hydro 另建选手账号。
+6. 用更新后的客户端提交，等待保存后点击「生成竖屏」或开启自动生成，再预览、下载或「批量导出 MP4（ZIP）」。本平台提交文件名为 **`sub_<UUID>.mp4`**，原生 Hydro 为 **`<24位ObjectId>.mp4`**，均完整保留原始 ID。升级导出校验后，已有视频无需重新生成。详见[导出说明](docs/reaction-export.md)。
+
+#### 凭据分别填在哪里
+
+| 用途 | 填写位置 | 消费者 |
+| --- | --- | --- |
+| Hydro 评测 API-Key | 监考「系统设置 → 评测服务设置」与 Hydro「控制面板 → 系统设置 → 考试监考平台 → API-Key」填写同一值；使用其他 HydroOJ 站点比赛时，在本场考试单独填写该站点插件 API-Key | 评测同步；浏览器监考（本场 Key 优先）、外榜源数据读取 |
+| Hydro CCS 未封榜读取密钥 | Hydro「系统设置 → CCS 比赛数据接口」与 Web/Recorder 的 `REACTION_HYDRO_CCS_API_KEY`；直播/大屏 EventFeed 在对应 HydroOJ 浏览器考试中填写同一密钥 | 原生 Reaction 与考试 EventFeed；比赛也必须加入 CCS 允许清单 |
+| Hydro CCS 直播用户名 / 密码 / 比赛清单 | Hydro「系统设置 → CCS 比赛数据接口」；清单如 `system/691000000000000000000001` | ICPC Live 或 CDS 的 HTTP Basic 认证 |
+| 监考直播 API Key | 监考「系统设置 → 直播 API Key 管理」 | 屏幕/摄像头的 WHEP/HLS 播放地址 |
+| 官网外榜推送密钥 | 本场「考试管理 → 外榜推送」，同时填写官网域名和赛事 ID，打开推送开关 | 官网 `/api/external/board/{eventId}/problems` 和 `/submissions` |
+
+Hydro Reaction 不使用 NovaJudge 的 `REACTION_CCS_USERNAME` / `REACTION_CCS_PASSWORD`。**ICPC Live 不必经过 CDS**：直连时 `source.url` 为 `https://hydro.example[/d/域ID]/api/ccs`，单独填写 `contestId` 和 Basic 账号，`feedVersion` 为 `2023_06`；可直接复制[配置模板](deployment/icpclive-hydro/settings.direct.example.json)。CCS 提供榜单数据，视频另按[部署说明](docs/hydro-live-deployment.md)映射。
+
+直播 Basic 视图遵守 Hydro 封榜，内部 Reaction 与官网外榜源接口读取管理端结果；官网需设置自己的封榜规则。ICPC Live 会自行重算排名，秒级取整仍可能与 Hydro 不同，精确名次以 CCS `/scoreboard` 为准，参见[计分兼容边界](docs/hydro-ccs.md#名次与兼容边界)。
 
 ### NovaJudge Reaction 自动录像与 CCS 授权
 
@@ -238,9 +277,9 @@ MediaMTX 的 HTTP 鉴权回调也需能访问 Web。现有 Compose 使用 `http:
 
 考试监考详情右侧的「屏幕控制」由该考试管理员操作。先上传图片组（每组 1–30 张、单张最多 10MB、每组总计最多 80MB），然后选择一组立即推送或设置定时开始。支持 PNG、JPEG、WebP、GIF；上传后统一转换为静态图片，GIF 取首帧。可以调整组内轮播顺序，可设置截止时间或由管理员关闭展示。新展示开始时替换旧展示，结束后不恢复旧图片组；取消尚未开始的计划不会中断当前展示。正在展示或用于未来计划的组需要先关闭或取消计划才能编辑、删除。
 
-图片组中的「添加考生信息」支持类似奖状模板的文字块编辑：添加字段或普通文字，拖动定位，调整文字框、字号、字体、颜色、加粗和对齐。个人赛可用姓名、学校、学院、组别；团队赛可用队伍名称、队伍成员、学校、学院、组别。可以逐张配置，也可勾选组内多张图片，把当前布局按相对位置应用到所选图片；未添加文字块的图片保留原图。使用「示例资料」或搜索并选择本场考生预览实际合成效果，保存全部图片后再推送。长文字自动换行、缩小到文字框内。团队成员账号模式会汇总同队姓名及学校、学院，团队统一账号模式读取导入的队伍成员名单；未填写的资料留空。
+点击图片可预览并下载组内原图。勾选「本次轮播展示参赛信息图」后，后台依据当前考生会话生成一张独立的参赛信息图，放在本次轮播的末尾。个人赛显示姓名，团队赛显示队伍名称和队长优先的成员列表。组织名称和徽章沿用本场考试的 Reaction LOGO 匹配设置。开关默认关闭，旧版已推送或预约的展示继续使用保存时的版式。现有桌面客户端单次最多播放 30 张，带参赛信息图时可选最多 29 张组内原图。
 
-本次个性化图片由服务器依据已认证的考生会话生成，预览与推送共用相同渲染流程，现有桌面客户端无需修改或重新打包。仅需更新网页后台并运行 `pnpm db:push`，为 `ScreenControlImage` 增加可空的 `template` JSON 字段（Docker 后台启动流程自动执行）。中文渲染使用系统字体，现有 Docker 镜像已安装 Noto CJK。测试：`pnpm --filter @cwnupaa/proctor-web test:screen`；完整页面与推送验证使用 `test:screen:personalization`，仅允许本机 `proctor_screen_personalization_qa` 测试库，并通过 `SCREEN_QA_BASE` 指向使用同一测试库的后台服务。
+部署时更新 Web 后台并运行 `pnpm db:push`（Docker 后台启动时自动执行）。中文渲染使用系统字体，现有 Docker 镜像已安装 Noto CJK。测试入口为 `pnpm --filter @cwnupaa/proctor-web test:screen`。浏览器与推送联调使用 `test:screen:personalization`，需连接本机 `proctor_screen_personalization_qa` 测试库和使用该库的 `SCREEN_QA_BASE`。
 
 桌面客户端从获取登录会话时开始独立同步展示状态，待审核、比赛开始前、比赛中、结束后和后续登录均可自动展示。所有显示器全屏覆盖，每张图片展示 5 秒并循环播放；应用内键鼠、关闭、导航和退出操作被拦截，结束后恢复原考试、等待或异常锁定界面。断网保持已接收的展示，已设置的截止时间仍自动生效。操作系统强制结束进程及系统安全快捷键不属于 Electron 可保证拦截的范围。
 
@@ -669,33 +708,21 @@ module.exports = {
 
 ### 打包命令
 
-```bash
-pnpm dist:desktop:mac
-pnpm dist:desktop:win
-```
+| 平台 | 架构与运行时 | 命令 |
+| --- | --- | --- |
+| Windows 7 SP1 至 Windows 11 | x86、x64、ARM64 三架构 NSIS 统一安装包，wxWidgets + WebView2 | 按 [Windows 构建说明](apps/desktop/wx/README.md) 准备各架构运行时并构建三个架构，然后运行 `pnpm dist:desktop:win` |
+| macOS 14 及以上 | wxWidgets + 系统 WKWebView，Apple Silicon arm64 和 Intel x64 各一个 DMG | 按 [macOS 构建说明](apps/desktop/wx/README.md#macos-wkwebview) 准备依赖后运行 `pnpm dist:desktop:mac` |
 
-输出目录：
-
-```text
-apps/desktop/release
-```
-
-当前产物：
-
-- macOS：`apps/desktop/release/CWNU PAA Proctor-0.1.0.dmg`
-- Windows：`apps/desktop/release/CWNU PAA Proctor Setup 0.1.0.exe`
-- Windows 解包版：`apps/desktop/release/win-unpacked/CWNU PAA Proctor.exe`
+Windows 安装包输出到 `apps/desktop/release/wx-webview2-109/`。Mac 安装包默认输出到 `apps/desktop/release/wx-wkwebview/`，文件名分别包含 `mac-arm64` 和 `mac-x64`。需要单独重打某个 Mac 架构时使用 `pnpm --filter @cwnupaa/proctor-desktop dist:mac:arm64` 或 `pnpm --filter @cwnupaa/proctor-desktop dist:mac:x64`。
 
 ### 发布到网站下载入口
 
-在本机生成安装包（`dist:desktop:mac` 对应 Intel Mac；Apple Silicon 使用 `pnpm --filter @cwnupaa/proctor-desktop dist:mac:arm64`，Windows 使用 `pnpm dist:desktop:win`）。文件位于 `apps/desktop/release/unified/`，以实际生成的版本号为准。
-
-以超级管理员登录监考后台，进入「系统设置 → 客户端版本发布」，分别选择 Windows、Mac Intel、Mac Apple Silicon，填写与安装包一致的版本号，上传 `.exe` 或 `.dmg` 后发布。发布成功后，监考网站主页展示下载按钮。协会官网可直接链接到 `https://proctoring.example.org/` 作为统一下载入口；如需官网自己的下载按钮，复制主页对应平台的下载链接。
+Windows wxWidgets 安装包通过原发布 API 上传和发布，标记 `runtime=wx-webview2-109`。两个 Mac DMG 分别选择后台发布列表中的 Intel 和 Apple Silicon WKWebView 条目，发布 API 使用 `runtime=wx-wkwebview`。各架构用同一个文件作为安装包和更新包，版本号取自客户端的 `package.json`。
 
 ### macOS 安装
 
 1. 打开 DMG。
-2. 将 `CWNU PAA Proctor.app` 拖入 Applications。
+2. 将 `程序设计算法协会监考客户端.app` 拖入 Applications。
 3. 首次启动时授予：
    - 摄像头权限
    - 麦克风权限
@@ -707,9 +734,9 @@ apps/desktop/release
 
 ### Windows 安装
 
-1. 运行 `proctor-1.0.1-unified-windows-setup.exe`。
+1. 运行 `proctor-<版本>-unified-wx-webview2-109-setup.exe`。
 2. 安装器配置为 per-machine，需要管理员权限。客户端在创建页面前检查实际进程权限，未提权时显示“申请管理员权限”，通过 Windows 系统授权窗口重新启动；取消后可重试或关闭。已取得管理员权限的进程不会重复请求授权，账号名称（包括 `Administrator`）不作为判断依据。
-3. 首次运行时允许摄像头、麦克风和屏幕采集。
+3. 首次运行时允许屏幕采集。电脑前置摄像头和麦克风均为可选项：即使考室已启用前置摄像头，也仅在设备可用且授权成功时显示画面并推流；麦克风可用时采集声音。设备缺失、未授权或采集失败时跳过，不阻止正式考试和系统测试的登录、重新配对或开考，不因缺少前置画面产生摄像头异常告警。系统测试仍须通过屏幕和手机第二机位推流检测。前置摄像头可选需配套更新后台服务；麦克风可选从桌面客户端 1.0.17 起生效，已有考室配置无需迁移。
 4. 客户端仅检测并上报非白名单进程，不会强制关闭本机其他软件。
 
 Windows 管理员权限直接读取客户端进程的 `TOKEN_ELEVATION`，不依赖 PowerShell、.NET、系统显示语言或 Server 服务。32 位和 64 位原生检测组件随安装包提供，只调用 Windows 7 自带的系统 DLL；检测失败与未提权分别提示，均不会绕过权限要求。源码在 `apps/desktop/native/windows-token/probe.c`。修改后安装 MinGW-w64，再在桌面客户端目录运行 `node scripts/prepare-windows-token.mjs --rebuild`；常规构建只校验已提交组件与源码哈希，支持离线打包。
@@ -1151,9 +1178,11 @@ pnpm dist:desktop:win
 
 ### CWNUPAA 外榜推送
 
+- 支持本平台比赛、NovaJudge 和 **HydroOJ（监考与浏览器）原生比赛**，均使用同一个外榜推送开关。Hydro 网页比赛需要完整更新 `cwnupaa-proctor-auth` 至 `0.3.1` 或更新版本并重启 Hydro，同时更新监考 Web 服务；无需重新打包监考客户端。部署及使用步骤见 [Hydro 外榜推送](docs/hydro-external-board.md)。
 - 在「考试管理 → 选择比赛 → 考试管理 → 外榜推送」中，填写 **CWNUPAA 官网域名**（例如 `https://www.example.org`，也可填写带 `/api` 的地址）及 **官网赛事 ID**，点击滑动开关开启推送。每场比赛独立配置，域名默认为 `www.example.org`，比赛 ID 在开启时必须填写。推送开关默认关闭，切换立即生效；开启时一并保存当前配置并立即推送，关闭无需保存且不受未完成的配置草稿影响。域名、比赛 ID、密钥和推送间隔可通过「保存外榜配置」独立更新，不修改考试基本信息；普通编辑考试不会覆盖这里的实时配置。域名自动补全 `/api`；官网使用其他接口前缀时需先配置对应代理。
 - 推送密钥可选输入；单独填写时使用该密钥；留空时仅在外榜地址与「系统设置 → 协会官网登录 API 管理」服务同源（协议、域名、端口均一致）时使用系统 AppKey，其他地址必须填写本场专用密钥。官网「接口管理」必须启用所用密钥并授予 **外榜** 权限。单独的推送密钥只允许本场比赛管理员读取，普通比赛、监考和考生接口不返回密钥；不会改变现有外部登录配置。官网已有赛事的赛制、比赛时间、封榜和参赛组别仍在官网管理。官网已审核报名的比赛账号必须与本场 **考号** 一致，团队赛按队伍账号/成员账号分别匹配。
-- 开启或更改已开启比赛的配置后立即触发同步，之后按每场比赛设置的推送间隔运行（默认 10 秒，可设置 1～86400 秒的整数）。每批最多 50 条，大量记录也按间隔分批同步；先调用 `/api/external/board/{eventId}/problems` 更新题目，再向 `/api/external/board/{eventId}/submissions` 分批推送已判题记录（包含源代码）。重判、人工成绩和考号调整会更新原记录；更换目标域名、赛事 ID 或重新开启推送会重新同步，单独修改间隔保留同步进度。记录 ID 使用 `proctor:` 前缀，避免与其他来源冲突。
+- 开启或更改已开启比赛的配置后立即触发同步，之后按每场比赛设置的推送间隔运行（默认 10 秒，可设置 1～86400 秒的整数）。每批最多 50 条，大量记录也按间隔分批同步；先调用 `/api/external/board/{eventId}/problems` 更新题目，再向 `/api/external/board/{eventId}/submissions` 分批推送已判题记录（包含源代码）。重判、人工成绩和考号调整会更新原记录；更换目标域名、赛事 ID 或重新开启推送会重新同步，单独修改间隔保留同步进度。本平台记录 ID 使用 `proctor:` 前缀，NovaJudge 使用 `novajudge:`，Hydro 原生比赛使用带监考考试和原生比赛标识的 `hydro:` 稳定 ID。接收端须支持同一 rid 更新。
+- Hydro 原生比赛读取本场考试填写的 HydroOJ 监考插件 API-Key；未单独填写时使用系统设置中的 Hydro 站点与评测 API-Key。支持 `/d/域ID`，不使用 CCS 直播用户名或密码。只同步监考名单内账号在监考时间与 Hydro 比赛时间交集中的记录；题号按原生比赛顺序映射，支持重名题目。完整扫描后循环重查，通过成功记录指纹过滤重复内容，以捕获很早提交的重判结果；每轮扫描固定时间上界，分页进度在服务重启后保留。大量提交会需要多个推送间隔才能完成一轮。原生提交的时间为北京时间、秒精度；取消、忽略和 ACM 格式错误通过原 rid 的 CE/0 更新兼容外榜。接口不返回密码、测试点答案或判题日志。
 - 同步进度和错误持久保存，失败在推送间隔和 30 秒中取较长时间后重试；后台任务独立运行，每次请求限制超时，网络失败不阻塞登录、提交、判题或比赛设置保存。页面下方自动刷新推送日志，显示开关/配置操作、成功/失败、题目数、提交数、耗时和目标赛事；无新记录时显示检查结果。日志只在服务内存中临时保存最近 100 条，不写入数据库，网站重启后自动清空；日志不保存密钥或原始接口响应。官网成功响应但漏收账号也会标记失败并重试。关闭开关会立即撤销任务租约并取消本进程正在发送的请求；已经被官网接收的历史数据保留。
 - 官网现有接口按整数百分比接收成绩，推送按题目原始满分归一化，再由官网按本场题目分值计算；时间使用北京时间并保留毫秒，运行内存单位为 KB。官网没有删除提交接口，本地「忽略提交」按 **Compile Error / 0 分** 更新原记录，使其不计入解题数、成绩和 XCPC 错误罚时。官网页面会以该兼容状态展示。删除本地考生或移除题目不会删除官网历史数据，需在官网管理。
 - 更新时先同步数据库结构并重启后台：本地执行 `pnpm --filter @cwnupaa/proctor-web db:push`；Docker 部署的 `web` 服务启动命令已自动执行数据库更新。仅新增默认关闭的配置、推送间隔、同步状态及查询索引，不新增日志表，不修改现有考试、账号或成绩。
@@ -1221,4 +1250,4 @@ pnpm dist:desktop:win
 
 ## 外部直播接收与转发
 
-超级管理员先在“直播管理”创建流 ID，再使用“系统设置”中的通用直播 API-KEY 推流和播放。推流采用 `POST /api/live-relay/publish/流ID?apikey=系统密钥`（WHIP），观看使用 `GET /api/live/流ID?apikey=系统密钥`，也可通过同一播放地址的 POST 请求使用 WHEP。转发和监考共用媒体服务。转发支持 WHIP、RTMP 和 RTMPS 推流，同一流 ID 同时只允许一个推流设备。WebRTC 复用监考媒体的 ICE 端口，裸 RTMP 默认使用 TCP 1940。部署、资源限额和接入方式见 [直播接收与转发使用文档](docs/直播接收与转发使用文档.md)。
+超级管理员先在「XCPC 工具 → 推流管理」创建流 ID，再使用“系统设置”中的通用直播 API-KEY 推流和播放。推流采用 `POST /api/live-relay/publish/流ID?apikey=系统密钥`（WHIP），观看使用 `GET /api/live/流ID?apikey=系统密钥`，也可通过同一播放地址的 POST 请求使用 WHEP。转发和监考共用媒体服务。转发支持 WHIP、RTMP 和 RTMPS 推流，同一流 ID 同时只允许一个推流设备。WebRTC 复用监考媒体的 ICE 端口，裸 RTMP 默认使用 TCP 1940。部署、资源限额和接入方式见 [直播接收与转发使用文档](docs/直播接收与转发使用文档.md)。赛事导播和独立大屏请参阅 [赛事直播与大屏](docs/hydro-live-deployment.md)。

@@ -34,7 +34,7 @@ export default function PublicTestEnrollment() {
   return <section className={styles.panel}>
     <h2>第二机位环境测试</h2>
     <div className={styles.modes}>
-      <label className={mode === 'secondCamera' ? styles.selected : ''}><input type="radio" name="test-mode" checked={mode === 'secondCamera'} onChange={() => { setMode('secondCamera'); setCredentials(null); }} /><Smartphone size={22} /><strong>第二机位</strong><span>必须使用手机第二机位，检测三个画面推流与断网重连</span></label>
+      <label className={mode === 'secondCamera' ? styles.selected : ''}><input type="radio" name="test-mode" checked={mode === 'secondCamera'} onChange={() => { setMode('secondCamera'); setCredentials(null); }} /><Smartphone size={22} /><strong>第二机位</strong><span>必须使用手机第二机位，检测屏幕与第二机位推流及断网重连，前置摄像头可选</span></label>
     </div>
     <div className={styles.loginFields}>
       <p>先验证协会官网账号，再领取与你永久绑定的测试账号。此验证不会授予监考后台权限。</p>
@@ -48,7 +48,7 @@ export default function PublicTestEnrollment() {
     {credentials ? <div className={styles.credentials}>
       <div className={styles.credentialHeader}><h3>你的独立测试账号</h3><button onClick={() => void copy()}><Copy size={15} />复制登录信息</button></div>
       <dl><dt>考试编号</dt><dd>{credentials.examCode}</dd><dt>姓名</dt><dd>{credentials.name}</dd><dt>考号</dt><dd>{credentials.examNumber}</dd><dt>密码</dt><dd>{credentials.password}</dd></dl>
-      <p>在客户端完成设备检测后，选择<strong>二维码登录</strong>。使用手机浏览器扫描此二维码或输入客户端显示的配对码，在浏览器中填写上面四项信息后登录；按页面完成手持身份证明照片和环境视频采集后登录，材料仅在内存中校验，不保存到服务器，也无需提交登录请求或等待审核。登录后连接手机摄像头并检测推流。三个画面推流通过后才能开始体验。点击“开始考试”后计时 {credentials.durationMinutes} 分钟。</p>
+      <p>在客户端完成设备检测后，选择<strong>二维码登录</strong>。使用手机浏览器扫描此二维码或输入客户端显示的配对码，在浏览器中填写上面四项信息后登录；按页面完成手持身份证明照片和环境视频采集后登录，材料仅在内存中校验，不保存到服务器，也无需提交登录请求或等待审核。登录后连接手机摄像头并检测推流。屏幕和手机第二机位推流通过后即可开始体验，电脑前置摄像头可用时自动推流，不可用时跳过。点击“开始考试”后计时 {credentials.durationMinutes} 分钟。</p>
       <p><RefreshCw size={15} />测试期间，客户端右上角和手机监考页面会显示“断网重连测试”。点击后退出当前连接，按提示重新扫码。恢复二维码有效期为两分钟，过期后可重新生成，原会话不会因断线被注销。</p>
       <p>同一官网用户在任何浏览器再次领取都会返回相同账号；结束后可用原账号重新测试。体验题由管理员配置，可测试编程题的语言选择、代码提交和测评。测试成绩不参与正式排名，临时登录和提交数据在结束后自动清理，账号和官网绑定永久保留。</p>
     </div> : null}

@@ -1,14 +1,28 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma } from './db';
 import { mediaApiToken } from './media-api-auth';
 import { mediaStreamPath } from './media-read-token';
+import { requiredEnv } from './env';
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-export function liveWebRtcResource(location: string, base: string, streamPath: string) {
+export function liveWebRtcResource(location: string, base: string, streamPath: string, operation: 'whep' | 'whip' = 'whep') {
   const url = new URL(location, base);
-  const prefix = `${streamPath}/whep/`;
+  const prefix = `${streamPath}/${operation}/`;
   const id = url.pathname.slice(prefix.length);
   if (url.origin !== new URL(base).origin || !url.pathname.startsWith(prefix) || !uuid.test(id) || url.search || url.hash || url.username || url.password) throw new Error('媒体服务返回无效直播资源');
   return id;
+}
+
+// MediaMTX mutates sessions by resource UUID. Bind the UUID we issued to the
+// authorized stream, action family, and holder before forwarding mutations.
+export function liveWebRtcResourceProof(path: string, holder: string) {
+  return createHmac('sha256', process.env.MEDIA_URL_SECRET || requiredEnv('SESSION_SECRET'))
+    .update(JSON.stringify(['webrtc-resource-v1', path, holder])).digest('base64url');
+}
+
+export function verifyLiveWebRtcResourceProof(proof: string, path: string, holder: string) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(proof)) return false;
+  return timingSafeEqual(Buffer.from(proof), Buffer.from(liveWebRtcResourceProof(path, holder)));
 }
 export async function kickLiveWebRtc(id: string) {
   if (!uuid.test(id)) throw new Error('无效直播连接');

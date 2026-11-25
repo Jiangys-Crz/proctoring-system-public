@@ -79,7 +79,7 @@ try {
   assert.equal((await login(request('oj-cookie', undefined, 'wrong-token'))).status, 401);
   assert.equal((await login(request('oj-cookie', undefined, miniToken.token))).status, 401);
   assert.equal((await login(request('oj-cookie'))).status, 403);
-  await prisma.clientSession.update({ where: { id: session.id }, data: { status: 'APPROVED' } });
+  await prisma.clientSession.update({ where: { id: session.id }, data: { status: 'APPROVED', approvedAt: new Date() } });
   assert.equal((await login(request('oj-cookie'))).status, 403); assert.equal(loginCount, 0, 'no credentials sent before exam start');
   const started = await start(request('session/start', { sessionId: session.id, confirm: true })); assert.equal(started.status, 200);
   const response = await login(request('oj-cookie')); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');

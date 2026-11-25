@@ -1,6 +1,7 @@
 import type { Candidate, Exam } from '@prisma/client';
+import { getHydroSettings } from './settings';
 
-type HydroBrowserExam = Pick<Exam, 'platformBaseUrl' | 'platformContestId'>;
+type HydroBrowserExam = Pick<Exam, 'platformBaseUrl' | 'platformContestId'> & Partial<Pick<Exam, 'id' | 'endAt' | 'hydroBrowserApiKey'>>;
 type HydroBrowserConnection = { baseUrl: string; apiKey: string };
 
 export class HydroBrowserConnectionError extends Error {}
@@ -21,9 +22,18 @@ export function hydroBrowserTarget(baseUrl: string, contestId: string) {
 export function trustedHydroBrowserTarget(exam: HydroBrowserExam, configuredBase: string) {
   const target = hydroBrowserTarget(exam.platformBaseUrl, exam.platformContestId);
   if (!configuredBase || target.origin !== new URL(configuredBase).origin) {
-    throw new Error('HydroOJ 比赛地址须与系统设置中的评测服务使用同一站点');
+    throw new Error('使用其他 HydroOJ 站点时，请填写该考试的监考插件 API-Key；未填写时须与评测服务使用同一站点');
   }
   return target;
+}
+
+/** A separate site receives only its explicitly supplied exam key. */
+export function hydroBrowserConnection(exam: HydroBrowserExam, fallback: HydroBrowserConnection): HydroBrowserConnection {
+  const target = hydroBrowserTarget(exam.platformBaseUrl, exam.platformContestId);
+  const apiKey = exam.hydroBrowserApiKey?.trim();
+  if (apiKey) return { baseUrl: target.origin, apiKey };
+  trustedHydroBrowserTarget(exam, fallback.baseUrl);
+  return fallback;
 }
 
 async function nativeRequest(url: string, init: RequestInit) {
@@ -40,7 +50,9 @@ async function nativeRequest(url: string, init: RequestInit) {
 }
 
 async function browserContestRequest(exam: HydroBrowserExam, connection: HydroBrowserConnection,
-  payload: { action: 'enable' } | { action: 'bind'; username: string }, sid?: string) {
+  payload: { action: 'enable'; examId?: string; endAt?: string } | { action: 'bind'; username: string }
+    | { action: 'restrict'; username: string; examId: string; endAt: string }, sid?: string) {
+  connection = hydroBrowserConnection(exam, connection);
   const { base, contestId } = trustedHydroBrowserTarget(exam, connection.baseUrl);
   if (!connection.apiKey) throw new Error('请先在系统设置中配置 HydroOJ API-Key');
   const response = await nativeRequest(`${base}/api/proctor/browser-contest/${contestId}`, {
@@ -63,12 +75,32 @@ async function browserContestRequest(exam: HydroBrowserExam, connection: HydroBr
 }
 
 export async function enableHydroBrowserContest(exam: HydroBrowserExam, connection: HydroBrowserConnection) {
-  await browserContestRequest(exam, connection, { action: 'enable' });
+  await browserContestRequest(exam, connection, { action: 'enable', examId: exam.id, endAt: exam.endAt?.toISOString() });
+}
+
+const restrictedAccounts = new Map<string, { until: number; pending: Promise<void> }>();
+export async function restrictHydroBrowserAccount(exam: Pick<Exam, 'id' | 'platform' | 'platformBaseUrl' | 'platformContestId' | 'endAt'> & Partial<Pick<Exam, 'hydroBrowserApiKey'>>,
+  candidate: Pick<Candidate, 'id' | 'examNumber'>) {
+  if (exam.platform !== 'HYDRO_BROWSER' || exam.endAt.getTime() <= Date.now()) return;
+  const key = JSON.stringify([exam.id, candidate.id, candidate.examNumber, exam.platformBaseUrl, exam.platformContestId, +exam.endAt, exam.hydroBrowserApiKey]);
+  const existing = restrictedAccounts.get(key);
+  if (existing && existing.until > Date.now()) return existing.pending;
+  for (const [id, entry] of restrictedAccounts) if (entry.until <= Date.now()) restrictedAccounts.delete(id);
+  const pending = (async () => {
+    await browserContestRequest(exam, await getHydroSettings(), {
+      action: 'restrict', username: candidate.examNumber, examId: exam.id, endAt: exam.endAt.toISOString(),
+    });
+  })();
+  const entry = { until: Date.now() + 30_000, pending };
+  restrictedAccounts.set(key, entry);
+  try { await pending; }
+  catch (error) { if (restrictedAccounts.get(key) === entry) restrictedAccounts.delete(key); throw error; }
 }
 
 export async function loginHydroBrowser(
   exam: HydroBrowserExam, candidate: Pick<Candidate, 'examNumber' | 'password'>, connection: HydroBrowserConnection,
 ) {
+  connection = hydroBrowserConnection(exam, connection);
   const { origin, base, contestId } = trustedHydroBrowserTarget(exam, connection.baseUrl);
   const loginUrl = `${base}/contest/${contestId}`;
   const auth = await nativeRequest(`${origin}/login`, {

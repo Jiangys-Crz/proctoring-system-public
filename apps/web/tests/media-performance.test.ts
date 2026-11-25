@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { createMediaProcessingQueue } from '../src/lib/media-processing';
-import { boundedUploadForm, UploadSecurityError } from '../src/lib/upload-security';
+import { acquireUploadSlot, boundedUploadForm, enqueueRecordingUpload, UploadSecurityError } from '../src/lib/upload-security';
 import { storeBuffer, storedObjectExists, deleteStoredObject } from '../src/lib/storage';
 import type { StorageSettings } from '../src/lib/settings';
 import { createMaterialUploadAdmission } from '../src/lib/upload-admission';
@@ -32,6 +32,31 @@ test('cancelled and expired material waiters release queue capacity without taki
   const available = await acquire(); available();
   await assert.rejects(acquire(controller.signal), error => error instanceof UploadSecurityError && error.status === 408);
   const next = await acquire(); next();
+});
+
+test('recordings receive the next available upload slot and disconnected waiters are removed', async () => {
+  const configured = process.env.UPLOAD_MAX_CONCURRENT;
+  process.env.UPLOAD_MAX_CONCURRENT = '1';
+  const release = acquireUploadSlot();
+  try {
+    const disconnect = new AbortController();
+    const cancelled = assert.rejects(enqueueRecordingUpload(disconnect.signal), { status: 408 });
+    const first = enqueueRecordingUpload(new AbortController().signal);
+    const second = enqueueRecordingUpload(new AbortController().signal);
+    disconnect.abort();
+    await cancelled;
+    release();
+    const releaseFirst = await first;
+    assert.throws(() => acquireUploadSlot(), { status: 429 });
+    releaseFirst();
+    const releaseSecond = await second;
+    releaseSecond();
+    acquireUploadSlot()();
+  } finally {
+    release();
+    if (configured === undefined) delete process.env.UPLOAD_MAX_CONCURRENT;
+    else process.env.UPLOAD_MAX_CONCURRENT = configured;
+  }
 });
 
 test('media processing bounds active work and releases capacity after decoder failures', async () => {

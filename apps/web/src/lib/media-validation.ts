@@ -45,10 +45,10 @@ async function decodeMedia(buffer: Buffer, channel: string, contentType: string,
     const { stdout } = await run(process.env.FFPROBE_PATH || ffprobe.path, [
       '-v', 'error', '-threads', '1', '-max_alloc', '67108864', '-protocol_whitelist', memory ? 'http,tcp' : 'file', ...(memory ? ['-http_proxy', ''] : []),
       '-f', webm ? 'matroska' : 'mov', ...(mp4 ? ['-enable_drefs', '0', '-use_absolute_path', '0'] : []), '-select_streams', 'v:0',
-      '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time,pkt_duration_time,width,height:format=format_name,duration',
+      '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time,duration_time,pkt_duration_time,width,height:format=format_name,duration',
       '-of', 'json', file
-    ], { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 });
-    const result = JSON.parse(stdout) as { frames?: { width?: number; height?: number; best_effort_timestamp_time?: string; pkt_duration_time?: string }[]; format?: { format_name?: string; duration?: string } };
+    ], { timeout: 30_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
+    const result = JSON.parse(stdout) as { frames?: { width?: number; height?: number; best_effort_timestamp_time?: string; duration_time?: string; pkt_duration_time?: string }[]; format?: { format_name?: string; duration?: string } };
     const frames = result.frames || [];
     if (frames.length < 2 || !frames.every(frame => (frame.width || 0) >= 16 && (frame.height || 0) >= 16 && (frame.width || 0) * (frame.height || 0) <= 24_000_000)) throw new Error();
     let first = Infinity, last = -Infinity, timestampCount = 0;
@@ -58,7 +58,9 @@ async function decodeMedia(buffer: Buffer, channel: string, contentType: string,
       first = Math.min(first, timestamp); last = Math.max(last, timestamp); timestampCount++;
     }
     if (timestampCount < 2) throw new Error();
-    const duration = last - first + Math.max(0, Number(frames.at(-1)?.pkt_duration_time) || 0);
+    // Recent FFprobe versions expose duration_time; older releases use pkt_duration_time.
+    const lastFrame = frames.at(-1);
+    const duration = last - first + Math.max(0, Number(lastFrame?.duration_time ?? lastFrame?.pkt_duration_time) || 0);
     if (channel === 'ROOM_VIDEO' && !isValidRoomVideoDuration(duration)) throw new UploadSecurityError('环境视频必须为 3–15 秒的真实视频');
     const format = result.format?.format_name || '';
     const extension = /webm|matroska/.test(format) ? '.webm' : /mov|mp4/.test(format) ? '.mp4' : '';

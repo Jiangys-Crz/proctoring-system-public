@@ -58,12 +58,12 @@
         <div class="checks">
           <div id="serverCheck" class="check hidden">本地网络：未检测</div>
           <div id="screenCheck" class="check bad">屏幕检测：未通过</div>
-          <div id="cameraCheck" class="check bad">摄像头采集检测：未通过</div>
+          <div id="cameraCheck" class="check">前置摄像头、麦克风：未检测</div>
           <div id="systemCheck" class="check bad">系统检查：未通过</div>
         </div>
         <div class="actions">
           <button id="permissionStatusBtn" class="primary" type="button">检测系统权限</button>
-          <button id="permissionBtn" type="button" disabled>检测屏幕与摄像头</button>
+          <button id="permissionBtn" type="button" disabled>检测屏幕与音视频</button>
           <button id="networkPermissionBtn" class="hidden" type="button">打开本地网络权限设置</button>
           <button id="screenPermissionBtn" class="hidden" type="button">打开屏幕录制权限设置</button>
           <button id="cameraPermissionBtn" class="hidden" type="button">打开摄像头权限设置</button>
@@ -141,14 +141,26 @@
           <div id="examStatus" class="status visuallyHidden" aria-live="polite"></div>
         </header>
         <section id="novaJudgeWaiting" class="novaJudgeWaiting hidden" aria-live="polite">
-          <p id="novaJudgeCountdown" class="hidden"></p>
+          <div id="novaJudgeCountdown" class="hidden">
+            <div id="examStartTimer" class="examStartTimer" role="timer" aria-live="off" aria-labelledby="examStartTimerLabel">
+              <p id="examStartTimerLabel">距离考试开始还有：</p>
+              <div class="examStartDigits">
+                <div><strong id="examStartHours">--</strong><span>小时</span></div>
+                <div><strong id="examStartMinutes">--</strong><span>分钟</span></div>
+                <div><strong id="examStartSeconds">--</strong><span>秒</span></div>
+              </div>
+            </div>
+            <p id="examStartWaitingMessage" class="hidden"></p>
+          </div>
           <div id="novaJudgeLoading" class="hidden">
             <p id="novaJudgeLoginStatus">正在自动登录NovaJudge 请稍等</p>
             <div class="novaJudgeSpinner" aria-hidden="true"></div>
           </div>
           <button id="novaJudgeRetryBtn" class="primary hidden" type="button">重新登录</button>
         </section>
-        <webview id="ojView" class="browser" src="about:blank" partition="persist:proctor-oj" webpreferences="contextIsolation=yes, nodeIntegration=no, sandbox=yes, webSecurity=yes, allowRunningInsecureContent=no"></webview>
+        <!-- Deliver target=_blank requests to the main-process handler, which
+             validates the exam URL, opens it in this guest, and denies the popup. -->
+        <webview id="ojView" class="browser" src="about:blank" partition="persist:proctor-oj" allowpopups webpreferences="contextIsolation=yes, nodeIntegration=no, sandbox=yes, webSecurity=yes, allowRunningInsecureContent=no"></webview>
       </section>
 
       <section class="lock hidden" id="lockPanel">
@@ -161,6 +173,17 @@
           </div>
         </div>
       </section>
+
+      <dialog class="startConfirmModal" id="startConfirmModal" aria-labelledby="startConfirmTitle" aria-describedby="startConfirmDescription">
+        <div class="finishConfirmCard">
+          <h2 id="startConfirmTitle">确认开始考试？</h2>
+          <p id="startConfirmDescription">开始后将正式计时。</p>
+          <div class="finishConfirmActions">
+            <button id="startConfirmCancel" type="button" autofocus>稍后开始</button>
+            <button id="startConfirmSubmit" class="primary" type="button">确认开始考试</button>
+          </div>
+        </div>
+      </dialog>
 
       <section class="finishConfirmModal hidden" id="finishConfirmModal" role="dialog" aria-modal="true" aria-labelledby="finishConfirmTitle">
         <div class="finishConfirmCard">

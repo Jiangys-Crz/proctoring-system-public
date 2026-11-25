@@ -1,5 +1,5 @@
 /** Local operator tool: publish clearly labelled synthetic media for an EXISTING exam/team.
- * Never creates contests/candidates, calls NovaJudge login, or changes exam configuration.
+ * Never creates contests/candidates, calls OJ login, or changes exam configuration.
  * Uses canonical project-issued session tokens and real WHIP/WHEP/upload endpoints.
  */
 import assert from 'node:assert/strict';
@@ -12,6 +12,7 @@ import { prisma } from '../src/lib/db';
 import { createClientSessionToken } from '../src/lib/client-auth';
 import { createSessionToken } from '../src/lib/auth';
 import { canManageExam } from '../src/lib/permissions';
+import { supportsReaction } from '../src/lib/reaction-source';
 
 const mode = process.argv[2] || 'inspect';
 const examId = process.env.REACTION_MEDIA_EXAM_ID || process.env.REACTION_MANUAL_EXAM_ID || '';
@@ -60,7 +61,7 @@ async function inspect() {
     id: true, examCode: true, platform: true, published: true, startAt: true, endAt: true,
     reactionEnabled: true, createdById: true, platformContestId: true
   } });
-  assert.equal(exam.platform, 'NOVAJUDGE', 'Existing exam must be linked to NovaJudge');
+  assert(supportsReaction(exam.platform), 'Existing exam must use a supported Reaction platform');
   const candidates = await prisma.candidate.findMany({ where: { examId, examNumber }, select: { id: true, name: true, examNumber: true } });
   assert.equal(candidates.length, 1, 'Exactly one candidate must match the exact examNumber');
   const candidate = candidates[0];

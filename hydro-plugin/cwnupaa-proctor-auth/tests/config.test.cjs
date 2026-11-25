@@ -7,12 +7,16 @@ const Module = require('node:module');
 const crypto = require('node:crypto');
 
 // The integration cases use Hydro's actual setting registry, without starting
-// Hydro or connecting to MongoDB. Override this path when testing elsewhere.
-const hydroRoot = process.env.HYDRO_SOURCE_ROOT
+// Hydro or connecting to MongoDB. Use either a source checkout or an installed
+// hydrooj package, with that installation's dependencies available.
+const hydroSourceRoot = process.env.HYDRO_SOURCE_ROOT
   ? path.resolve(process.env.HYDRO_SOURCE_ROOT)
   : path.resolve(__dirname, '../../../../Hydro-master');
-if (!fs.existsSync(path.join(hydroRoot, 'packages/hydrooj/src/model/setting.ts'))) {
-  throw new Error('Set HYDRO_SOURCE_ROOT to a Hydro source checkout with its dependencies installed.');
+const hydroRoot = process.env.HYDRO_PACKAGE_ROOT
+  ? path.resolve(process.env.HYDRO_PACKAGE_ROOT)
+  : path.join(hydroSourceRoot, 'packages/hydrooj');
+if (!fs.existsSync(path.join(hydroRoot, 'src/model/setting.ts'))) {
+  throw new Error('Set HYDRO_SOURCE_ROOT to a Hydro checkout, or HYDRO_PACKAGE_ROOT to an installed hydrooj package, with dependencies installed.');
 }
 const hydroRequire = createRequire(path.join(hydroRoot, 'package.json'));
 hydroRequire('@hydrooj/register');
@@ -161,8 +165,8 @@ test('public configuration checks contain no keys, signing secrets, or legacy pa
   assert.equal(publicProctorConfig(resolve({ sharedSecret: DEFAULT_SECRET, judgeUsername: '' })).configured, true);
 });
 
-global.Hydro = { model: {}, locales: {}, module: {}, script: {} };
-const nativeSettings = hydroRequire('./packages/hydrooj/src/model/setting.ts');
+global.Hydro = { model: {}, locales: {}, module: {}, script: {}, ui: {} };
+const nativeSettings = hydroRequire('./src/model/setting.ts');
 const nativeTypes = hydroRequire('@hydrooj/framework/validator').Types;
 const systemCache = {};
 const modelCalls = [];
@@ -170,12 +174,15 @@ class ValidationError extends Error {}
 class ForbiddenError extends Error {}
 class BadRequestError extends Error {}
 class NotFoundError extends Error {}
-const sideEffectModel = (name) => new Proxy({}, {
-  get: (_target, method) => (...args) => {
+const sideEffectModel = (name) => new Proxy(name === 'problem' ? { PROJECTION_PUBLIC: ['domainId', 'docId', 'title'] } : {}, {
+  get: (_target, method) => name === 'problem' && method === 'PROJECTION_PUBLIC' ? ['domainId', 'docId', 'title'] : (...args) => {
     if (name === 'database' && method === 'collection'
-      && ['cwnupaa.proctor.browser.contest', 'cwnupaa.proctor.browser.binding'].includes(args[0])) {
-      return sideEffectModel(args[0]);
+      && args[0] === 'cwnupaa.proctor.browser.account') {
+      return { createIndex: async () => 'fixture-index' };
     }
+    // Registering a collection handle has no data side effects. Any actual
+    // read/write still goes through the strict model-access guard below.
+    if (name === 'database' && method === 'collection') return sideEffectModel(args[0]);
     modelCalls.push({ name, method, args });
     if (name === 'domain' && method === 'get') return Promise.resolve({ _id: args[0] });
     throw new Error(`Unexpected model access: ${name}.${String(method)}`);
@@ -241,6 +248,7 @@ function context() {
     disposers, handlers, routes, locales, errors,
     i18n: { load: (lang, messages) => { locales[lang] = { ...locales[lang], ...messages }; } },
     effect: (factory) => { disposers.push(factory()); },
+    interval: () => {},
     on: (name, callback) => { handlers.set(name, callback); },
     Route: (_name, url, HandlerClass) => { routes.set(url, HandlerClass); },
     logger: { error: (error) => { errors.push(error); } },
@@ -356,6 +364,7 @@ test('API-Key-only judge and status handlers queue canonical Python without look
     hydroMock.RecordModel = {
       add: async (...args) => { calls.push(['add', ...args]); record = { _id: 'fixture-rid', pid: args[1], uid: args[2], lang: args[3], code: args[4], status: 0 }; return record._id; },
       get: async () => record,
+      getMulti: () => ({ project: () => ({ limit: () => ({ next: async () => record }) }) }),
       judge: async (...args) => { calls.push(['judge', ...args]); },
     };
     const handler = Object.create(ctx.routes.get('/api/proctor/judge').prototype);

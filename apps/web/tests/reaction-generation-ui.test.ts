@@ -56,7 +56,7 @@ test('submission display preserves the source UUID without replacing it with a n
 });
 
 test('export rejects invalid submission UUIDs instead of requesting numeric label synchronization', () => {
-  assert.match(reactionExportBlockReason({ generatedCount: 501, invalidSubmissionIds: 2 })!, /2.*Submission UUID 无效/);
+  assert.match(reactionExportBlockReason({ generatedCount: 501, invalidSubmissionIds: 2 })!, /2.*Submission ID 无效/);
   assert.equal(reactionExportBlockReason({ generatedCount: 501, invalidSubmissionIds: 0 }), null);
   assert.match(reactionExportBlockReason({ generatedCount: 0, invalidSubmissionIds: 0 })!, /暂无/);
   assert.notEqual(reactionExportBlockReason(), null);

@@ -18,6 +18,13 @@ const generationNames: Record<string, string> = { IDLE: '未生成', QUEUED: '�
 const reasonNames: Record<string, string> = {
   CAPTURE_FAILED_CHECK_MEDIA_INPUTS: '录像裁剪失败，请检查输入视频与媒体处理服务',
   CCS_DISCONNECTED_OR_INVALID_EVENT: 'CCS 连接中断或事件格式无效，正在重试',
+  HYDRO_DISCONNECTED_OR_INVALID_RECORD: 'Hydro 提交来源中断或数据无效，请检查来源服务，正在重试',
+  REACTION_HYDRO_CONFIGURATION: '请检查 Hydro 评测地址、API-Key，或在本场考试填写目标站点的监考插件 API-Key',
+  REACTION_HYDRO_CCS_CONFIGURATION: '请部署管理员配置独立 Hydro CCS 的站点和读取密钥，并重启 Web 与 Recorder',
+  HYDRO_HTTP_400: 'Hydro CCS 请求无效：仅支持固定起止时间的 XCPC（acm）比赛，请检查赛制和事件续传配置',
+  HYDRO_HTTP_401: 'Hydro CCS 授权失败，请检查独立 CCS 的未封榜读取密钥',
+  HYDRO_HTTP_403: 'Hydro CCS 拒绝访问，请确认比赛已加入 CCS 允许清单，并检查代理规则',
+  HYDRO_HTTP_404: 'Hydro 比赛或 CCS 接口不存在，请核对比赛域和 ID，并安装独立 hydro-ccs-api 插件',
   JUDGEMENT_TIMEOUT: '超过最长待判时间',
   VIDEO_FRAME_CADENCE_INCOMPLETE: '采集帧间隔过长，可能受到客户端后台节流影响；已保留可用录像',
   VIDEO_FRAME_TIMING_UNVERIFIED: '无法验证原始视频的逐帧时间戳；已保留可用录像',
@@ -27,7 +34,7 @@ const reasonNames: Record<string, string> = {
   VIDEO_SOURCE_UNAVAILABLE: '原始录像无法读取或解码，请检查录像文件与存储服务',
   VIDEO_COVERAGE_OR_CLOCK_INCOMPLETE: '录像区间缺失或采集时钟未能可靠同步',
   TEAM_USERNAME_NOT_MAPPED: '未找到与队伍 username 完全匹配的监考考号',
-  SUBMISSION_DELETED: 'NovaJudge 已删除这次提交',
+  SUBMISSION_DELETED: '评测来源已删除或忽略这次提交',
   SUBMISSION_IDENTITY_CHANGED: '提交对应的队伍或题目发生变化',
   REACTION_DISABLED: 'Reaction 已关闭，当前录像已取消'
 };
@@ -171,8 +178,18 @@ export function ReactionAdminClient({ examId }: { examId: string }) {
             <div><button className="button" type="submit">{busy ? <LoaderCircle size={17} className="spin" /> : <Save size={17} />}保存配置</button></div>
           </fieldset>
         </form>
-        {data && !data.config.credentialsConfigured ? <p className={styles.warning}>CCS 服务端授权尚未配置，或平台地址不匹配。请展开下方“CCS 授权在哪里填写”，由部署管理员完成配置。</p> : null}
-        <ReactionCcsSetupHelp />
+        {data?.exam.platform === 'NOVAJUDGE' ? <>
+          {!data.config.credentialsConfigured ? <p className={styles.warning}>CCS 服务端授权尚未配置，或平台地址不匹配。请展开下方“CCS 授权在哪里填写”，由部署管理员完成配置。</p> : null}
+          <ReactionCcsSetupHelp />
+        </> : data?.exam.reactionSource === 'HYDRO_CONTEST' || data?.exam.platform === 'HYDRO_BROWSER' ? <>
+          {!data.config.credentialsConfigured ? <p className={styles.warning}>独立 Hydro CCS 授权尚未配置或站点不匹配，请部署管理员按 docs/hydro-ccs.md 配置 Web 与 Recorder。</p> : null}
+          <p className="muted">原生 XCPC 使用独立 hydro-ccs-api 插件。请将比赛加入 CCS 允许清单，配置未封榜读取密钥，并启动 Recorder。开赛前开启 Reaction，等待“已连接”；考号须与实际提交账号一致。</p>
+          <p className="muted">Reaction 保存有依据的判题前后名次；首次接入的历史结果或证据不足时隐藏名次。直播使用单独的 Basic 账号并遵守封榜。</p>
+        </> : data ? <>
+          {!data.config.credentialsConfigured ? <p className={styles.warning}>请先在系统设置中配置 Hydro 评测地址和 API-Key。</p> : null}
+          <p className="muted">Hydro 使用系统设置中的评测 API-Key。请启动独立 Recorder 并在开赛前开启 Reaction，等待事件来源显示“已连接”。考号须与提交账号一致。</p>
+          <p className="muted">本平台考试读取已同步的 Hydro 评测结果，目前不显示判题前后名次，无需 CCS 插件。</p>
+        </> : null}
       </section>
       <section className="card grid" aria-label="视频外观设置">
         <div className={styles.heading}><div><h2>视频外观</h2><p className="muted">选择背景和字体，预览竖屏排版。保存后用于新生成的视频，已有视频可点击“重新生成”应用设置。</p></div></div>
@@ -185,7 +202,7 @@ export function ReactionAdminClient({ examId }: { examId: string }) {
               <p className="muted">推荐 <strong>1080 × 1920 像素（9:16）</strong>。支持静态 PNG、JPEG、WebP，单张不超过 <strong>4 MiB</strong>，最多 1600 万像素、单边不超过 8192 像素。</p>
               <p className="muted">其他比例会等比放大并居中裁切。摄像头、信息卡和桌面会覆盖背景的中部，请把背景标题或装饰放在顶部、底部及边缘，先用右侧预览检查。</p>
               <label>字体风格<select aria-label="字体风格" value={draft.presentation.fontPreset} onChange={event => editPresentation({ fontPreset: event.target.value as ReactionPresentationView['fontPreset'] })}><option value="broadcast">比赛播报</option><option value="classic">经典风格</option></select></label>
-              <p className="muted">组织徽章由系统按队伍的学校/组织自动匹配，未匹配时使用系统默认徽章。由超级管理员在系统设置维护。</p>
+              <p className="muted">在编辑考试的「考试设置」中选择按学校或学院名称匹配。徽章由超级管理员在系统设置维护，未匹配时使用默认徽章。</p>
               <div><button className="button" type="button" onClick={() => void save()}>{busy ? <LoaderCircle size={17} className="spin" /> : <Save size={17} />}保存视频外观</button></div>
             </div>
             <ReactionAppearancePreview endpoint={endpoint} backgroundUrl={draft.presentation.backgroundPath ? assetUrl(draft.presentation.backgroundPath) : undefined} fontPreset={draft.presentation.fontPreset} candidates={data?.candidates || []} refresh={refresh} />
@@ -215,7 +232,7 @@ export function ReactionAdminClient({ examId }: { examId: string }) {
           <button className="button secondary" disabled={busy || exporting || Boolean(exportBlockReason)} onClick={() => void exportVideos()}>{exporting ? <LoaderCircle size={17} className="spin" /> : <Download size={17} />}{exporting ? '正在准备下载…' : '批量导出 MP4（ZIP）'}</button>
         </div></div>
         <p className="muted">不完整录像只要有桌面画面，也可以生成竖屏。缺少摄像头录像时，摄像头区域使用占位模板；两路都有时，按较短的有效时长结束。成片可能缺少画面，原录像仍标记为“不完整”。</p>
-        <p className={data?.exportSummary?.invalidSubmissionIds ? styles.warning : 'muted'} role={data?.exportSummary?.invalidSubmissionIds ? 'status' : undefined}>{exportBlockReason || `导出本场全部 ${data?.exportSummary?.generatedCount} 个已生成竖屏视频，文件名使用 Submission UUID。`}</p>
+        <p className={data?.exportSummary?.invalidSubmissionIds ? styles.warning : 'muted'} role={data?.exportSummary?.invalidSubmissionIds ? 'status' : undefined}>{exportBlockReason || `导出本场全部 ${data?.exportSummary?.generatedCount} 个已生成竖屏视频，文件名使用原始 Submission ID。`}</p>
         <div className="table-scroll"><table className={`table ${styles.table}`}><thead><tr><th>Submission</th><th>Team</th><th>Problem</th><th>Verdict</th><th>Duration</th><th>Status</th><th>Actions</th></tr></thead><tbody>
           {data?.items.map(item => <tr key={item.id}>
             <td>{reactionSubmissionLabel(item)}<small className={styles.small}>{dateTime(item.createdAt)}</small></td>

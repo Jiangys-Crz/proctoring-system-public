@@ -3,7 +3,8 @@ import { prisma } from './db';
 import { readScreenImageTemplate, unsupportedScreenFields, type ScreenImageTemplate } from './screen-control-template';
 import {
   effectiveScreenDisplay, SCREEN_CONTROL_INTERVAL_MS, SCREEN_CONTROL_MAX_GROUPS,
-  ScreenControlError, validateScreenDisplayTimes, validateScreenImageOrder,
+  SCREEN_CONTROL_PARTICIPANT_WIDTH, SCREEN_CONTROL_PARTICIPANT_HEIGHT,
+  ScreenControlError, validateScreenDisplayImageCount, validateScreenDisplayTimes, validateScreenImageOrder,
 } from './screen-control-policy';
 
 type GroupWithImages = Pick<ScreenControlGroup, 'id' | 'examId' | 'name' | 'createdAt' | 'updatedAt'> & {
@@ -36,13 +37,39 @@ export function serializeScreenControlGroup(group: GroupWithImages, sessionId?: 
   };
 }
 
+export function screenControlParticipantImageId(displayId: string) {
+  return `participant-${displayId}`;
+}
+
+function participantOnlyGroupId(examId: string) {
+  return `participant-card-${examId}`;
+}
+
+export function isParticipantOnlyDisplay(display: Pick<ScreenControlDisplay, 'examId' | 'groupId'>) {
+  return display.groupId === participantOnlyGroupId(display.examId);
+}
+
 export function serializeScreenControlDisplay(display: DisplayWithGroup, sessionId?: string) {
+  const participantCardOnly = isParticipantOnlyDisplay(display);
+  const images = participantCardOnly ? [] : serializeScreenControlGroup(display.group, sessionId).images;
+  if (display.showParticipantCard && sessionId) {
+    const id = screenControlParticipantImageId(display.id);
+    images.push({
+      id, name: '参赛信息图.webp', order: images.length, byteSize: 0,
+      width: SCREEN_CONTROL_PARTICIPANT_WIDTH, height: SCREEN_CONTROL_PARTICIPANT_HEIGHT,
+      url: `/api/client/screen-control/images/${id}?sessionId=${encodeURIComponent(sessionId)}`,
+    });
+  }
   return {
     id: display.id, groupId: display.groupId, groupName: display.groupName,
     startsAt: display.startsAt.toISOString(), endsAt: display.endsAt?.toISOString() || null,
     stoppedAt: display.stoppedAt?.toISOString() || null, canceledAt: display.canceledAt?.toISOString() || null,
     createdAt: display.createdAt.toISOString(), intervalMs: SCREEN_CONTROL_INTERVAL_MS,
-    images: serializeScreenControlGroup(display.group, sessionId).images,
+    ...(!sessionId ? {
+      showParticipantCard: display.showParticipantCard === true,
+      participantCardOnly,
+    } : {}),
+    images,
   };
 }
 
@@ -52,17 +79,21 @@ async function latestScreenDisplay(db: Prisma.TransactionClient, examId: string,
   });
 }
 
+export async function getCurrentClientScreenControlDisplay(examId: string, now = new Date()) {
+  const latest = await prisma.screenControlDisplay.findFirst({
+    where: { examId, startsAt: { lte: now }, canceledAt: null }, orderBy: displayOrder, include: clientDisplayInclude,
+  });
+  return latest ? effectiveScreenDisplay([latest], now) : null;
+}
+
 export async function getClientScreenControl(examId: string, sessionId: string, now = new Date()) {
-  const [latest, next] = await Promise.all([
-    prisma.screenControlDisplay.findFirst({
-      where: { examId, startsAt: { lte: now }, canceledAt: null }, orderBy: displayOrder, include: clientDisplayInclude,
-    }),
+  const [active, next] = await Promise.all([
+    getCurrentClientScreenControlDisplay(examId, now),
     prisma.screenControlDisplay.findFirst({
       where: { examId, startsAt: { gt: now }, canceledAt: null, stoppedAt: null },
       orderBy: [{ startsAt: 'asc' }, { sequence: 'desc' }], select: { startsAt: true },
     }),
   ]);
-  const active = latest ? effectiveScreenDisplay([latest], now) : null;
   return { serverNow: now.toISOString(), active: active ? serializeScreenControlDisplay(active, sessionId) : null,
     nextStartsAt: next?.startsAt.toISOString() || null };
 }
@@ -160,12 +191,25 @@ export async function deleteScreenControlGroup(examId: string, groupId: string) 
   });
 }
 
-export async function createScreenControlDisplay(examId: string, input: { groupId: string; startsAt?: string; endsAt?: string | null }, createdById: string) {
+export async function createScreenControlDisplay(examId: string, input: { groupId?: string; startsAt?: string; endsAt?: string | null; showParticipantCard?: boolean; participantCardOnly?: boolean }, createdById: string) {
   return mutateScreenControl(examId, async (tx) => {
     const now = new Date();
     const { startsAt, endsAt } = validateScreenDisplayTimes(input, now);
-    const group = await tx.screenControlGroup.findFirst({ where: { id: input.groupId, examId, deletedAt: null }, include: groupInclude });
-    if (!group?.images.length) throw new ScreenControlError('请选择该考试中的有效图片组', 404);
+    if (input.participantCardOnly ? input.groupId !== undefined : !input.groupId) {
+      throw new ScreenControlError('请选择图片组，或单独推送参赛信息图');
+    }
+    const group = input.participantCardOnly
+      ? await tx.screenControlGroup.upsert({
+        where: { id: participantOnlyGroupId(examId) },
+        // Keep the display's required group reference without exposing an editable image group.
+        create: { id: participantOnlyGroupId(examId), examId, name: '参赛信息', createdById, deletedAt: now },
+        update: {},
+        include: groupInclude,
+      })
+      : await tx.screenControlGroup.findFirst({ where: { id: input.groupId, examId, deletedAt: null }, include: groupInclude });
+    if (!group || (!input.participantCardOnly && !group.images.length)) throw new ScreenControlError('请选择该考试中的有效图片组', 404);
+    const showParticipantCard = input.participantCardOnly || input.showParticipantCard === true;
+    if (!input.participantCardOnly) validateScreenDisplayImageCount(group.images.length, showParticipantCard);
     if (input.startsAt) {
       const schedules = await tx.screenControlDisplay.count({ where: { examId, startsAt: { gt: now }, stoppedAt: null, canceledAt: null } });
       if (schedules >= 100) throw new ScreenControlError('最多保留 100 个待执行的定时展示', 409);
@@ -176,7 +220,7 @@ export async function createScreenControlDisplay(examId: string, input: { groupI
     }
     const previous = await tx.screenControlDisplay.findFirst({ where: { examId }, orderBy: { sequence: 'desc' }, select: { sequence: true } });
     const display = await tx.screenControlDisplay.create({ data: {
-      examId, groupId: group.id, groupName: group.name, startsAt, endsAt, createdById, sequence: (previous?.sequence || 0) + 1,
+      examId, groupId: group.id, groupName: group.name, showParticipantCard, startsAt, endsAt, createdById, sequence: (previous?.sequence || 0) + 1,
     }, include: displayInclude });
     return serializeScreenControlDisplay(display);
   });

@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+
+export type WindowsUsbInventorySample = { devices: string[]; observedAt: number };
+
 // Device-interface names and inventories must use the same physical identity.
 // Win7 USB 3 drivers may change the enumerator or publish REV_xxxx metadata.
 const childBus = /^(?:HID|USBSTOR|SCSI|STORAGE|SWD|ROOT|HTREE|BTHENUM|PCI)$/i;
@@ -17,4 +21,9 @@ export function usbDeviceIdentity(path: unknown): string | null {
   if (typeof path !== 'string' || path.length > 2048) return null;
   const match = /^\\\\\?\\([A-Z0-9_]{1,64})#(VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&[^#]+)?)#([^#]+)#\{A5DCBF10-6530-11D2-901F-00C04FB951ED\}$/i.exec(path);
   return match ? physicalUsbIdentity(`${match[1]}\\${match[2]}\\${match[3]}`) : null;
+}
+
+export function windowsUsbFingerprint(identities: Iterable<string>) {
+  const hash = createHash('sha256').update(JSON.stringify([...identities].sort())).digest('hex');
+  return `usb-v6:${hash}`;
 }

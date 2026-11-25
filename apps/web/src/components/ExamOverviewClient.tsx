@@ -315,11 +315,11 @@ export function ExamOverviewClient({ examId, initialCanManage, canViewProctorRec
         <nav className="exam-overview-actions" aria-label="考试详情操作">
           {browser ? <>
             <a href={`${exam.platformBaseUrl}/contest/${exam.platformContestId}`} target="_blank" rel="noreferrer"><Trophy size={19} />{platformName} 比赛</a>
-            {canManage && exam.platform === 'NOVAJUDGE' ? <Link href={`/dashboard/exams/${examId}/reactions`}><Film size={19} />Reaction 录像</Link> : null}
           </> : <>
             <Link href={`/dashboard/exams/${examId}/problems`}><List size={19} />题目列表</Link>
             <Link href={`/dashboard/exams/${examId}/leaderboard`}><BarChart3 size={19} />排行榜</Link>
           </>}
+          {canManage && ['NOVAJUDGE', 'HYDRO', 'HYDRO_BROWSER'].includes(exam.platform) ? <Link href={`/dashboard/exams/${examId}/reactions`}><Film size={19} />Reaction 录像</Link> : null}
           {canManage ? <>
             <Link href={`/dashboard/exams/${examId}/settings`}><Pencil size={19} />编辑考试</Link>
             <Link href={`/dashboard/exams/${examId}/settings/${browser ? 'rooms' : 'problems'}`}><Settings size={19} />考试管理</Link>

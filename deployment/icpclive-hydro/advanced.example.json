@@ -1,0 +1,31 @@
+[
+  {
+    "type": "overrideScoreboardSettings",
+    "penaltyRoundingMode": "sum_in_seconds"
+  },
+  {
+    "type": "overrideGroups",
+    "rules": {
+      "participants": { "isHidden": false, "isOutOfContest": false },
+      "observers": { "isHidden": false, "isOutOfContest": true }
+    }
+  },
+  {
+    "type": "overrideTeams",
+    "rules": {
+      "hydro_team01": {
+        "displayName": "示例队伍",
+        "medias": {
+          "screen": {
+            "type": "WHEPVideo",
+            "url": "https://proctor.example/api/2026110901/hydro_team01/1?apikey=REPLACE_WITH_MEDIA_LIVE_KEY"
+          },
+          "camera": {
+            "type": "WHEPVideo",
+            "url": "https://proctor.example/api/2026110901/hydro_team01/2?apikey=REPLACE_WITH_MEDIA_LIVE_KEY"
+          }
+        }
+      }
+    }
+  }
+]

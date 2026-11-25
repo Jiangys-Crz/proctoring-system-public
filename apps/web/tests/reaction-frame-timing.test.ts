@@ -85,3 +85,39 @@ test('actual FFmpeg VFR trim keeps its leading black interval on the shared time
     await rm(actual,{recursive:true,force:true});
   }
 });
+
+test('captured clips and a missing interval join on one frame clock with aligned audio', async () => {
+  const { renderReactionTimeline, runMedia } = await import('../src/lib/reaction-media');
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'reaction-concat-test-'));
+  const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+  const ffprobe = process.env.FFPROBE_PATH || 'ffprobe';
+  try {
+    const desktop = path.join(directory, 'desktop.mp4');
+    await runMedia(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=red:s=160x90:r=25:d=1',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=1', '-c:v', 'libx264', '-threads', '2', '-c:a', 'aac', desktop]);
+    const report = { complete: false, issues: [] as string[], gaps: [], slices: [
+      { id: 'first', from: 0, duration: 0.4, timelineStart: 0 },
+      { id: 'second', from: 0.4, duration: 0.4, timelineStart: 0.8 },
+    ] };
+    const rendered = await renderReactionTimeline(report, 1.2, async () => desktop, directory, 'joined');
+    assert.ok(rendered);
+    assert.deepEqual(rendered.pieces.map(piece => piece.frames), [10, 10, 10]);
+    const { streams } = JSON.parse(await runMedia(ffprobe, [
+      '-v', 'error', '-show_entries', 'stream=codec_type,nb_frames,duration,start_time', '-of', 'json', rendered.output,
+    ]));
+    const video = streams.find((stream: { codec_type: string }) => stream.codec_type === 'video');
+    const audio = streams.find((stream: { codec_type: string }) => stream.codec_type === 'audio');
+    assert.equal(Number(video.nb_frames), 30);
+    assert.equal(Number(video.duration), 1.2);
+    assert.equal(Number(audio.start_time), 0);
+    assert.ok(Math.abs(Number(audio.duration) - 1.2) < 0.03);
+    const colors = spawnSync(ffmpeg, ['-v', 'error', '-i', rendered.output, '-vf', 'scale=1:1,format=rgb24',
+      '-f', 'rawvideo', '-'], { maxBuffer: 64 * 1024 });
+    assert.equal(colors.status, 0);
+    for (let frame = 0; frame < 30; frame++) {
+      assert.equal(colors.stdout[frame * 3] > 128, frame < 10 || frame >= 20);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import { prisma } from '@/lib/db';
 import { readReactionAsset } from '@/lib/reaction-presentation';
 import { readBuiltinReactionBadge, resolveReactionBrandingLogo } from '@/lib/reaction-branding';
+import { reactionLogoOrganizationName } from '@/lib/reaction-render-settings';
 import { UploadSecurityError } from '@/lib/upload-security';
 import { reactionRouteError, requireReactionAdmin } from '../_shared';
 
@@ -21,9 +22,13 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     } else if (kind === 'logo') {
       const teamId = params.get('teamId');
       if (teamId && teamId.length > 100) throw new UploadSecurityError('队伍账号无效');
-      const candidate = teamId ? await prisma.candidate.findFirst({ where: { examId: id, examNumber: teamId }, select: { school: true } }) : null;
-      if (teamId && !candidate) throw new UploadSecurityError('队伍不存在', 404);
-      const badge = await resolveReactionBrandingLogo(candidate?.school || null);
+      const candidate = teamId ? await prisma.candidate.findFirst({
+        where: { examId: id, examNumber: teamId },
+        select: { examNumber: true, school: true, college: true, exam: { select: { reactionLogoMatchBy: true } } }
+      }) : null;
+      if (teamId && candidate?.examNumber !== teamId) throw new UploadSecurityError('队伍不存在', 404);
+      const organizationName = candidate ? reactionLogoOrganizationName(candidate.exam.reactionLogoMatchBy, candidate) : null;
+      const badge = await resolveReactionBrandingLogo(organizationName);
       buffer = badge.path ? await readReactionAsset('logo-library', badge.path) : await readBuiltinReactionBadge();
     } else throw new UploadSecurityError('预览类型无效');
     return new Response(new Uint8Array(buffer), { headers: { 'content-type': 'image/png', 'content-length': String(buffer.length), 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' } });

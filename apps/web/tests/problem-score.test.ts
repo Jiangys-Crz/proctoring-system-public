@@ -44,6 +44,7 @@ test('exam imports recover the real full score from old bridge metadata and defa
   replace(prisma, '$transaction', async (operation: any) => operation({
     $queryRaw: async () => [],
     examFederation: { findUnique: async () => null },
+    contestLiveSettings: { findUnique: async () => null },
     exam: { update: async () => ({ id: 'e' }) },
     examProblem: { findMany: async () => [], deleteMany: async () => ({}), create: async ({ data }: any) => { writes.push(data); return data; } },
   }));

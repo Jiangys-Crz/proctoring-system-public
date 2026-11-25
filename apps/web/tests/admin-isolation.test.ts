@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { Prisma } from '@prisma/client';
 import ts from 'typescript';
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,7 +26,7 @@ function loader(mocks: Record<string, unknown>) {
   }
   return (route: string) => load(resolve(web, 'src', route));
 }
-function fixture(manager = false) {
+function fixture(manager = false, allowOverviewRead = false) {
   const user = { id: 'proctor-a', role: 'ADMIN', status: 'ACTIVE' };
   const queries: any = {};
   let writes = 0;
@@ -46,7 +47,13 @@ function fixture(manager = false) {
       findFirst: async ({ where }: any) => where.id === 'session-b' ? null : { id: where.id, candidateId: 'candidate-a', examId: 'exam' },
     },
     alert: { findUnique: async () => ({ id: 'global-alert', examId: 'exam', candidateId: null }) },
-    $transaction: async () => { writes++; assert.fail('unauthorized request must never open a write transaction'); },
+    $transaction: async (read: (tx: unknown) => Promise<unknown>, options?: { isolationLevel?: string }) => {
+      if (allowOverviewRead && options?.isolationLevel === 'RepeatableRead') {
+        return read({ exam: db.exam, contestSubmission: db.contestSubmission });
+      }
+      writes++;
+      assert.fail('unauthorized request must never open a write transaction');
+    },
     examRoomProctor: { count: async () => 1 },
     examRoomCandidate: { count: async ({ where }: any) => where.candidateId === 'candidate-a' ? 1 : 0 },
     printJob: {
@@ -78,6 +85,79 @@ test('exam details scope proctor rooms and redact nested credentials', async () 
   assert.equal(body.data.rooms[0].candidates[0].candidate.password, undefined);
 });
 
+test('exam managers can save only the Reaction logo mode without editing the contest definition', async () => {
+  const user = { id: 'exam-admin', role: 'ADMIN' };
+  const exams = new Map([['exam', 'SCHOOL'], ['other-exam', 'SCHOOL']]);
+  let manageable = true;
+  let publicTest = false;
+  let writes = 0;
+  class AuthError extends Error {}
+  const load = loader({
+    '@/lib/auth': { AuthError, requireUser: async () => user },
+    '@/lib/permissions': { canManageExam: async () => manageable },
+    '@/lib/public-test': { isPublicTestExam: async () => publicTest },
+    '@/lib/exam-save': { saveExam: () => assert.fail('logo-only save must not call the contest editor') },
+    '@/lib/db': { prisma: { exam: {
+      update: async ({ where, data }: { where: { id: string }; data: { reactionLogoMatchBy: string } }) => {
+        assert.deepEqual(Object.keys(data), ['reactionLogoMatchBy']);
+        if (!exams.has(where.id)) throw new Prisma.PrismaClientKnownRequestError('Exam not found', { code: 'P2025', clientVersion: 'test' });
+        writes++;
+        exams.set(where.id, data.reactionLogoMatchBy);
+        return data;
+      },
+    } } },
+  });
+  const route = load('app/api/exams/[id]/route.ts');
+  const change = (value: string, id = 'exam') => route.PATCH(new Request('http://localhost:4031/api/exams/' + id, {
+    method: 'PATCH', body: JSON.stringify({ reactionLogoMatchBy: value }),
+  }), { params: Promise.resolve({ id }) });
+
+  const college = await change('COLLEGE');
+  assert.equal(college.status, 200);
+  assert.deepEqual((await college.json()).data, { reactionLogoMatchBy: 'COLLEGE' });
+  assert.equal(exams.get('exam'), 'COLLEGE');
+  assert.equal(exams.get('other-exam'), 'SCHOOL');
+  assert.equal((await change('DEPARTMENT')).status, 400);
+  assert.equal((await change('SCHOOL', 'missing')).status, 404);
+  manageable = false;
+  assert.equal((await change('SCHOOL')).status, 403);
+  manageable = true;
+  publicTest = true;
+  assert.equal((await change('SCHOOL')).status, 403);
+  assert.equal(writes, 1);
+  publicTest = false;
+  assert.equal((await change('SCHOOL')).status, 200);
+  assert.equal(exams.get('exam'), 'SCHOOL');
+});
+
+test('Reaction logo preview uses the saved mode and an exact team account match', async () => {
+  const candidate = { examNumber: 'Team01', school: '测试大学', college: '计算机学院', exam: { reactionLogoMatchBy: 'SCHOOL' } };
+  const load = loader({
+    '../_shared': {
+      requireReactionAdmin: async (examId: string) => assert.equal(examId, 'exam'),
+      reactionRouteError: (error: { status?: number }) => new Response(null, { status: error.status || 500 }),
+    },
+    '@/lib/db': { prisma: { candidate: {
+      findFirst: async ({ where }: { where: { examId: string; examNumber: string } }) => {
+        assert.equal(where.examId, 'exam');
+        return where.examNumber.toLowerCase() === 'team01' ? candidate : null;
+      },
+    } } },
+    '@/lib/reaction-branding': {
+      resolveReactionBrandingLogo: async (name: string | null) => ({ path: name || undefined }),
+      readBuiltinReactionBadge: async () => Buffer.from('default'),
+    },
+    '@/lib/reaction-presentation': { readReactionAsset: async (_namespace: string, name: string) => Buffer.from(name) },
+  });
+  const route = load('app/api/exams/[id]/reactions/appearance-preview/route.ts');
+  const preview = (teamId: string) => route.GET(new Request(`http://localhost:4031/api/exams/exam/reactions/appearance-preview?kind=logo&teamId=${teamId}`), context);
+  assert.equal(await (await preview('Team01')).text(), '测试大学');
+  candidate.exam.reactionLogoMatchBy = 'COLLEGE';
+  assert.equal(await (await preview('Team01')).text(), '计算机学院');
+  assert.equal((await preview('team01')).status, 404);
+  assert.equal(await (await preview('')).text(), 'default');
+});
+
 test('candidate credentials are obtainable only through managed candidate endpoint', async () => {
   const denied = fixture(); assert.equal((await denied.load('app/api/exams/[id]/candidates/route.ts').GET(request(), context)).status, 403);
   const allowed = fixture(true); const response = await allowed.load('app/api/exams/[id]/candidates/route.ts').GET(request(), context);
@@ -97,7 +177,7 @@ test('print list and mutation enforce room ownership; unauthorized task never wr
 });
 
 test('overview identities, submissions and counts use identical proctor room scope', async () => {
-  const f = fixture(); const response = await f.load('app/api/exams/[id]/overview/route.ts').GET(request(), context);
+  const f = fixture(false, true); const response = await f.load('app/api/exams/[id]/overview/route.ts').GET(request(), context);
   assert.equal(response.status, 200);
   const scope = { rooms: { some: { room: { proctors: { some: { userId: 'proctor-a' } } } } } };
   assert.deepEqual(f.queries.exam.include.candidates.where, scope);

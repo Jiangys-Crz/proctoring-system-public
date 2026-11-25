@@ -54,7 +54,7 @@ test('HLS rewriting rejects cross-stream, external and traversing resources', ()
 
 function accessRow(changes: Record<string, unknown> = {}) {
   return { candidateId: 'candidate', examId: 'exam', examRequireFrontCamera: 1, examRequireMiniProgram: 1,
-    requireFrontCamera: 1, requireSecondCamera: 1, allowed: 1n, ...changes };
+    requireFrontCamera: 1, requireSecondCamera: 1, allowed: 1n, available: 1n, ...changes };
 }
 
 const viewer = { id: 'viewer', role: 'ADMIN' } as User;
@@ -122,6 +122,15 @@ test('different viewers, roles and sessions never reuse another authorization qu
       authorizeMediaRead(viewer, 'other-session', 'DESKTOP_SCREEN')
     ]);
     assert.equal(lookups, 4);
+  } finally { prisma.$queryRaw = originalQuery; }
+});
+
+test('ended live streams deny reading while allowing an authorized viewer to close its own peer', async () => {
+  const originalQuery = prisma.$queryRaw;
+  prisma.$queryRaw = (async () => [accessRow({ available: 0n })]) as unknown as typeof originalQuery;
+  try {
+    await assert.rejects(authorizeMediaRead(viewer, 'session', 'DESKTOP_SCREEN'), { status: 409 });
+    await authorizeMediaRead(viewer, 'session', 'DESKTOP_SCREEN', false);
   } finally { prisma.$queryRaw = originalQuery; }
 });
 

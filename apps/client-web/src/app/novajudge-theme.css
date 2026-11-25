@@ -172,9 +172,6 @@
 .exam-portal .candidate-contest-overview .candidate-exam-facts { padding: 24px; }
 .exam-portal .candidate-exam-facts h2 { color: #364153; border-color: var(--nova-border); font-size: 16px; }
 .exam-portal .candidate-start-panel { padding: 20px 24px; border-color: var(--nova-border); }
-.exam-portal .candidate-start-countdown { border-color: #dbeafe; border-radius: 4px; background: var(--nova-blue-soft); }
-.exam-portal .candidate-start-countdown span { color: var(--nova-muted); }
-.exam-portal .candidate-start-countdown strong { color: var(--nova-blue); font-family: var(--nova-mono); }
 
 /* NovaJudge's ruled table headers and alternating blue-gray rows. */
 .exam-portal .exam-table-wrap { padding: 0 24px 24px; }

@@ -2,7 +2,7 @@ import { mediaApiToken } from './media-api-auth';
 import { liveChannels, mediaStreamPath } from './media-read-token';
 
 type Snapshot = { available: boolean; paths: Set<string> };
-type Session = { id: string; status: string };
+type Session = { id: string; status: string; revokedAt?: Date | null };
 
 // MediaMTX v3 paths/list provides ready + bytesReceived and explicit pagination:
 // https://github.com/bluenviron/mediamtx/blob/v1.15.4/api/openapi.yaml
@@ -39,9 +39,9 @@ export function createMonitorLiveStatusLoader(options: {
     return { available: false, paths: new Set() };
   }
 
-  return async (sessions: readonly Session[]) => {
-    const active = sessions.filter(session => session.status !== 'FINISHED' && /^[A-Za-z0-9_-]{1,128}$/.test(session.id));
-    if (!active.length) return { liveStatusAvailable: true, liveReadySessionIds: [] as string[] };
+  async function readyChannels(sessions: readonly Session[]) {
+    const active = sessions.filter(session => session.status !== 'FINISHED' && !session.revokedAt && /^[A-Za-z0-9_-]{1,128}$/.test(session.id));
+    if (!active.length) return { available: true, bySession: new Map<string, (typeof liveChannels)[number][]>() };
     let snapshot: Snapshot;
     try {
       const base = options.base().replace(/\/$/, '');
@@ -60,11 +60,18 @@ export function createMonitorLiveStatusLoader(options: {
         snapshot = await entry.pending;
       }
     } catch { snapshot = { available: false, paths: new Set() }; }
-    return {
-      liveStatusAvailable: snapshot.available,
-      liveReadySessionIds: active.filter(session => liveChannels.some(channel => snapshot.paths.has(mediaStreamPath(session.id, channel).slice(1)))).map(session => session.id),
-    };
-  };
+    const bySession = new Map<string, (typeof liveChannels)[number][]>();
+    for (const session of active) {
+      const channels = liveChannels.filter(channel => snapshot.paths.has(mediaStreamPath(session.id, channel).slice(1)));
+      if (channels.length) bySession.set(session.id, channels);
+    }
+    return { available: snapshot.available, bySession };
+  }
+
+  return Object.assign(async (sessions: readonly Session[]) => {
+    const { available, bySession } = await readyChannels(sessions);
+    return { liveStatusAvailable: available, liveReadySessionIds: Array.from(bySession.keys()) };
+  }, { readyChannels });
 }
 
 export const monitorLiveStatus = createMonitorLiveStatusLoader({

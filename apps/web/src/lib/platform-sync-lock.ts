@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Prisma } from '@prisma/client';
 import { prisma } from './db';
 import { digest, FederationError } from './exam-federation-protocol';
@@ -21,16 +22,23 @@ export async function assertPlatformLease(tx: Prisma.TransactionClient) {
 export async function platformTransaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>) {
   return prisma.$transaction(async tx => { await assertPlatformLease(tx); const result = await work(tx); await assertPlatformLease(tx); return result; }, { isolationLevel: 'ReadCommitted', timeout: 60_000 });
 }
-export async function withPlatformLease<T>(work: () => Promise<T>, expectedRevision?: string): Promise<T> {
+export async function withPlatformLease<T>(work: () => Promise<T>, expectedRevision?: string, waitMs = 0): Promise<T> {
   const active = context.getStore();
   if (active) {
     if (active.lost || (expectedRevision && expectedRevision !== active.settingsHash)) throw new FederationError('同步设置已改变，等待重试', 503);
     return work();
   }
   await prisma.platformSyncState.upsert({ where: { id: 'peer' }, create: { id: 'peer' }, update: {} });
-  const token = randomUUID(), now = new Date();
-  const claimed = await prisma.platformSyncState.updateMany({ where: { id: 'peer', OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, data: { leaseToken: token, leaseUntil: new Date(Date.now() + 90_000) } });
-  if (!claimed.count) throw new FederationError('同步正在进行，请稍后重试', 503);
+  const token = randomUUID(), deadline = Date.now() + Math.max(0, Math.min(waitMs, 30_000));
+  for (;;) {
+    const now = new Date();
+    const claimed = await prisma.platformSyncState.updateMany({ where: { id: 'peer', OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, data: { leaseToken: token, leaseUntil: new Date(Date.now() + 90_000) } });
+    if (claimed.count) break;
+    if (Date.now() >= deadline) throw new FederationError('同步正在进行，请稍后重试', 503);
+    // Manual imports wait for a background turn; they never steal or clear
+    // another worker's live lease. Scheduled polling remains non-blocking.
+    await sleep(Math.min(250, deadline - Date.now()));
+  }
   let renew: ReturnType<typeof setInterval> | undefined;
   try {
     const settings = await prisma.systemSetting.findUnique({ where: { key: 'platformSync' } });

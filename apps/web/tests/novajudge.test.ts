@@ -84,11 +84,29 @@ test('Nova external-board conversion keeps leading zeros, verdicts, timestamps a
   assert.throws(() => novaBoardSubmission(row, [...problems, { ...problems[0], display_id: 'B' }], { id: 'exam-1' }), /唯一匹配/);
 });
 
+test('Nova problem pushes preserve the source color and distinguish an older export from a cleared color', () => {
+  const row = { displayId: 'A', name: 'A+B', source_problem_id: '327' };
+  const [colored] = novaBoardProblems([{ ...row, color: '#38bada' }]);
+  assert.equal(colored.color, '#38bada');
+  assert.equal(colored.source_problem_id, '327');
+  assert.equal(novaBoardProblems([{ ...row, color: ' #a3B ' }])[0].color, '#aa33BB');
+  for (const color of [null, '', '  ']) assert.equal(novaBoardProblems([{ ...row, color }])[0].color, null);
+  const [legacy] = novaBoardProblems([{ displayId: 'A', name: 'A+B' }]);
+  assert.equal(Object.hasOwn(legacy, 'color'), false);
+  assert.equal(Object.hasOwn(legacy, 'source_problem_id'), false);
+  const [unsupported] = novaBoardProblems([{ ...row, source_problem_id: '', color: 'unrecognized' }]);
+  assert.equal(Object.hasOwn(unsupported, 'color'), false);
+  assert.equal(Object.hasOwn(unsupported, 'source_problem_id'), false);
+  assert.equal(novaBoardProblems([{ ...row, source_problem_id: 327 }])[0].source_problem_id, '327');
+});
+
 test('Nova server-local export times convert China, UTC and Vancouver DST to the same receiver time', () => {
   assert.equal(novaBoardSubmitTime('2026-10-12 16:00:00:123', 'Asia/Shanghai'), '2026-10-12 16:00:00');
   assert.equal(novaBoardSubmitTime('2026-10-12 08:00:00', 'UTC'), '2026-10-12 16:00:00');
   assert.equal(novaBoardSubmitTime('2026-10-12 01:00:00', 'America/Vancouver'), '2026-10-12 16:00:00');
-  assert.equal(novaBoardSubmitTime('2026-12-12 00:00:00', 'America/Vancouver'), '2026-12-12 16:00:00');
+  // Use a historical winter so newer ICU timezone rules do not change this
+  // test's intended UTC-8 coverage.
+  assert.equal(novaBoardSubmitTime('2025-12-12 00:00:00', 'America/Vancouver'), '2025-12-12 16:00:00');
   assert.throws(() => novaBoardSubmitTime('2026-03-08 02:30:00', 'America/Vancouver'), /时间无效/);
   assert.throws(() => novaBoardSubmitTime('2026-02-30 12:00:00'), /时间无效/);
   assert.equal(CreateExamSchema.safeParse({ ...input, novaJudgeTimezone: 'Invalid/Timezone' }).success, false);

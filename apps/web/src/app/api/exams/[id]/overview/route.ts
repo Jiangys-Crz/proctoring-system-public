@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
 import { calculateLeaderboards } from '@/lib/leaderboards';
-import { canAccessExam, canManageExam } from '@/lib/permissions';
+import { canAccessExam, candidateRoomScope, canManageExam } from '@/lib/permissions';
 import { fail, ok, options, toErrorMessage } from '@/lib/http';
 import { flexibleExam, IGNORED_SUBMISSION_STATUS } from '@/lib/contest-rules';
 import { admittedLeaderboardRead } from '@/lib/heavy-read-admission';
@@ -15,7 +15,7 @@ async function loadOverview(request: Request, context: { params: Promise<{ id: s
     const { id } = await context.params;
     if (!(await canAccessExam(user, id))) return fail('无权查看该考试', 403);
     const manageable = await canManageExam(user, id);
-    const candidateScope = manageable ? {} : { rooms: { some: { room: { proctors: { some: { userId: user.id } } } } } };
+    const candidateScope = manageable ? { examId: id } : candidateRoomScope(id, user.id);
 
     const data = await prisma.$transaction(async tx => {
       const exam = await tx.exam.findUnique({

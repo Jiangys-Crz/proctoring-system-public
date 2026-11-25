@@ -1,7 +1,7 @@
 // Run against an isolated local MySQL schema and the web server using that schema.
 import assert from 'node:assert/strict';
 import { randomInt, randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { chromium, type Page } from 'playwright-core';
@@ -74,39 +74,30 @@ try {
   const page = await context.newPage(); testPage = page;
   page.on('pageerror', error => pageErrors.push(error.message));
   await page.goto(`${base}/dashboard/exams/${individual.id}/screen`);
-  await page.getByRole('button', { name: '添加考生信息', exact: true }).click();
-  console.log('Checking template editor controls.');
-  await page.getByRole('button', { name: '添加文字块', exact: true }).click();
-  await page.getByLabel('文字内容', { exact: true }).fill('姓名：<name>\n学校：<school>\n学院：<college>\n组别：<group>');
-  await page.getByLabel('文字框高（%）', { exact: true }).fill('50');
-  await page.getByLabel('字号（1000 像素图）', { exact: true }).fill('40');
-  const dragBox = page.getByRole('button', { name: '定位文字块 1', exact: true });
-  await dragBox.scrollIntoViewIfNeeded();
-  const rect = (await dragBox.boundingBox())!;
-  await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
-  await page.mouse.down(); await page.mouse.move(rect.x + rect.width / 2 + 25, rect.y + rect.height / 2 + 18, { steps: 5 }); await page.mouse.up();
-  assert.ok(Number(await page.getByLabel('横向位置（%）', { exact: true }).inputValue()) > 10);
-  console.log('Checking candidate preview and selected image layouts.');
-  const realPreviewResponse = page.waitForResponse(response => response.url().endsWith(`/images/${group.images[0].id}/preview`) && response.ok() && response.request().postDataJSON().candidateId === alice.id);
-  await page.getByLabel('预览身份', { exact: true }).selectOption(alice.id);
-  await realPreviewResponse;
-  await page.locator('.screen-template-images input[type="checkbox"]').nth(0).check();
-  await page.locator('.screen-template-images input[type="checkbox"]').nth(1).check();
-  await page.getByRole('button', { name: '将当前布局应用到所选 2 张图片', exact: true }).click();
-  await page.getByRole('button', { name: '查看成品', exact: true }).click();
-  await page.getByText('实际考生资料', { exact: true }).waitFor();
-  assert.equal(await page.locator('.screen-template-properties').evaluate(element => element.scrollWidth <= element.clientWidth), true, 'long template content must not overflow the properties panel');
-  assert.equal(await page.locator('.screen-template-dialog').evaluate(element => {
-    const bounds = element.getBoundingClientRect(); return bounds.top >= 0 && bounds.bottom <= window.innerHeight;
-  }), true, 'dialog must remain within the viewport after opening from a scrolled page');
+  const participantToggle = page.getByRole('switch', { name: '本次轮播展示参赛信息图' });
+  await participantToggle.waitFor();
+  assert.equal(await participantToggle.isChecked(), false);
+  assert.equal(await page.getByRole('button', { name: '添加考生信息', exact: true }).count(), 0);
+  await page.locator('.screen-control-groups .screen-control-preview-strip button').first().click();
+  const originalDialog = page.getByRole('dialog', { name: '原图预览' });
+  const download = page.waitForEvent('download');
+  await originalDialog.getByRole('link', { name: '下载原图' }).click();
+  assert.equal((await download).suggestedFilename(), '须知1.webp');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await originalDialog.evaluate(element => element.scrollWidth <= element.clientWidth), true);
+  await originalDialog.getByRole('button', { name: '关闭预览' }).click();
+  await page.setViewportSize({ width: 1480, height: 1100 });
   await mkdir(artifactDir, { recursive: true });
-  await page.screenshot({ path: path.join(artifactDir, 'individual-editor.png'), fullPage: true });
-  await page.getByRole('button', { name: '保存全部图片', exact: true }).click();
-  await page.getByText('考生信息模板已保存，推送时将自动生成各考生对应的图片', { exact: true }).waitFor();
+  const template: ScreenImageTemplate = { version: 1, blocks: [{
+    id: 'legacy', content: '姓名：<name>\\n学校：<school>', x: 10, y: 20, width: 80, height: 50,
+    fontSize: 40, fontFamily: 'SANS', alignment: 'left', color: '#172033', bold: true,
+  }] };
+  await updateScreenControlGroup(individual.id, group.id, {
+    templates: group.images.slice(0, 2).map(image => ({ imageId: image.id, template })),
+  });
   const saved = (await getAdminScreenControl(individual.id)).groups[0];
   assert.deepEqual(saved.images[0].template, saved.images[1].template);
   assert.equal(saved.images[2].template?.blocks.length || 0, 0);
-  const template = saved.images[0].template!;
   console.log('Checking persisted templates, authorization and legacy client images.');
   const groupPath = `${controlBase}/groups/${group.id}`;
   assert.equal((await request(groupPath, 'PATCH', { templates: [{ imageId: memberGroup.images[0].id, template }] })).status, 400);
@@ -125,6 +116,8 @@ try {
   const previewBytes = Buffer.from(await previewResponse.arrayBuffer());
   assert.deepEqual(previewBytes, await renderScreenControlImage(background.buffer, template, await screenControlTextValues(individual.id, alice.id)));
   const pushed = await request(controlBase, 'POST', { groupId: group.id }); assert.equal(pushed.status, 201);
+  const legacy = (await pushed.json()).data;
+  await prisma.screenControlDisplay.update({ where: { id: legacy.id }, data: { showParticipantCard: null } });
   assert.equal((await request(groupPath, 'PATCH', { templates: [{ imageId: group.images[0].id, template }] })).status, 409);
   const readClient = (sessionIndex: number, imageId: string, extra = '') => fetch(`${base}/api/client/screen-control/images/${imageId}?sessionId=${sessions[sessionIndex].id}${extra}`, { headers: { 'x-proctor-session-token': tokens[sessionIndex].token } });
   const aliceImage = await readClient(0, group.images[0].id), bobImage = await readClient(1, group.images[0].id);
@@ -142,47 +135,57 @@ try {
   await prisma.clientSession.update({ where: { id: sessions[1].id }, data: { revokedAt: new Date() } });
   assert.equal((await readClient(1, group.images[0].id)).status, 401);
 
-  const teamTemplate: ScreenImageTemplate = { version: 1, blocks: [{ ...template.blocks[0], content: '队伍：<teamname>\n成员：<members>\n学校：<school>\n学院：<college>\n组别：<group>' }] };
-  console.log('Checking both team account modes.');
-  for (const [exam, images] of [[membersExam, memberGroup], [accountExam, accountGroup]] as const) {
-    await updateScreenControlGroup(exam.id, images.id, { templates: [{ imageId: images.images[0].id, template: teamTemplate }] });
-    assert.equal((await request(`/api/exams/${exam.id}/screen-control`, 'POST', { groupId: images.id })).status, 201);
-  }
-  const memberValues = await screenControlTextValues(membersExam.id, teammate1.id);
-  assert.equal(memberValues.members, '张三、王五'); assert.equal(memberValues.college, '计算机学院、数学学院'); assert.equal(memberValues.group, '正式参赛');
-  const otherMemberValues = await screenControlTextValues(membersExam.id, teammate2.id);
-  assert.equal(memberValues.teamname, otherMemberValues.teamname); assert.equal(memberValues.members, otherMemberValues.members);
-  assert.equal(memberValues.school, otherMemberValues.school); assert.equal(memberValues.college, otherMemberValues.college);
-  const teammateImage1 = Buffer.from(await (await readClient(2, memberGroup.images[0].id)).arrayBuffer());
-  const teammateImage2 = Buffer.from(await (await readClient(3, memberGroup.images[0].id)).arrayBuffer());
-  assert.deepEqual(teammateImage1, teammateImage2);
-  assert.deepEqual(teammateImage1, await renderScreenControlImage(background.buffer, teamTemplate, memberValues));
-  const accountValues = await screenControlTextValues(accountExam.id, account.id);
-  assert.equal(accountValues.members, '赵六、孙七、周八'); assert.equal(accountValues.group, '女生队伍');
-  assert.deepEqual(Buffer.from(await (await readClient(4, accountGroup.images[0].id)).arrayBuffer()), await renderScreenControlImage(background.buffer, teamTemplate, accountValues));
+  const readState = async (sessionIndex: number) => (await (await fetch(`${base}/api/client/screen-control?sessionId=${sessions[sessionIndex].id}`, {
+    headers: { 'x-proctor-session-token': tokens[sessionIndex].token },
+  })).json()).data.active;
+  const readParticipant = async (sessionIndex: number, id: string, extra = '') => {
+    const response = await readClient(sessionIndex, id, extra);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const metadata = await sharp(bytes).metadata();
+    assert.deepEqual([metadata.width, metadata.height, metadata.format], [1920, 1080, 'webp']);
+    return bytes;
+  };
 
-  // A locked group remains previewable and the dialog works on narrow screens.
-  await page.reload();
-  await page.locator('.screen-control-groups .screen-control-preview-strip button').first().click();
-  await page.getByLabel('预览身份', { exact: true }).selectOption(alice.id);
-  await page.getByText('实际考生资料', { exact: true }).waitFor();
-  await page.screenshot({ path: path.join(artifactDir, 'individual-preview.png'), fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: path.join(artifactDir, 'mobile-preview.png'), fullPage: true });
-  assert.equal(await page.locator('.screen-template-dialog').evaluate(element => element.scrollWidth <= element.clientWidth), true);
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
-  await page.setViewportSize({ width: 1480, height: 1100 });
-  await page.goto(`${base}/dashboard/exams/${membersExam.id}/screen`);
-  await page.locator('.screen-control-groups .screen-control-preview-strip button').first().click();
-  await page.getByLabel('预览身份', { exact: true }).selectOption(teammate1.id);
-  await page.getByText('实际考生资料', { exact: true }).waitFor();
-  await page.screenshot({ path: path.join(artifactDir, 'team-preview.png'), fullPage: true });
+  await participantToggle.check();
+  const nextPush = page.waitForResponse(response => response.url() === base + controlBase && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '立即推送', exact: true }).click();
+  assert.equal((await nextPush).status(), 201);
+  const next = await readState(0);
+  assert.equal(next.intervalMs, 5000);
+  assert.deepEqual(next.images.slice(0, 3).map((image: { id: string }) => image.id), group.images.map(image => image.id));
+  const cardId = next.images[3].id;
+  assert.equal(cardId, 'participant-' + next.id);
+  assert.deepEqual(Buffer.from(await (await readClient(0, group.images[0].id)).arrayBuffer()), background.buffer);
+  const individualCard = await readParticipant(0, cardId);
+  assert.deepEqual(await readParticipant(0, cardId, `&candidateId=${bob.id}`), individualCard);
+  assert.equal((await readClient(2, cardId)).status, 403);
+  await writeFile(path.join(artifactDir, 'individual-card.webp'), individualCard);
+
+  for (const [index, [exam, images]] of [[membersExam, memberGroup], [accountExam, accountGroup]].entries()) {
+    await prisma.exam.update({ where: { id: exam.id }, data: { reactionLogoMatchBy: 'COLLEGE' } });
+    const response = await request(`/api/exams/${exam.id}/screen-control`, 'POST', { groupId: images.id, showParticipantCard: true });
+    assert.equal(response.status, 201);
+    const sessionIndex = index ? 4 : 2;
+    const active = await readState(sessionIndex);
+    const teamCard = await readParticipant(sessionIndex, active.images[1].id);
+    assert.notDeepEqual(teamCard, individualCard);
+    await writeFile(path.join(artifactDir, `team-card-${index}.webp`), teamCard);
+    await prisma.exam.update({ where: { id: exam.id }, data: { reactionLogoMatchBy: 'SCHOOL' } });
+    assert.notDeepEqual(await readParticipant(sessionIndex, active.images[1].id), teamCard);
+  }
+
+  const plain = await request(controlBase, 'POST', { groupId: group.id });
+  assert.equal(plain.status, 201);
+  assert.equal((await readState(0)).images.length, group.images.length);
+  assert.equal((await readClient(0, cardId)).status, 403);
   assert.deepEqual(pageErrors, []);
-  console.log('PASS: drag editor, save/reopen, selected multi-image layouts, candidate preview, original image fallback, stale/foreign/duplicate template rejection, active group lock, image/token/exam isolation, unchanged desktop protocol, both team account modes, desktop and mobile previews.');
+  console.log('PASS: original download, legacy layouts, optional participant slide, individual and team cards, Reaction match mode, and session isolation.');
 } catch (error) {
   await mkdir(artifactDir, { recursive: true });
   console.error('Browser errors:', pageErrors);
-  console.error('Visible dialog:', await testPage?.locator('.screen-template-dialog').innerText({ timeout: 1000 }).catch(() => 'No dialog'));
+  console.error('Visible dialog:', await testPage?.locator('.screen-control-original-dialog').innerText({ timeout: 1000 }).catch(() => 'No dialog'));
   await testPage?.screenshot({ path: path.join(artifactDir, 'failure.png'), fullPage: true, timeout: 5000 }).catch(() => {});
   throw error;
 } finally {

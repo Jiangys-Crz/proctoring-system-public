@@ -17,6 +17,7 @@ export interface RecordingBuffer<T extends BufferedRecording> {
 declare global {
   var createProctorRecordingStream: (source: MediaStream, options: {
     width: number; height: number; frameRate: number; onError: (error: unknown) => void;
+    reuseCaptureSurface?: boolean;
   }) => { stream: MediaStream; stop: () => void };
   var createProctorRecordingBuffer: <T extends BufferedRecording>(options: {
     saveFull: () => boolean;

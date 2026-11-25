@@ -7,6 +7,7 @@ import { resolveJudgeLanguage } from './exam-languages';
 import { contestSubmissionStatusSelect, syncContestSubmissionStatuses } from './contest-submission-sync';
 import { isPublicTestExam } from './public-test';
 import { publicTestJudgeProblem } from './public-test-judge';
+import { judgementSelect, sameJudgement } from './contest-judgement';
 
 async function inChunks<T>(items: T[], size: number, run: (item: T) => Promise<void>) {
   for (let index = 0; index < items.length; index += size) {
@@ -15,7 +16,11 @@ async function inChunks<T>(items: T[], size: number, run: (item: T) => Promise<v
 }
 
 function judgeEligibility(now: Date): Prisma.ContestSubmissionWhereInput {
-  return { OR: [
+  return { AND: [
+    // Synchronized replicas display their owner's result. Only an explicit
+    // administrator rejudge may enqueue a replica on this node's Hydro.
+    { OR: [{ syncImported: false }, { judgeForced: true }] },
+    { OR: [
     { judgeForced: true },
     { problem: { problemType: { notIn: ['objective', 'submit_answer'] } } },
     { problem: { problemType: { in: ['objective', 'submit_answer'] } }, exam: { OR: [
@@ -23,6 +28,7 @@ function judgeEligibility(now: Date): Prisma.ContestSubmissionWhereInput {
       { AND: [{ showObjectiveScore: true }, { contestRule: { notIn: ['OI', 'LANQIAO', 'KS'] } }] },
       { endAt: { lte: now } },
     ] } },
+    ] },
   ] };
 }
 
@@ -60,7 +66,7 @@ async function dispatchDeferredSubmissions(examId?: string) {
         // is waiting. Recheck the current policy when claiming AND reading it.
         where: { id: item.id, status: { not: 30 }, deferredJudge: true, problem: { sourceDeleted: false }, hydroRecordId: null,
           judgeClaimedAt: claimedAt, federationWriteToken: writeToken, AND: [judgeEligibility(new Date())] },
-        select: { id: true, examId: true, lang: true, code: true,
+        select: { ...judgementSelect, id: true, examId: true, code: true,
           exam: { select: { platformBaseUrl: true } }, problem: { select: { hydroDomain: true, hydroProblemId: true, problemType: true } } },
       });
       if (!submission) return;
@@ -87,13 +93,26 @@ async function dispatchDeferredSubmissions(examId?: string) {
       const result = await submitHydroJudge(submission.exam, {
         pid, lang: judgeLanguage, code: submission.code,
       });
-      await prisma.contestSubmission.updateMany({ where: { id: item.id, status: { not: 30 }, hydroRecordId: null, judgeClaimedAt: claimedAt, federationWriteToken: writeToken }, data: {
+      const data = {
         ...federationChange(), judgeForced: false, hydroRecordId: result.id, lang: judgeLanguage, status: result.status, statusText: result.statusText,
         score: result.score, ...judgeStatistics(result.testCases), time: result.time, memory: result.memory,
         testCases: result.testCases as any, subtasks: result.subtasks as any,
         judgeAt: result.judgeAt ? new Date(result.judgeAt) : null,
         deferredJudge: !result.judgeAt, judgeClaimedAt: null, judgeError: null,
-      } });
+      };
+      const claimWhere = { id: item.id, status: { not: 30 }, hydroRecordId: null, judgeClaimedAt: claimedAt };
+      const saved = await prisma.contestSubmission.updateMany({ where: { ...claimWhere, federationWriteToken: writeToken }, data });
+      if (!saved.count) {
+        // A manual grade (local or synchronized) rotates the optimistic write
+        // token without canceling this judge lease. Retry against its current
+        // token only if the same lease AND judgement are still present. A real
+        // rejudge/cancellation must never adopt this stale Hydro response.
+        const current = await prisma.contestSubmission.findFirst({ where: claimWhere,
+          select: { ...judgementSelect, federationWriteToken: true } });
+        if (current && sameJudgement(submission, current)) {
+          await prisma.contestSubmission.updateMany({ where: { ...claimWhere, federationWriteToken: current.federationWriteToken }, data });
+        }
+      }
     } catch (error) {
       // Keep the row queued; a later tick retries when Hydro recovers.
       await prisma.contestSubmission.updateMany({ where: { id: item.id, status: { not: 30 }, hydroRecordId: null, judgeClaimedAt: claimedAt, federationWriteToken: writeToken }, data: {

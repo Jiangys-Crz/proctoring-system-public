@@ -267,6 +267,47 @@ function formatCountdown(value: number) {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+function useCountdown(api: ClientApi, deadline: number, roundUp = false) {
+  const readTime = useCallback(() => {
+    const remaining = (deadline - api.now()) / 1000;
+    return Number.isFinite(remaining) ? Math.max(0, roundUp ? Math.ceil(remaining) : Math.floor(remaining)) : 0;
+  }, [api, deadline, roundUp]);
+  const [seconds, setSeconds] = useState(readTime);
+  useEffect(() => {
+    const update = () => setSeconds(readTime());
+    update();
+    const timer = window.setInterval(update, 500);
+    return () => window.clearInterval(timer);
+  }, [readTime]);
+  return seconds;
+}
+
+const StartCountdown = memo(function StartCountdown({ api, beginAt }: { api: ClientApi; beginAt: number }) {
+  const total = useCountdown(api, beginAt, true);
+  const parts = [
+    { label: '小时', value: Math.floor(total / 3600) },
+    { label: '分钟', value: Math.floor(total / 60) % 60 },
+    { label: '秒', value: total % 60 },
+  ];
+  return <div className="candidate-start-countdown">
+    <span className="candidate-start-countdown-label">距离考试开始还有：</span>
+    <div className="candidate-start-countdown-tiles">
+      {parts.map(({ label, value }) => <div className="candidate-start-countdown-tile" key={label}>
+        <strong>{String(value).padStart(2, '0')}</strong><span>{label}</span>
+      </div>)}
+    </div>
+  </div>;
+});
+
+const ContestTimer = memo(function ContestTimer({ api, startedAt, endAt }: { api: ClientApi; startedAt: number; endAt: number }) {
+  const remaining = useCountdown(api, endAt) * 1000;
+  const progress = 100 - remaining / Math.max(1, endAt - startedAt) * 100;
+  return <>
+    <div className="nova-contest-timer"><span><Clock3 size={15} />剩余时间</span><strong>{formatCountdown(remaining)}</strong></div>
+    <progress className="nova-contest-progress" aria-label="考试进度" max={100} value={Math.max(0, Math.min(100, progress))} />
+  </>;
+});
+
 function formatFileSize(size?: number) {
   if (!size) return '';
   if (size < 1024) return `${size} B`;
@@ -692,8 +733,9 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
   const notificationAckPending = useRef(false);
   const [notificationAckBusy, setNotificationAckBusy] = useState(false);
   const [notificationAckError, setNotificationAckError] = useState('');
-  const [now, setNow] = useState(() => Date.now());
   const [hydrated, setHydrated] = useState(false);
+  const promptedStarts = useRef(new Set<string>());
+  const startConfirmDialog = useRef<HTMLDialogElement>(null);
   const contestReadPending = useRef(false);
   const submissionsReadPending = useRef(false);
   const submissionsReadVersion = useRef(0);
@@ -799,8 +841,6 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     if (nextToken) {
       params.delete('sessionToken');
       hashParams.delete('sessionToken');
-      const query = params.toString(); const hash = hashParams.toString();
-      window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`);
     }
     if (requestedMock) {
       setMockMode(true);
@@ -811,10 +851,17 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
       setSubmissions(mock.submissions);
       setError('');
     }
-    const initialRoute = contestRouteFromPathname(window.location.pathname);
+    const pathname = window.location.pathname;
+    const initialRoute = contestRouteFromPathname(pathname);
     applyRoute(initialRoute);
-    if (window.location.pathname === '/contest' || window.location.pathname === '/contest/') {
-      window.history.replaceState(null, '', `${contestPath(initialRoute)}${window.location.search}`);
+    const atEntry = pathname === '/contest' || pathname === '/contest/';
+    if (nextToken || atEntry) {
+      const query = params.toString();
+      const hash = hashParams.toString();
+      const path = atEntry ? contestPath(initialRoute) : pathname;
+      // Updating the address is part of the contest's own routing. During
+      // hydration a Next.js navigation can discard the session being installed.
+      window.History.prototype.replaceState.call(window.history, window.history.state, '', `${path}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`);
     }
     setHydrated(true);
   }, [allowMock, applyRoute, configuredApiBase, expireSession]);
@@ -878,7 +925,13 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
       try {
         const state = await api.request<{ session: ContestData['session']; revision: string; requiresFullRefresh?: boolean }>(`/api/client/contest/state?sessionId=${encodeURIComponent(sessionId)}`, { signal: AbortSignal.timeout(15_000) });
         if (state.requiresFullRefresh) { await loadContest(); return; }
-        setData(current => current ? { ...current, session: state.session } : current);
+        setData(current => {
+          if (!current) return current;
+          const previous = current.session as Record<string, unknown>;
+          const next = Object.entries(state.session);
+          if (Object.keys(previous).length === next.length && next.every(([key, value]) => previous[key] === value)) return current;
+          return { ...current, session: state.session };
+        });
         if (state.revision !== contestRevision.current) await loadContest();
       } catch (cause) {
         if (isExpiredClientSessionError(cause)) expireSession();
@@ -954,11 +1007,6 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
   }, [apiBase, enqueueNotifications, expireSession, hydrated, loadQA, mockMode, sessionId, sessionToken]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(api.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [api]);
-
-  useEffect(() => {
     if (!activeProblem || !sessionId) return;
     const saved = localStorage.getItem(`proctor.contest.code.${sessionId}.${activeProblem.pid}`);
     if (saved !== null) setCodeByPid((current) => ({ ...current, [String(activeProblem.pid)]: saved }));
@@ -991,7 +1039,30 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
 
   const examStarted = Boolean(data && (data.session.status === 'IN_EXAM' || data.session.status === 'LOCKED' || data.session.status === 'FINISHED' || data.session.startedAt));
   const effectiveEndAt = data ? new Date(data.session.effectiveEndAt || data.contest.endAt).getTime() : 0;
-  const examEnded = Boolean(data && (data.session.status === 'FINISHED' || now >= effectiveEndAt));
+  const beginAt = data ? new Date(data.contest.beginAt).getTime() : 0;
+  const latestStartAt = data ? new Date(data.contest.latestStartAt || data.session.latestStartAt || data.contest.beginAt).getTime() : 0;
+  const readPhase = useCallback(() => {
+    const now = api.now();
+    if (now >= effectiveEndAt) return 'ended';
+    if (now < beginAt) return 'waiting';
+    if (now > latestStartAt) return 'late';
+    return 'ready';
+  }, [api, beginAt, effectiveEndAt, latestStartAt]);
+  const [timedPhase, setTimedPhase] = useState(() => ({ read: readPhase, value: readPhase() }));
+  const hasContest = Boolean(data);
+  useEffect(() => {
+    if (!hasContest) return;
+    const update = () => {
+      const value = readPhase();
+      setTimedPhase(current => current.read === readPhase && current.value === value ? current : { read: readPhase, value });
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasContest, readPhase]);
+  const phase = timedPhase.read === readPhase ? timedPhase.value : readPhase();
+  const examEnded = Boolean(data && (data.session.status === 'FINISHED' || phase === 'ended'));
+  const canStart = data?.session.status === 'APPROVED' && !data.session.lockdown && !examStarted && !examEnded && phase === 'ready';
   const canSubmit = data?.session.status === 'IN_EXAM' && data.session.canSubmit !== false && !examEnded && !data?.session.lockdown;
 
   useEffect(() => {
@@ -1061,9 +1132,38 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     return () => controller.abort();
   }, [activeProblem?.pid, readSubmissionDetail, objectiveRestore?.id, sessionId]);
 
+  const startPromptKey = `proctor.contest.startPrompt.${apiBase}.${sessionId}`;
+  const startReady = hydrated && Boolean(sessionId && sessionToken) && page === 'overview' && canStart && !busy && announcementQueue.length === 0;
+  const canStartAt = useCallback((time: number) => time >= beginAt && time <= latestStartAt && time < effectiveEndAt, [beginAt, effectiveEndAt, latestStartAt]);
+
+  const openStartConfirmation = useCallback((automatic = false) => {
+    const dialog = startConfirmDialog.current;
+    if (!dialog || dialog.open || !startReady || !canStartAt(api.now())) return;
+    if (automatic) {
+      if (document.hidden || promptedStarts.current.has(startPromptKey)) return;
+      try { if (window.sessionStorage.getItem(startPromptKey)) return; } catch { /* The ref also covers blocked storage. */ }
+    }
+    dialog.showModal();
+    promptedStarts.current.add(startPromptKey);
+    try { window.sessionStorage.setItem(startPromptKey, '1'); } catch { /* The ref also covers blocked storage. */ }
+  }, [api, canStartAt, startPromptKey, startReady]);
+
+  useEffect(() => {
+    if (!startReady) return;
+    const promptIfVisible = () => openStartConfirmation(true);
+    document.addEventListener('visibilitychange', promptIfVisible);
+    promptIfVisible();
+    return () => document.removeEventListener('visibilitychange', promptIfVisible);
+  }, [openStartConfirmation, startReady]);
+
   async function startContest() {
-    if (!data || busy === 'start') return;
-    if (!window.confirm('确认开始考试？开始后将正式计时，且不能重新选择开始时间。')) return;
+    const dialog = startConfirmDialog.current;
+    if (!dialog?.open) return;
+    dialog.close();
+    if (!startReady || !canStartAt(api.now())) {
+      setNotice('当前不在允许开始考试的时间窗口内');
+      return;
+    }
     setBusy('start');
     try {
       if (mockMode) {
@@ -1303,15 +1403,12 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
     return <main className="contest-loading"><LoaderCircle className="spin" /><span>{error || '正在加载数据…'}</span>{error ? <button className="contest-button secondary" onClick={() => void loadContest()}><RefreshCw size={16} />重试</button> : null}</main>;
   }
 
-  const beginAt = new Date(data.contest.beginAt).getTime();
-  const latestStartAt = new Date(data.contest.latestStartAt || data.session.latestStartAt || data.contest.beginAt).getTime();
-  const canStart = data.session.status === 'APPROVED' && now >= beginAt && now <= latestStartAt;
   const examDurationMinutes = data.contest.durationMinutes || Math.max(0, Math.round((+new Date(data.contest.endAt) - beginAt) / 60000));
   const teamMode = data.contest.contestType === 'TEAM';
   const teamMembers = data.user.teamMembers?.length ? data.user.teamMembers : [data.user.name || data.user.displayName || data.user.username].filter(Boolean) as string[];
   const examFiles = data.files.filter((file) => !file.problemId);
   const activeSubmissions = submissions.filter((submission) => activeProblem && submission.problemIndex === activeProblem.index);
-  const examStatus = examEnded || data.session.status === 'FINISHED' ? '已结束' : examStarted ? '进行中' : now < beginAt ? '未开始' : now > latestStartAt ? '已错过开考时间' : '等待确认开始';
+  const examStatus = examEnded ? '已结束' : examStarted ? '进行中' : phase === 'waiting' ? '未开始' : phase === 'late' ? '已错过开考时间' : '等待确认开始';
   const submissionDisabledReason = data.session.canSubmit === false ? '本场团队赛仅允许队长提交' : examEnded ? '考试已结束' : data.session.lockdown ? '会话已锁定' : '等待确认开始';
   const showProblemScore = ['oi', 'ioi'].includes(data.contest.rule);
   const selectedResultVisible = Boolean(selectedSubmission) && data.contest.rule !== 'oi' && !selectedSubmission?.resultHidden;
@@ -1326,8 +1423,7 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
       <div><h1>{data.contest.title}</h1><div className="nova-contest-heading-meta"><span>规则：<b>{ruleName(data.contest.rule, data.contest.sourceRule)}</b></span><span>状态：<b className="nova-running-status">{examStatus}</b></span></div></div>
       <div className="nova-contest-deadline"><span>结束时间</span><time>{formatDate(new Date(effectiveEndAt).toISOString())}</time></div>
     </div>
-    <div className="nova-contest-timer"><span><Clock3 size={15} />剩余时间</span><strong>{formatCountdown(effectiveEndAt - now)}</strong></div>
-    <progress className="nova-contest-progress" aria-label="考试进度" max={100} value={Math.max(0, Math.min(100, (now - new Date(data.session.startedAt || data.contest.beginAt).getTime()) / Math.max(1, effectiveEndAt - new Date(data.session.startedAt || data.contest.beginAt).getTime()) * 100))} />
+    <ContestTimer api={api} startedAt={data.session.startedAt ? Date.parse(data.session.startedAt) : beginAt} endAt={effectiveEndAt} />
   </header>;
 
   if (examEnded) return <main className="contest-ended-page"><section><Check size={42} /><h1>考试已结束</h1><p>本场考试已经结束，排行榜最终结果不对考生展示。</p></section></main>;
@@ -1396,8 +1492,8 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
               </dl>
             </section>
             {!examStarted ? <section className="candidate-start-panel">
-              <div className="candidate-start-countdown"><span>考试开始倒计时</span><strong>{formatCountdown(beginAt - now)}</strong></div>
-              <button className="contest-button submit-code-button candidate-start-button" onClick={() => void startContest()} disabled={!canStart || busy === 'start'}><PlayCircle size={18} />{busy === 'start' ? '正在开始…' : now < beginAt ? '尚未到开始时间' : now > latestStartAt ? '已超过最晚开始时间' : '确认开始考试'}</button>
+              <StartCountdown api={api} beginAt={beginAt} />
+              <button className="contest-button submit-code-button candidate-start-button" type="button" aria-haspopup="dialog" onClick={() => openStartConfirmation()} disabled={!startReady}><PlayCircle size={18} />{busy === 'start' ? '正在开始…' : phase === 'waiting' ? '尚未到开始时间' : phase === 'late' ? '已超过最晚开始时间' : '确认开始考试'}</button>
             </section> : null}
             <section className="candidate-exam-facts">
               <h2>考试详情</h2>
@@ -1510,6 +1606,15 @@ export default function ContestApp({ configuredApiBase, allowMock }: { configure
       </section>
 
       <footer className="nova-contest-footer">程序设计算法协会 · 在线考试平台</footer>
+
+      {startReady ? <dialog key={startPromptKey} ref={startConfirmDialog} className="nova-dialog" aria-labelledby="candidate-start-confirm-title" aria-describedby="candidate-start-confirm-description">
+        <header className="nova-dialog-header"><h2 id="candidate-start-confirm-title">确认开始考试？</h2></header>
+        <div className="nova-dialog-body"><p id="candidate-start-confirm-description">开始后将正式计时，且不能重新选择开始时间。</p></div>
+        <footer className="nova-dialog-footer">
+          <button type="button" className="contest-button secondary" autoFocus onClick={() => startConfirmDialog.current?.close()}>稍后开始</button>
+          <button type="button" className="contest-button submit-code-button" onClick={() => void startContest()}>确认开始考试</button>
+        </footer>
+      </dialog> : null}
 
       {confirm ? <dialog ref={confirmDialog} className="nova-dialog candidate-confirm-dialog" aria-labelledby="candidate-submit-confirm-title" onCancel={event => {
         event.preventDefault();

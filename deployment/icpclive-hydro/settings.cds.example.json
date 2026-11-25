@@ -1,0 +1,14 @@
+{
+  "type": "clics",
+  "feeds": [
+    {
+      "source": {
+        "url": "https://cds.example/api",
+        "login": "live-reader",
+        "password": "REPLACE_WITH_CDS_READER_PASSWORD"
+      },
+      "contestId": "691000000000000000000001",
+      "feedVersion": "2026_01"
+    }
+  ]
+}

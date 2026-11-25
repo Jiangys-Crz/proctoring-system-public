@@ -45,18 +45,28 @@ test('NSIS compiles the real prerequisite hook with offline resources and exclud
   fs.mkdirSync(resources, { recursive: true });
   fs.mkdirSync(scripts, { recursive: true });
   // Compile-only fixtures: no generated EXE or system installer is ever run.
-  for (const name of ['dotnet452.exe', 'wmf51-x86.msu', 'wmf51-x64.msu', 'manifest.ini']) {
+  for (const name of ['dotnet452.exe', 'wmf51-x86.msu', 'wmf51-x64.msu', 'manifest.ini',
+    'ucrt-x86.msu', 'ucrt-x64.msu', 'ucrt-win8-x86.msu', 'ucrt-win8-x64.msu',
+    'ucrt-win81-x86.msu', 'ucrt-win81-x64.msu', 'manifest-ucrt.ini']) {
     fs.writeFileSync(path.join(resources, name), `compile fixture: ${name}`);
   }
   fs.writeFileSync(path.join(scripts, 'install-prerequisites.ps1'), 'exit 0\r\n');
-  function compile(uninstaller = false) {
+  function compile(uninstaller = false, ucrt = false) {
     const script = path.join(root, uninstaller ? 'uninstaller.nsi' : 'installer.nsi');
-    fs.writeFileSync(script, `Unicode true\nName "Compile-only fixture"\nOutFile "${path.join(root, uninstaller ? 'uninstall.exe' : 'setup.exe')}"\nRequestExecutionLevel user\n!define PROJECT_DIR "${root}"\n!define BUILD_RESOURCES_DIR "${path.join(root, 'build')}"\n${uninstaller ? '!define BUILD_UNINSTALLER\n' : ''}!include "${hook}"\nFunction .onInit\n${uninstaller ? '' : '!insertmacro customInit\n'}FunctionEnd\nSection\nSectionEnd\n`);
+    fs.writeFileSync(script, `Unicode true\nName "Compile-only fixture"\nOutFile "${path.join(root, uninstaller ? 'uninstall.exe' : 'setup.exe')}"\nRequestExecutionLevel user\n!define PROJECT_DIR "${root}"\n!define BUILD_RESOURCES_DIR "${path.join(root, 'build')}"\n${uninstaller ? '!define BUILD_UNINSTALLER\n' : ''}${ucrt ? '!define CWNUPAA_WINDOWS_REQUIRE_UCRT\n' : ''}!include "${hook}"\nFunction .onInit\n${uninstaller ? '' : '!insertmacro customInit\n'}FunctionEnd\nSection\nSectionEnd\n`);
     return spawnSync(compiler, [option('INPUTCHARSET'), 'UTF8', option('V2'), script], { windowsHide: true, encoding: 'utf8' });
   }
   const result = compile();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert(fs.statSync(path.join(root, 'setup.exe')).size > 0);
+  const wxInstaller = compile(false, true);
+  assert.equal(wxInstaller.status, 0, wxInstaller.stdout + wxInstaller.stderr);
+  fs.unlinkSync(path.join(resources, 'ucrt-x64.msu'));
+  const missingUcrt = compile(false, true);
+  assert.notEqual(missingUcrt.status, 0);
+  assert.match(missingUcrt.stdout + missingUcrt.stderr, /ucrt-x64/);
+  const oldInstaller = compile();
+  assert.equal(oldInstaller.status, 0, oldInstaller.stdout + oldInstaller.stderr);
   // Missing mandatory packages must stop packaging instead of shipping a broken update.
   fs.unlinkSync(path.join(resources, 'wmf51-x64.msu'));
   const missing = compile();

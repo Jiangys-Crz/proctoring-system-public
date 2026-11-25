@@ -60,3 +60,11 @@ FFmpeg remains a separate runtime dependency under the license of the exact buil
 Desktop FFmpeg distributions retain their bundled license and source-distribution
 notices. Playwright retains its license in `deployment/LICENSE.playwright`.
 All other package dependencies retain their own licenses and notices.
+
+## ICPC Live v3 contest overlay
+
+The contest overlay in `apps/web/src/contest-live-overlay` adapts
+[ICPC Live v3](https://github.com/icpc/live-v3) at revision
+`48972433de22fa1555de59f134aa98618331d87d`, © 2022–2023 ICPC Live Team.
+The original MIT license is in [licenses/icpc-live-v3/MIT.txt](licenses/icpc-live-v3/MIT.txt)
+and is bundled with the browser assets.

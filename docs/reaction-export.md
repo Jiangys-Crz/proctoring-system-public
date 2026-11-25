@@ -1,6 +1,8 @@
-# Reaction UUID 与 MP4 导出
+# Reaction 提交 ID 与 MP4 导出
 
 Reaction 的 `submissionId` 直接使用 NovaJudge CCS `submissions.id` 中的 UUID，与判题事件的 `submission_id` 及原外榜接口的 `rid` 对应。列表、预览标题、单个竖屏文件下载和 ZIP 中的文件名都使用这一 UUID；不转换为比赛内序号，不新增编号同步步骤。
+
+Hydro 原生比赛使用 24 位 Record ObjectId；本平台 Hydro 评测考试使用监考提交接口生成的 `sub_<UUID>`，同时兼容旧 CUID。各类 ID 都保留原始 `submissionId`，使用 `{submissionId}.mp4` 文件名，包括完整的 `sub_` 前缀；重判不会更换本平台提交 ID。
 
 本功能使用 NovaJudge 现有 CCS 与外榜接口，无需修改 NovaJudge 响应、判题、计分或任何其他源码。CCS 凭据与外榜 API Key 仍按各自现有认证方式配置，不能相互代替；视频导出本身不需要额外查询 NovaJudge。
 
@@ -8,23 +10,25 @@ Reaction 的 `submissionId` 直接使用 NovaJudge CCS `submissions.id` 中的 U
 
 在考试详情进入 **Reaction 录像管理**，先生成需要的竖屏视频，再点击 **批量导出 MP4（ZIP）**。导出覆盖整场考试所有已生成且未过期的成片，不受列表最近 200 条记录的显示限制。未生成的记录需要先完成生成。
 
-ZIP 根目录只有 `{uuid}.mp4`，例如：
+ZIP 根目录只有 `{submissionId}.mp4`，例如 NovaJudge：
 
 ```text
 11111111-1111-4111-8111-111111111111.mp4
 22222222-2222-4222-8222-222222222222.mp4
 ```
 
-每个名称来自该录像原始 `submissionId`。单独下载 Reaction 成片采用同样的 `{uuid}.mp4` 名称。原始 Camera、Desktop 和 metadata 的存储及下载入口保持原有用途，ZIP 不额外包含 metadata、账号或密钥。
+本平台 Hydro 评测考试的文件名示例：`sub_11111111-1111-4111-8111-111111111111.mp4`。前缀是提交 ID 的一部分，不能删除，否则无法与外榜的提交对应。
+
+每个名称来自该录像原始 `submissionId`。单独下载 Reaction 成片采用同样的 `{submissionId}.mp4` 名称。原始 Camera、Desktop 和 metadata 的存储及下载入口保持原有用途，ZIP 不额外包含 metadata、账号或密钥。
 
 已成功生成的 PARTIAL 成片也可导出，原录像仍保持不完整状态及缺失诊断。导出不会重编码、补录或把部分录像标为完整。
 
 ## 权限、预检和一致性
 
-- `GET /api/exams/{examId}/reactions/export?check=1` 验证本场管理权限、Submission UUID、存储路径和全部待导出文件。
+- `GET /api/exams/{examId}/reactions/export?check=1` 验证本场管理权限、Submission ID、存储路径和全部待导出文件。
 - 不带 `check` 参数时流式下载 ZIP64，权限要求相同。没有公开视频或公开 S3 链接。
-- 汇总为 `{ generatedCount, invalidSubmissionIds }`，覆盖整场考试。UUID无效、重名或任一文件缺失时拒绝整个导出，不悄悄漏文件或覆盖同名项。
-- UUID校验拒绝非UUID字符串、斜杠、路径遍历等输入；存储对象路径另行检查，不允许通过Submission或URL选择任意文件。
+- 汇总为 `{ generatedCount, invalidSubmissionIds }`，覆盖整场考试。ID 无效、重名或任一文件缺失时拒绝整个导出，不悄悄漏文件或覆盖同名项。
+- ID 校验接受 UUID、`sub_<UUID>`、24 位十六进制 ObjectId 和旧的 25 位 CUID，拒绝畸形前缀、换行、斜杠、路径遍历等输入；存储对象路径另行检查，不允许通过 Submission 或 URL 选择任意文件。
 - MP4使用ZIP STORE，LOCAL/S3逐个读取，不把整场视频缓存在服务端或浏览器内存。下载取消或源中断会终止归档；浏览器留下的不完整文件需要重新下载。
 
 ## 已有安装升级

@@ -15,6 +15,8 @@ import { judgeLanguageList } from './judge-language-list';
 import { registerProblemBank } from './problem-bank';
 import { problemFullScore } from './problem-score';
 import { registerBrowserContest } from './browser-contest';
+import { registerReactionContest } from './reaction-contest';
+import { registerBoardContest } from './board-contest';
 
 export { registerProctorSystemSettings } from './settings';
 
@@ -879,7 +881,9 @@ export default class CwnupaaProctorAuthService extends Service {
         registerProctorSystemSettings(ctx, legacyConfig);
         void ensureProblemDomain().catch((error) => ctx.logger.error(error));
         ctx.Route('cwnupaa_proctor_config_check', '/api/proctor/config-check', ProctorConfigCheckHandler);
-        registerBrowserContest(ctx, assertApiRequest);
+        const ReactionContestHandler = registerReactionContest(ctx, assertApiRequest);
+        const BoardContestHandler = registerBoardContest(ctx, assertApiRequest);
+        registerBrowserContest(ctx, assertApiRequest, handler => handler instanceof ReactionContestHandler || handler instanceof BoardContestHandler);
         ctx.Route('cwnupaa_proctor_login_ticket', '/api/proctor/login-ticket', ProctorLoginTicketHandler);
         ctx.Route('cwnupaa_proctor_consume_ticket', '/proctor/consume-ticket', ProctorConsumeTicketHandler, PRIV.PRIV_NONE);
         ctx.Route('cwnupaa_proctor_contest_data', '/api/proctor/contest/:tid', ProctorContestDataHandler);

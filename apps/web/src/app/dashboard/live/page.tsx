@@ -5,6 +5,6 @@ import { LiveRelayManager } from '@/components/LiveRelayManager';
 export default async function LivePage() {
   const user = await getCurrentUser();
   if (!user) redirect('/login');
-  if (user.role !== 'SUPER_ADMIN') redirect('/dashboard/exams');
+  if (user.role !== 'SUPER_ADMIN') redirect('/dashboard/live/contests');
   return <LiveRelayManager />;
 }

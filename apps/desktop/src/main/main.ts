@@ -8,7 +8,7 @@ import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, net, screen
 import { Windows7ScreenCapture } from './windows7-screen-capture';
 import { WindowsUsbEvents } from './windows-usb-events';
 import { release as osRelease } from 'node:os';
-import { getDesktopInfo, elevationStatus, securityCapabilities, securitySnapshot, peripheralSnapshot, confirmPeripheralBaseline, windowsUsbInventory } from './security';
+import { getDesktopInfo, elevationStatus, securityCapabilities, securitySnapshot, peripheralSnapshot, confirmPeripheralBaseline, windowsUsbInventory, confirmWindowsUsbFingerprint, windowsUsbBaselineForFingerprint } from './security';
 import { enableDevReload } from './dev-reload';
 import { startNetworkDomainMonitor, stopNetworkDomainMonitor, resetNetworkDomainObservations, requestNetworkDomainPermission } from './network-domains';
 import { PublisherLifecycle } from './publisher-lifecycle';
@@ -23,15 +23,15 @@ import { ClientUpdater } from './client-updater';
 import { contestDownloadAllowed, contestDownloadFilename } from './contest-download-policy';
 import { NsisUpdater } from 'electron-updater';
 import { downloadMacInstaller, readUpdateManifest } from './update-download';
-import { contestPageRequestAllowed } from './contest-page-policy';
+import { chromiumPdfViewerResource, contestPageRequestAllowed } from './contest-page-policy';
 import { referenceLinkUrl, referenceNavigationAllowed, referenceRequestAllowed, referenceIsFile, referenceDownloadAllowed } from './reference-link-policy';
 import { startupFailureDetail, writeStartupDiagnostic } from './startup';
 import { relaunchWindowsAdministrator } from './windows-admin-startup';
-import { novaJudgeClientKey, novaJudgeHeaders, novaJudgeCookie, novaJudgeDownloadAllowed, novaJudgeFileUrl, novaJudgeNavigationAllowed, novaJudgeRequestAllowed, type NovaJudgeScope } from './novajudge-policy';
+import { novaJudgeClientKey, novaJudgeHeaders, novaJudgeCookie, novaJudgeDownloadAllowed, novaJudgeFileUrl, novaJudgeInlinePdf, novaJudgeNavigationAllowed, novaJudgeRequestAllowed, type NovaJudgeScope } from './novajudge-policy';
 import { NovaJudgeSubmit, type SubmitLogin } from './novajudge-submit';
 import { requestNovaJudgeSubmit } from './novajudge-submit-network';
 import { HYDRO_PROCTOR_HEADER, hydroBrowserClientKey, hydroBrowserCookie, hydroBrowserDownloadAllowed, hydroBrowserFileUrl,
-  hydroBrowserHeaders, hydroBrowserNavigationAllowed, hydroBrowserRecordId,
+  hydroBrowserHeaders, hydroBrowserInlinePdf, hydroBrowserNavigationAllowed, hydroBrowserRecordId,
   hydroBrowserRequestAllowed, hydroBrowserScope as parseHydroBrowserScope, type HydroBrowserScope } from './hydro-browser-policy';
 
 let mainWindow: BrowserWindow | null = null;
@@ -59,6 +59,9 @@ let novaJudgeScope: NovaJudgeScope | null = null;
 let hydroBrowserScope: HydroBrowserScope | null = null;
 let hydroBrowserSessionId = '';
 let hydroBrowserAccessKey = '';
+// Only the browser request that followed an authorized PDF link may display
+// its signed storage response as a document. Entries die with the request.
+const hydroPdfRedirects = new Map<number, { scope: HydroBrowserScope; contentsId: number; url: string }>();
 let novaJudgeClientAccessKey = '';
 let novaJudgeBackendOrigin = '';
 let novaJudgeLoginGeneration = 0;
@@ -70,8 +73,8 @@ function externalBrowserNavigationAllowed(url: string) {
 }
 
 function externalBrowserFileUrl(url: string) {
-  return hydroBrowserScope ? hydroBrowserFileUrl(url, hydroBrowserScope)
-    : Boolean(novaJudgeScope && novaJudgeFileUrl(url, novaJudgeScope));
+  return hydroBrowserScope ? hydroBrowserFileUrl(url, hydroBrowserScope) && !hydroBrowserInlinePdf(url, hydroBrowserScope)
+    : Boolean(novaJudgeScope && novaJudgeFileUrl(url, novaJudgeScope) && !novaJudgeInlinePdf(url, novaJudgeScope));
 }
 // key: `${sessionId}:${channel}` —— 不同考生（session）的同名画面通道是不同推流，必须按会话隔离
 const rtmpProcesses = new Map<string, ChildProcessWithoutNullStreams>();
@@ -149,7 +152,8 @@ const windows7ScreenCapture = new Windows7ScreenCapture(ffmpegPath);
 const windowsUsbEvents = new WindowsUsbEvents(() => app.isPackaged
   ? path.join(process.resourcesPath, 'security/inventory-probe.exe')
   : path.join(__dirname, '../../native/windows-inventory', process.arch, 'inventory-probe.exe'), windowsUsbInventory,
-  { diagnostic: detail => writeStartupDiagnostic(app, 'usb-events', detail) });
+  { diagnostic: detail => writeStartupDiagnostic(app, 'usb-events', detail), confirmFingerprint: confirmWindowsUsbFingerprint,
+    confirmedBaseline: windowsUsbBaselineForFingerprint });
 const appBundleId = 'org.cwnupaa.proctor';
 type MacPrivacyPane = 'screen' | 'camera' | 'microphone' | 'accessibility' | 'automation' | 'localNetwork';
 
@@ -1043,7 +1047,8 @@ function createWindow() {
       }
     });
     contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => {
-      if (contestGuest && (novaJudgeScope || hydroBrowserScope) && isMainFrame && !externalBrowserNavigationAllowed(url)) event.preventDefault();
+      if (contestGuest && (novaJudgeScope || hydroBrowserScope) && isMainFrame && !externalBrowserNavigationAllowed(url)
+        && ![...hydroPdfRedirects.values()].some(pdf => pdf.scope === hydroBrowserScope && pdf.contentsId === contents.id && pdf.url === url)) event.preventDefault();
     });
     contents.on('context-menu', (event) => event.preventDefault());
     if (process.env.PROCTOR_DEV !== '1') {
@@ -1105,13 +1110,29 @@ function configureSession(targetSession: Electron.Session) {
   if (configuredSessions.has(targetSession)) return;
   configuredSessions.add(targetSession);
   if (targetSession === session.fromPartition('persist:proctor-oj')) {
+    targetSession.webRequest.onBeforeRedirect(details => {
+      if (!hydroBrowserScope || !details.webContentsId || !['mainFrame', 'subFrame'].includes(details.resourceType)
+        || !hydroBrowserInlinePdf(details.url, hydroBrowserScope)) return;
+      const target = new URL(details.redirectURL);
+      if (target.origin === hydroBrowserScope.origin && target.pathname.startsWith('/fs/')) {
+        hydroPdfRedirects.set(details.id, { scope: hydroBrowserScope, contentsId: details.webContentsId, url: target.href });
+      }
+    });
+    targetSession.webRequest.onCompleted(({ id }) => hydroPdfRedirects.delete(id));
+    targetSession.webRequest.onErrorOccurred(({ id }) => hydroPdfRedirects.delete(id));
     targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
       const headers = novaJudgeHeaders(details.url, details.requestHeaders, novaJudgeScope, novaJudgeClientAccessKey);
       callback({ requestHeaders: hydroBrowserHeaders(details.url, headers, hydroBrowserScope, hydroBrowserAccessKey) });
     });
     targetSession.webRequest.onHeadersReceived((details, callback) => {
+      const pdf = hydroPdfRedirects.get(details.id);
+      if (pdf && pdf.scope !== hydroBrowserScope) return callback({ cancel: true });
       if (!hydroBrowserScope || new URL(details.url).origin !== hydroBrowserScope.origin) return callback({});
       const responseHeaders = { ...details.responseHeaders };
+      if (pdf && pdf.url === details.url) {
+        const mime = Object.entries(responseHeaders).find(([name]) => name.toLowerCase() === 'content-type')?.[1]?.[0];
+        if (!/^application\/pdf(?:\s*;|$)/i.test(mime || '')) return callback({ cancel: true });
+      }
       for (const name of Object.keys(responseHeaders)) {
         if (name.toLowerCase() === 'set-cookie') responseHeaders[name] = responseHeaders[name].filter(value => !/^sid=/i.test(value));
       }
@@ -1167,10 +1188,18 @@ function configureSession(targetSession: Electron.Session) {
   });
 
   targetSession.webRequest.onBeforeRequest((details, callback) => {
+    if ((hydroBrowserScope || novaJudgeScope) && targetSession === session.fromPartition('persist:proctor-oj')
+      && (details.url.startsWith('chrome:') || details.url.startsWith('chrome-extension:'))) {
+      const viewer = details.webContents;
+      const document = viewer?.getType() === 'remote' && viewer.session === targetSession ? viewer.getURL() : undefined;
+      return callback({ cancel: !chromiumPdfViewerResource(details.url, details.resourceType, document) });
+    }
     if (hydroBrowserScope && targetSession === session.fromPartition('persist:proctor-oj')) {
       const scope = hydroBrowserScope;
       if (details.url === 'about:blank') return callback({});
-      if (!hydroBrowserRequestAllowed(details.url, details.resourceType, scope)) return callback({ cancel: true });
+      const pdf = hydroPdfRedirects.get(details.id);
+      if (pdf && pdf.scope === scope && pdf.contentsId === details.webContentsId && pdf.url === details.url) return callback({});
+      if (!hydroBrowserRequestAllowed(details.url, details.resourceType, scope, details.method)) return callback({ cancel: true });
       const recordId = hydroBrowserRecordId(details.url, scope);
       if (!recordId) return callback({});
       const sid = hydroBrowserSessionId;
@@ -1459,16 +1488,16 @@ handleClient('app:relaunchAsAdmin', async (event) => {
   try { return await adminRelaunch; } finally { adminRelaunch = null; }
 });
 
-handleClient('security:snapshot', async (_event, hosts: string[]) => {
+handleClient('security:snapshot', async (_event, hosts: string[], includePeripherals?: boolean) => {
   for (const [host, expiry] of referenceDomainApprovals) if (expiry < Date.now()) referenceDomainApprovals.delete(host);
-  return securitySnapshot([...(hosts || []), ...referenceDomainApprovals.keys()]);
+  return securitySnapshot([...(hosts || []), ...referenceDomainApprovals.keys()], includePeripherals !== false);
 });
 handleClient('security:capabilities', async (_event, hosts: string[]) => securityCapabilities());
 handleClient('security:peripherals', async () => peripheralSnapshot());
-handleClient('security:watchUsb', (_event, sessionId: string) => {
+handleClient('security:watchUsb', (_event, sessionId: string, baselineFingerprint?: string) => {
   if (process.platform !== 'win32') return;
   if (windowMode === 'setup' || typeof sessionId !== 'string' || !sessionId || sessionId.length > 191) throw new Error('请先登录考试再启用 USB 检测');
-  return windowsUsbEvents.watch(sessionId);
+  return windowsUsbEvents.watch(sessionId, typeof baselineFingerprint === 'string' ? baselineFingerprint : undefined);
 });
 handleClient('security:readUsb', (_event, sessionId: string) => process.platform === 'win32'
   ? windowMode === 'setup' ? { available: false, events: [] } : windowsUsbEvents.read(sessionId)
@@ -1489,7 +1518,7 @@ handleClient('permissions:requestNetworkDomain', async (event) => {
     throw new Error('仅客户端权限页面可以申请网络检测权限');
   }
   const result = await requestNetworkDomainPermission();
-  if (result.state === 'unavailable' && !result.permissionRequired) {
+  if (process.platform !== 'win32' && result.state === 'unavailable' && !result.permissionRequired) {
     openRestrictedExternalWindow('https://www.wireshark.org/download.html');
     return { ...result, message: '已打开网络采集组件的官方安装入口，安装完成后点击卡片重新检测。' };
   }

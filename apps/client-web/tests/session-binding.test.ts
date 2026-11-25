@@ -12,9 +12,13 @@ test('URL/QR apiBase cannot add an attacker service but LAN and HTTPS routing re
   atPage('http://192.168.50.30:4032', () => {
     assert.equal(trustedApiBase('', 'http://192.168.50.30:4031/'), 'http://192.168.50.30:4031');
     for (const base of ['https://attacker.example.test', 'http://192.168.50.30:5000', 'http://user:pass@192.168.50.30:4031', 'http://192.168.50.30:4031/other', 'javascript:alert(1)']) assert.throws(() => trustedApiBase('', base), /地址|平台/);
-    assert.equal(trustedApiBase('https://api.example.test/base', 'https://api.example.test/base/'), 'https://api.example.test/base');
+    assert.throws(() => trustedApiBase('https://api.example.test/base', 'https://api.example.test/base/'), /平台/);
   });
-  atPage('https://192.168.50.30:3443', () => assert.equal(trustedApiBase('', 'http://localhost:4031'), 'https://192.168.50.30:3443'));
+  atPage('https://192.168.50.30:3443', () => {
+    assert.equal(trustedApiBase('', 'https://192.168.50.30:3443'), 'https://192.168.50.30:3443');
+    assert.throws(() => trustedApiBase('', 'http://localhost:4031'), /平台/);
+  });
+  atPage('http://localhost:4032', () => assert.equal(trustedApiBase('https://api.example.test/base', 'https://api.example.test/base/'), 'https://api.example.test/base'));
 });
 
 test('a cached token is restored only for its original API base and stale request state is cleared', () => {
@@ -45,4 +49,24 @@ test('material upload sends its ticket header and authenticated requests cannot 
   } finally { globalThis.fetch = original; }
   assert.equal(isExpiredClientSessionError(new ClientApiError('revoked', 410)), true);
   assert.equal(isExpiredClientSessionError(new ClientApiError('forbidden', 403)), false);
+});
+
+test('older and delayed server samples cannot move a running countdown backwards', async t => {
+  let elapsed = 0;
+  t.mock.method(performance, 'now', () => elapsed);
+  let serverAt = 20_000;
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ ok: true, data: { serverNow: new Date(serverAt).toISOString() } }));
+  const api = new ClientApi('https://api.example.test');
+  await api.request('/clock');
+  elapsed = 2_000;
+  assert.equal(api.now(), 22_000);
+  serverAt = 19_000;
+  await api.request('/clock');
+  assert.equal(api.now(), 22_000);
+  serverAt = 21_000;
+  await api.request('/clock');
+  assert.equal(api.now(), 22_000);
+  elapsed = 4_000;
+  assert.equal(api.now(), 23_000);
 });

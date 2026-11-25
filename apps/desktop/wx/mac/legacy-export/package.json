@@ -1,0 +1,6 @@
+{
+  "name": "@cwnupaa/proctor-desktop",
+  "version": "1.0.18",
+  "private": true,
+  "main": "main.cjs"
+}

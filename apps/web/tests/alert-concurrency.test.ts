@@ -44,7 +44,12 @@ async function withStore(operation: (rows: Row[], session: Row) => Promise<void>
       updateMany: async ({ data }: Row) => { Object.assign(session, data); return { count: 1 }; } },
     pairingSession: { updateMany: async () => { assert.fail('a live heartbeat fixture must never be revoked'); } },
     candidate: { findUniqueOrThrow: async () => ({ ...session.candidate, examId: session.examId, exam: session.exam, rooms: [] }),
-      update: async ({ data }: Row) => Object.assign(session.candidate, data) },
+      update: async ({ data }: Row) => Object.assign(session.candidate, data),
+      updateMany: async ({ where, data }: Row) => {
+        if (where.status.notIn.includes(session.candidate.status)) return { count: 0 };
+        Object.assign(session.candidate, data);
+        return { count: 1 };
+      } },
     cheatingRecord: { count: async () => 0 },
     examRoom: { findFirst: async () => null },
     mediaSegment: { findFirst: async () => null },
@@ -111,6 +116,39 @@ test('second-camera credentials cannot lock the desktop or attach another sessio
   await withStore(async (rows) => {
     assert.equal((await reportAlert(request({ sessionId: 'session', type: 'PERIPHERAL_CHANGED', message: 'fake lock' }, 'mobile-token'))).status, 403);
     assert.equal((await reportAlert(request({ sessionId: 'session', type: 'SCREEN_SWITCH', message: 'fake evidence', evidencePath: 'another-session/secret.webm' }))).status, 403);
+    assert.equal(rows.length, 0);
+  });
+});
+
+test('a second-camera alert does not replace the current desktop offline status', async () => {
+  await withStore(async (rows, session) => {
+    session.candidate.status = 'OFFLINE';
+    const response = await reportAlert(request({ sessionId: session.id, type: 'MOBILE_CAMERA_LOST', message: 'capture interrupted' }, 'mobile-token'));
+    assert.equal(response.status, 201);
+    assert.equal(session.candidate.status, 'OFFLINE');
+    assert.equal(rows.length, 1);
+  });
+});
+
+test('a flexible exam accepts queued pre-deadline evidence without accepting events after the individual deadline', async () => {
+  await withStore(async (rows, session) => {
+    const now = Date.now();
+    Object.assign(session.exam, { contestRule: 'OI', flexible: true, durationMinutes: 10 });
+    session.candidate.startedAt = new Date(now - 11 * 60_000);
+    const report = { sessionId: session.id, type: 'SCREEN_SWITCH', message: 'closed exam' };
+    assert.equal((await reportAlert(request(report))).status, 409);
+    assert.equal((await reportAlert(request({ ...report, occurredAt: new Date(now - 30_000).toISOString() }))).status, 409);
+    assert.equal((await reportAlert(request({ ...report, occurredAt: new Date(now - 120_000).toISOString() }))).status, 201);
+    assert.equal(rows.length, 1);
+    assert.equal(session.candidate.status, 'ONLINE_NORMAL');
+  });
+});
+
+test('client sessions cannot create server-only manual or service events', async () => {
+  await withStore(async rows => {
+    for (const type of ['MANUAL_NOTE', 'SECOND_CAMERA_OFFLINE', 'OJ_LOGIN_FAILED']) {
+      assert.equal((await reportAlert(request({ sessionId: 'session', type, message: 'test incident' }))).status, 403);
+    }
     assert.equal(rows.length, 0);
   });
 });

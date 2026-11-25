@@ -11,7 +11,6 @@ async function main() {
   if (!accountModeColumns.length) {
     await prisma.$executeRawUnsafe("ALTER TABLE `Exam` ADD COLUMN `teamAccountMode` ENUM('MEMBER_ACCOUNTS','TEAM_ACCOUNT') NOT NULL DEFAULT 'MEMBER_ACCOUNTS'");
   }
-  const normalizedRules = await prisma.exam.updateMany({ where: { contestRule: 'ACM' }, data: { contestRule: 'XCPC' } });
   await prisma.$executeRawUnsafe("UPDATE `Exam` e SET e.`teamAccountMode` = 'TEAM_ACCOUNT' WHERE e.`contestType` = 'TEAM' AND EXISTS (SELECT 1 FROM `Candidate` c WHERE c.`examId` = e.`id` AND c.`studentId` IS NULL AND c.`teamMemberStudentIds` IS NOT NULL AND c.`teamMemberStudentIds` <> '')");
   await prisma.$executeRawUnsafe('CREATE TABLE IF NOT EXISTS `ExamCodeSequence` (`date` VARCHAR(8) NOT NULL, `value` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (`date`)) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
   const exams = await prisma.$queryRaw<Array<{ id: string; startAt: Date }>>`SELECT id, startAt FROM Exam WHERE examCode IS NULL ORDER BY startAt ASC, createdAt ASC`;
@@ -21,6 +20,6 @@ async function main() {
       await tx.exam.update({ where: { id: exam.id }, data: { examCode: code } });
     });
   }
-  console.log(`Backfilled ${exams.length} exam codes and normalized ${normalizedRules.count} legacy ACM exams to XCPC.`);
+  console.log(`Backfilled ${exams.length} exam codes.`);
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(() => prisma.$disconnect());

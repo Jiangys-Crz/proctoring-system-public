@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import sharp from 'sharp';
 import { normalizeScreenControlImage } from '../src/lib/screen-control-images';
+import { serializeScreenControlDisplay } from '../src/lib/screen-control';
+import { orderedScreenParticipantNames } from '../src/lib/screen-control-participant-card';
 import {
   CreateScreenControlDisplaySchema, effectiveScreenDisplay, SCREEN_CONTROL_MAX_GROUP_BYTES,
-  SCREEN_CONTROL_MAX_IMAGE_BYTES, ScreenControlActionSchema, validateScreenDisplayTimes,
+  SCREEN_CONTROL_MAX_IMAGE_BYTES, ScreenControlActionSchema, validateScreenDisplayImageCount, validateScreenDisplayTimes,
   validateScreenImageOrder, validateScreenUploadSizes,
 } from '../src/lib/screen-control-policy';
 
@@ -50,6 +52,47 @@ test('image reorder cannot omit, duplicate or introduce another group image', ()
   for (const ids of [['a'], ['a', 'a'], ['a', 'other'], ['a', 'b', 'other']]) {
     assert.throws(() => validateScreenImageOrder(['a', 'b'], ids), /全部图片/);
   }
+});
+
+test('a push appends one participant slide without modifying the stored group or desktop interval', () => {
+  const group = {
+    id: 'group', examId: 'exam', name: '原图', createdAt: instant, updatedAt: instant,
+    images: [{ id: 'image', name: '比赛规则.webp', order: 0, width: 100, height: 100, byteSize: 500 }],
+  };
+  const push = {
+    id: 'push', examId: 'exam', groupId: group.id, groupName: group.name, createdAt: instant, createdById: null,
+    startsAt: instant, endsAt: null, stoppedAt: null, canceledAt: null, sequence: 1, showParticipantCard: true, group,
+  };
+  const enabled = serializeScreenControlDisplay(push, 'session');
+  const disabled = serializeScreenControlDisplay({ ...push, showParticipantCard: false }, 'session');
+  assert.deepEqual(enabled.images.slice(0, 1), disabled.images);
+  assert.equal(enabled.intervalMs, 5000);
+  assert.deepEqual(enabled.images[1], {
+    id: 'participant-push', name: '参赛信息图.webp', order: 1, width: 1920, height: 1080, byteSize: 0,
+    url: '/api/client/screen-control/images/participant-push?sessionId=session',
+  });
+  assert.equal(group.images.length, 1);
+  assert.equal(serializeScreenControlDisplay(push).showParticipantCard, true);
+  assert.equal(CreateScreenControlDisplaySchema.parse({ groupId: group.id }).showParticipantCard, false);
+  assert.throws(() => validateScreenDisplayImageCount(30, true), /29/);
+  assert.doesNotThrow(() => validateScreenDisplayImageCount(29, true));
+  assert.doesNotThrow(() => validateScreenDisplayImageCount(30, false));
+  const only = { ...push, groupId: 'participant-card-exam' };
+  assert.deepEqual(serializeScreenControlDisplay(only, 'session').images.map(image => image.id), ['participant-push']);
+  assert.equal(serializeScreenControlDisplay(only).participantCardOnly, true);
+  assert.equal(CreateScreenControlDisplaySchema.safeParse({ participantCardOnly: true }).success, true);
+  assert.equal(CreateScreenControlDisplaySchema.safeParse({ groupId: group.id, participantCardOnly: true }).success, false);
+  assert.equal(CreateScreenControlDisplaySchema.safeParse({}).success, false);
+});
+
+test('participant slides put the captain first and preserve member order and identical names', () => {
+  assert.deepEqual(orderedScreenParticipantNames([
+    { name: ' 李四 ', isTeamLeader: false, memberOrder: 2 },
+    { name: '王五', isTeamLeader: false, memberOrder: 1 },
+    { name: '张三', isTeamLeader: true, memberOrder: 3 },
+    { name: null, isTeamLeader: false, memberOrder: 4 },
+    { name: '李四', isTeamLeader: false, memberOrder: 5 },
+  ]), ['张三', '王五', '李四', '李四']);
 });
 
 test('upload limits reject empty groups, image count, file size and total size', () => {

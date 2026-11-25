@@ -57,8 +57,29 @@ export async function prepareLocalBank(value: PlatformItem, old: { localId: stri
   await recordBankFileProgress(value, prepared.missing.length);
   return prepared;
 }
-export async function captureBank(settings: PlatformSyncSettings) {
-  const hydro = await getHydroSettings(); await assertBankBinding(hydro); const known = new Set<string>(); let after: number | null = 0;
+const catalogCheckpoint = 'platform-bank-catalog-capture:v1';
+const catalogIntervalMs = 30_000;
+
+export async function captureBank(settings: PlatformSyncSettings, scheduled = false) {
+  const hydro = await getHydroSettings();
+  const source = createHash('sha256').update(JSON.stringify([
+    settings.nodeId, settings.revision, settings.role, hydro.baseUrl, hydro.problemDomainId, hydro.apiKey,
+  ])).digest('hex');
+  if (scheduled) {
+    const row = await prisma.systemSetting.findUnique({ where: { key: catalogCheckpoint }, select: { value: true } });
+    const checkpoint = row?.value as { source?: string; nextAttemptAt?: number } | undefined;
+    if (checkpoint?.source === source && typeof checkpoint.nextAttemptAt === 'number' && checkpoint.nextAttemptAt > Date.now()) return false;
+  }
+  const saveCheckpoint = (tx: Prisma.TransactionClient) => {
+    const value = { source, nextAttemptAt: Date.now() + catalogIntervalMs };
+    return tx.systemSetting.upsert({ where: { key: catalogCheckpoint }, create: { key: catalogCheckpoint, value }, update: { value } });
+  };
+  // Reserve before contacting Hydro and retain the interval on failures. All
+  // callers hold the platform lease, so other workers honor the same checkpoint.
+  await platformTransaction(saveCheckpoint);
+  await assertBankBinding(hydro);
+  const known = new Set<string>();
+  let after: number | null = 0;
   do {
     const page: { domain: string; items: BankDoc[]; after: number | null; errors?: Array<{id:string;sourceId?:string;message:string}>; pending?: Array<{id:string;sourceId:string;syncId:string;hash:string;applied:boolean;item?:PlatformItem}> } = await requestHydroBridge({ platformBaseUrl: hydro.baseUrl }, '/api/proctor/problem-bank', { action: 'catalog', after, limit: 20, tolerateErrors: true });
     if (page.domain !== hydro.problemDomainId) throw new FederationError('评测服务题库域与插件配置不一致，已停止题库同步', 409);
@@ -171,8 +192,9 @@ export async function captureBank(settings: PlatformSyncSettings) {
     const missing = await tx.platformSyncItem.findMany({ where: { scope: 'bank', kind: 'BANK', localId: { startsWith: `${hydro.problemDomainId}:` } }, select: { localId: true } });
     for (const row of missing) if (row.localId && !known.has(row.localId)) await tx.examProblem.updateMany({ where: { hydroDomain: hydro.problemDomainId, hydroProblemId: row.localId.slice(hydro.problemDomainId.length + 1) }, data: { sourceDeleted: true } });
     await captureDeletions(tx, settings.nodeId, 'bank', 'BANK', known, `${hydro.problemDomainId}:`);
-    await assertPlatformLease(tx);
+    await saveCheckpoint(tx);
   });
+  return true;
 }
 export async function bankFileResponse(itemId: string, area: 'data' | 'files', name: string, hash: string) {
   const item = await prisma.platformSyncItem.findUnique({ where: { id: itemId } });

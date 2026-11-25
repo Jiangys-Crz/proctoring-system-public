@@ -46,7 +46,29 @@ try {
   await prisma.examRoom.update({ where: { id: room.id }, data: { requireSecondCamera: false } });
   const initial = (await post(pair, { deviceId: `${marker}-new-desktop`, screenOk: true }, 200)).data;
   const pairing = await prisma.pairingSession.findUniqueOrThrow({ where: { pairCode: initial.pairCode } });
-  const fresh = await createCandidateLoginRequest({ exam, pairing, candidateId: candidate.id, memberIdentity: null, materials: {}, method: 'CREDENTIALS' });
+  const publisherId = randomUUID();
+  const originalFetch = globalThis.fetch;
+  let disconnected = false;
+  process.env.MEDIA_PUBLISH_SECRET ||= marker;
+  globalThis.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === '/v3/paths/list' && !disconnected) return Response.json({ pageCount: 1, items: [{
+      name: `live/${session.id}_MOBILE_CAMERA`, source: { type: 'webRTCSession', id: publisherId },
+    }] });
+    if (path.endsWith('/list')) return Response.json({ pageCount: 0, items: [] });
+    assert.equal(path, `/v3/webrtc/sessions/kick/${publisherId}`);
+    assert.equal(init?.method, 'POST');
+    const previous = await prisma.clientSession.findUniqueOrThrow({ where: { id: session.id } });
+    assert.ok(previous.revokedAt);
+    assert.equal(previous.miniProgramTokenHash, null);
+    disconnected = true;
+    return new Response(null, { status: 200 });
+  };
+  let fresh: Awaited<ReturnType<typeof createCandidateLoginRequest>>;
+  try {
+    fresh = await createCandidateLoginRequest({ exam, pairing, candidateId: candidate.id, memberIdentity: null, materials: {}, method: 'CREDENTIALS' });
+    assert.equal(disconnected, true, 'replacement login waits for the superseded publication to close');
+  } finally { globalThis.fetch = originalFetch; }
   const freshSession = await prisma.clientSession.findUniqueOrThrow({ where: { id: fresh.sessionId } });
   assert.equal(freshSession.status, 'WAITING_REVIEW'); assert.equal(freshSession.revokedAt, null);
   assert.equal((await prisma.candidate.findUniqueOrThrow({ where: { id: candidate.id } })).startedAt?.getTime(), firstStart.getTime());
@@ -82,7 +104,7 @@ try {
   assert.equal(workerEnded.revokedAt, null, 'background worker retains disconnected sessions');
   assert.equal(workerEnded.status, 'OFFLINE');
   assert.equal((await prisma.candidate.findUniqueOrThrow({ where: { id: candidate.id } })).startedAt?.getTime(), firstStart.getTime());
-  console.log('PASS: long outages retain sessions and tokens; fresh login revokes the old session; personal clock is preserved; background scans only mark offline.');
+  console.log('PASS: long outages retain sessions and tokens; fresh login revokes the old session and disconnects its camera; personal clock is preserved.');
 } finally {
   const worker = globalThis as typeof globalThis & { sessionHealthTimer?: ReturnType<typeof setInterval> };
   if (worker.sessionHealthTimer) { clearInterval(worker.sessionHealthTimer); delete worker.sessionHealthTimer; }

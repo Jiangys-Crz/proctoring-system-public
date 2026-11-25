@@ -22,7 +22,7 @@ function harness() {
   let eventId = 0, timer = 0, flushes = 0;
   const context = vm.createContext({
     saveRendererRecovery: async () => {},
-    state, console: { warn() {} }, AbortController,
+    state, console: { warn() {} }, AbortController, performance: { now: () => clock.now },
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [clock.now])); } static now() { return clock.now; } },
     lastAlertReports: new Map(), pendingAlertReports: pending, alertRequests: new Set(), evidenceFlushTimers: new Set(),
     ALERT_COOLDOWN_MS: 5 * 60_000,
@@ -52,6 +52,7 @@ function harness() {
     examConnection: { connected() {} }, watchScreenControl() {}, startSegmentRecorders() {},
     startRtmpStreams: async () => {}, $: () => ({ classList: { toggle() {} } }), updateLocalPreviews() {}
   });
+  vm.runInContext(source.slice(source.indexOf('function acceptSessionSnapshot('), source.indexOf('function clientAuthHeaders(')), context);
   vm.runInContext(source.slice(source.indexOf('function isNovaJudgeExam()'), source.indexOf('function contestWebsiteUrl()')), context);
   vm.runInContext(`${alertSource}\n${heartbeatSource}`, context);
   const observe = async snapshot => {

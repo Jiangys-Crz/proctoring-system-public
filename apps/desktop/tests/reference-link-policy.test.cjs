@@ -101,7 +101,7 @@ test('the actual file window saves the requested file, rejects unrelated downloa
     getFilename: () => '样例.zip', setSaveDialogOptions: options => { item.options = options; } });
   let blocked = false;
   window.webContents.session.emit('will-download', { preventDefault: () => { blocked = true; } }, item);
-  assert.equal(blocked, false); assert.equal(item.options.defaultPath, '/downloads/样例.zip');
+  assert.equal(blocked, false); assert.equal(item.options.defaultPath, path.join('/downloads', '样例.zip'));
   item.emit('done'); assert.equal(window.closed, true);
   item.getURLChain = () => ['https://unrelated.example/a.zip'];
   window.webContents.session.emit('will-download', { preventDefault: () => { blocked = true; } }, item);

@@ -124,11 +124,11 @@ export interface ProctorApi {
   promptMacAccessibility(): Promise<boolean>;
   relaunchAsAdmin(): Promise<boolean>;
   quitApp(): Promise<void>;
-  getSecuritySnapshot(allowedHosts: string[]): Promise<SecuritySnapshot>;
+  getSecuritySnapshot(allowedHosts: string[], includePeripherals?: boolean): Promise<SecuritySnapshot>;
   getPeripheralSnapshot(): Promise<Pick<SecuritySnapshot, 'peripheralsFingerprint' | 'peripheralScanOk'>>;
   getSecurityCapabilities(allowedHosts: string[]): Promise<SecurityCapabilities>;
-  watchUsbEvents(sessionId: string): Promise<void>;
-  readUsbEvents(sessionId: string): Promise<{ available: boolean; events: Array<{ id: string; action: 'INSERT' | 'REMOVE'; deviceId: string }> }>;
+  watchUsbEvents(sessionId: string, baselineFingerprint?: string): Promise<void>;
+  readUsbEvents(sessionId: string): Promise<{ available: boolean; events: Array<{ id: string; action: 'INSERT' | 'REMOVE'; deviceId: string; observedAgeMs: number; inventoryFingerprint?: string }> }>;
   acknowledgeUsbEvents(sessionId: string, ids: string[]): Promise<void>;
   confirmPeripheralBaseline(): Promise<string>;
   setAllowedHosts(hosts: string[]): Promise<void>;

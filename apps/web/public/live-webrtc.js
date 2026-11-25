@@ -63,7 +63,18 @@ export function createProctorWebRtcReader(options) {
         if (!active() || !event.candidate) return;
         pending.push(event.candidate); void flush();
       };
-      connection.ontrack = event => { if (active()) options.onTrack?.(event); };
+      connection.ontrack = event => {
+        if (!active()) return;
+        // A receiver ending can precede the peer's failed/closed ICE state.
+        // Clear the decoded frame on a terminal video event, not on a
+        // temporary track mute or packet stall.
+        if (event.track.kind === 'video') {
+          event.track.addEventListener('ended', () => {
+            if (active()) retry(new Error('WebRTC video track ended'));
+          }, { once: true });
+        }
+        options.onTrack?.(event);
+      };
       connection.onconnectionstatechange = () => {
         if (!active()) return;
         options.onConnectionState?.(connection.connectionState);

@@ -49,7 +49,7 @@ export type ReactionItemView = {
 export type ReactionExportSummary = { generatedCount: number; invalidSubmissionIds: number };
 
 export type ReactionAdminView = {
-  exam: { id: string; name: string; platform: string; schools: string[] };
+  exam: { id: string; name: string; platform: string; reactionSource?: 'NOVAJUDGE_CCS' | 'HYDRO_CONTEST' | 'LOCAL_HYDRO' | null; schools: string[] };
   candidates: { teamId: string; teamName: string; schoolName: string | null }[];
   config: ReactionConfigView & { credentialsConfigured: boolean };
   health: {

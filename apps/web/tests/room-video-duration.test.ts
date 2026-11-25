@@ -17,7 +17,7 @@ test('login environment videos accept only finite durations from 3 through 15 se
 for (const duration of [2.9, 3, 15, 15.1]) {
   test(`actual decoded ${duration}-second video is ${duration >= 3 && duration <= 15 ? 'accepted' : 'rejected'} for login materials`, async () => {
     const { stdout } = await run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=size=32x32:rate=10',
-      '-t', String(duration), '-c:v', 'libvpx', '-f', 'webm', 'pipe:1'], { encoding: 'buffer', maxBuffer: 1024 * 1024 });
+      '-t', String(duration), '-c:v', 'libvpx', '-f', 'webm', 'pipe:1'], { encoding: 'buffer', maxBuffer: 1024 * 1024, windowsHide: true });
     for (const memoryOnly of [false, true]) {
       if (duration >= 3 && duration <= 15) {
         const result = await validateMedia(stdout, 'ROOM_VIDEO', 'video/webm', { memoryOnly });

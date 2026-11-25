@@ -1,20 +1,22 @@
 import { assertFederationDefinitionMutable } from './exam-federation-contract';
 import { isBrowserExam, type CreateExamInput } from '@cwnupaa/proctor-shared';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, ReactionLogoMatchBy } from '@prisma/client';
 import { nextExamCode } from './exam-code';
 import { prisma } from './db';
 import { requestHydroProblem } from './hydro-contest';
 import { getHydroSettings } from './settings';
-import { ExamSettingsError, normalizeExamSettings } from './exam-settings';
+import { assertHydroBrowserOriginKey, assertNovaJudgeOriginKey, ExamSettingsError, normalizeExamSettings, sameUrlOrigin } from './exam-settings';
 import { problemLimits } from './problem-limits';
 import { hydroProblemDocId } from './hydro-problem-identity';
 import { problemFullScore } from './problem-score';
-import { enableHydroBrowserContest, trustedHydroBrowserTarget } from './hydro-browser';
+import { enableHydroBrowserContest, hydroBrowserConnection } from './hydro-browser';
 import { enablePlatformSyncForNewExam } from './platform-sync-exams';
 import { getPlatformSyncSettings } from './platform-sync-settings';
 import { FederationError } from './exam-federation-protocol';
+import { revokeInvalidContestLiveSchedule } from './contest-live-config';
+import { removeContestLiveConnections } from './contest-live-media';
 
-export async function saveExam(input: CreateExamInput, userId: string, examId?: string) {
+export async function saveExam(input: CreateExamInput & { reactionLogoMatchBy?: ReactionLogoMatchBy }, userId: string, examId?: string, suppliedNovaJudgeKey?: string | null, suppliedHydroBrowserKey?: string | null, suppliedHydroBrowserEventFeedKey?: string | null) {
   const { administratorIds, problemIds, platformSyncEnabled, scoreboardFrozenAt: _frozen, ...fields } = input;
   const settings = normalizeExamSettings(input);
   const browser = isBrowserExam(input.platform);
@@ -23,7 +25,7 @@ export async function saveExam(input: CreateExamInput, userId: string, examId?: 
   const syncSettings = platformSyncEnabled ? await getPlatformSyncSettings() : null;
   const hydro = input.platform === 'NOVAJUDGE' ? null : await getHydroSettings();
   if (input.platform === 'HYDRO_BROWSER') {
-    try { trustedHydroBrowserTarget(settings, hydro!.baseUrl); }
+    try { hydroBrowserConnection(settings, hydro!); }
     catch (error) { throw new ExamSettingsError(error instanceof Error ? error.message : 'HydroOJ 配置无效'); }
   }
   const admins = administratorIds === undefined ? undefined : [...new Set(administratorIds)];
@@ -50,9 +52,23 @@ export async function saveExam(input: CreateExamInput, userId: string, examId?: 
       files: (problem.files || []) as Prisma.InputJsonValue,
     } };
   })) : undefined;
-  return prisma.$transaction(async tx => {
+  const { exam, staleLiveConnections } = await prisma.$transaction(async tx => {
     if (examId) {
       await assertFederationDefinitionMutable(tx, examId);
+      if (input.platform === 'NOVAJUDGE') {
+        const current = await tx.exam.findUniqueOrThrow({ where: { id: examId }, select: { platformBaseUrl: true, novaJudgeApiKey: true } });
+        assertNovaJudgeOriginKey(current.platformBaseUrl, settings.platformBaseUrl, suppliedNovaJudgeKey);
+        // Preserve the current key rather than restoring an earlier copy from
+        // a concurrent edit that did not explicitly provide a replacement.
+        settings.novaJudgeApiKey = suppliedNovaJudgeKey?.trim() || current.novaJudgeApiKey;
+      }
+      if (input.platform === 'HYDRO_BROWSER') {
+        const current = await tx.exam.findUniqueOrThrow({ where: { id: examId }, select: { platformBaseUrl: true, hydroBrowserApiKey: true, hydroBrowserEventFeedApiKey: true } });
+        assertHydroBrowserOriginKey(current.platformBaseUrl, settings.platformBaseUrl, suppliedHydroBrowserKey);
+        settings.hydroBrowserApiKey = suppliedHydroBrowserKey?.trim() || current.hydroBrowserApiKey;
+        settings.hydroBrowserEventFeedApiKey = suppliedHydroBrowserEventFeedKey?.trim()
+          || (sameUrlOrigin(current.platformBaseUrl, settings.platformBaseUrl) ? current.hydroBrowserEventFeedApiKey : null);
+      }
       if (problems) {
         const fresh = await tx.examProblem.findMany({ where: { examId } });
         if (fresh.length !== currentProblems.length || fresh.some(row => { const prior = currentProblems.find(p => p.id === row.id); return !prior || prior.hydroProblemId !== row.hydroProblemId || prior.hydroDomain !== row.hydroDomain || prior.order !== row.order || prior.sourceDeleted !== row.sourceDeleted; })) throw new ExamSettingsError('题目列表在编辑期间已改变，请刷新后重试');
@@ -99,6 +115,9 @@ export async function saveExam(input: CreateExamInput, userId: string, examId?: 
         throw error;
       }
     }
-    return exam;
+    const staleLiveConnections = examId ? await revokeInvalidContestLiveSchedule(tx, exam) : [];
+    return { exam, staleLiveConnections };
   }, { timeout: 15_000 });
+  await removeContestLiveConnections(staleLiveConnections, '考试已保存，部分直播观看连接暂未断开，请重试');
+  return exam;
 }

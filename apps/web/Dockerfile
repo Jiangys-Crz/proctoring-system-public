@@ -48,11 +48,9 @@ RUN --mount=type=cache,id=proctor-web-pnpm,target=/pnpm/store,sharing=locked \
 FROM dependencies AS base
 
 COPY packages/shared packages/shared
-# The web language regression test imports this plugin helper during type checking.
-COPY hydro-plugin/cwnupaa-proctor-auth/judge-language.ts hydro-plugin/cwnupaa-proctor-auth/judge-language.ts
-COPY hydro-plugin/cwnupaa-proctor-auth/judge-language-list.ts hydro-plugin/cwnupaa-proctor-auth/judge-language-list.ts
-COPY hydro-plugin/cwnupaa-proctor-auth/problem-score.ts hydro-plugin/cwnupaa-proctor-auth/problem-score.ts
-COPY hydro-plugin/cwnupaa-proctor-auth/problem-authoring.ts hydro-plugin/cwnupaa-proctor-auth/problem-authoring.ts
+# Regression tests and shared helpers import the plugin's language, scoring and
+# CCS modules during type checking, so the whole plugin directory is present.
+COPY hydro-plugin/cwnupaa-proctor-auth hydro-plugin/cwnupaa-proctor-auth
 COPY apps/web apps/web
 # NovaJudge regression checks share the desktop's request policy.
 COPY apps/desktop/src/main/novajudge-policy.ts apps/desktop/src/main/novajudge-policy.ts

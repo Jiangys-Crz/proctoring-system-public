@@ -5,6 +5,7 @@ import { publicClientSession, verifyClientTokenForSession } from '@/lib/client-a
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
 import { LoginFlowError } from '@/lib/room-login-policy';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
+import { stopTerminalSessionMedia } from '@/lib/session-media-lifecycle';
 
 const FinishSchema = z.object({
   sessionId: z.string().min(1).max(191),
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
     if (input.confirmationText.trim() !== expectedText(session.candidate)) {
       return fail(`确认文字不正确，请输入：${expectedText(session.candidate)}`, 400);
     }
-    const updated = await withSessionWrite(session.id, async (tx) => {
+    const { updated, sessionIds } = await withSessionWrite(session.id, async (tx) => {
       await tx.$queryRaw`SELECT id FROM Candidate WHERE id = ${session.candidateId} FOR UPDATE`;
       const current = await tx.clientSession.findUnique({ where: { id: session.id }, include: { candidate: true } });
       // A takeover or desktop recovery may revoke/replace the token after the
@@ -38,11 +39,13 @@ export async function POST(request: Request) {
       if (input.confirmationText.trim() !== expectedText(current.candidate)) throw new LoginFlowError('考生信息已更新，请重新确认结束考试', 409);
       if (current.status === 'FINISHED') {
         const { candidate: _candidate, ...sessionRow } = current;
-        return sessionRow;
+        return { updated: sessionRow, sessionIds: [current.id] };
       }
+      const scope = { examId: session.examId, candidateId: session.candidateId, status: { not: 'FINISHED' as const } };
+      const active = await tx.clientSession.findMany({ where: scope, select: { id: true } });
       const endedAt = new Date();
       await tx.clientSession.updateMany({
-        where: { examId: session.examId, candidateId: session.candidateId, status: { not: 'FINISHED' } },
+        where: scope,
         data: {
           status: 'FINISHED',
           endedAt,
@@ -64,8 +67,12 @@ export async function POST(request: Request) {
           message: `考生 ${current.candidate.examNumber} ${current.candidate.name || current.candidate.teamName || ''} 已本人确认结束考试`
         }
       });
-      return tx.clientSession.findUniqueOrThrow({ where: { id: session.id } });
+      return {
+        updated: await tx.clientSession.findUniqueOrThrow({ where: { id: session.id } }),
+        sessionIds: active.map(item => item.id)
+      };
     }, { signal: request.signal });
+    await stopTerminalSessionMedia(sessionIds);
     return ok(publicClientSession(updated));
   } catch (error) {
     if (error instanceof SessionWriteQueueError || error instanceof LoginFlowError) return fail(error.message, error.status);

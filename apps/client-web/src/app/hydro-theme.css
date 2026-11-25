@@ -111,9 +111,12 @@ html, body { background: var(--bg); color: var(--text); }
 .candidate-team-members dd span:first-child { color: #287e4b; font-weight: 600; }
 .candidate-start-button { width: 100%; justify-content: center; margin-top: 17px; }
 .candidate-start-panel { display: grid; gap: 14px; padding: 20px 22px; border-bottom: 1px solid #e1e6ea; background: #fff; }
-.candidate-start-countdown { display: grid; justify-items: center; gap: 7px; padding: 15px 12px; border: 1px solid #dce7ed; border-radius: 8px; background: #f5fafc; }
-.candidate-start-countdown span { color: #7f9099; font-size: 11px; font-weight: 600; }
-.candidate-start-countdown strong { color: #3f718d; font: 700 26px/1.15 ui-monospace, "SFMono-Regular", Consolas, monospace; letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.candidate-start-countdown { display: grid; justify-items: center; gap: 10px; min-width: 0; }
+.candidate-start-countdown-label { color: var(--nova-muted, #52606f); font-size: 14px; }
+.candidate-start-countdown-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; max-width: 316px; }
+.candidate-start-countdown-tile { display: grid; align-content: center; justify-items: center; gap: 7px; min-height: 104px; padding: 8px 2px; border-radius: 5px; color: #fff; background: #626b77; }
+.candidate-start-countdown-tile strong { font: 400 clamp(26px, 4.5vw, 40px)/1.05 Georgia, "Times New Roman", serif; font-variant-numeric: tabular-nums; }
+.candidate-start-countdown-tile span { color: #eef0f3; font-size: 13px; }
 .candidate-start-panel .candidate-start-button { min-height: 40px; margin-top: 0; }
 .candidate-exam-facts { padding: 18px; }
 .candidate-exam-facts h2 { margin: 0; padding-bottom: 13px; border-bottom: 1px solid #e8edef; color: #4e5b62; font-size: 16px; font-weight: 600; }

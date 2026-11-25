@@ -40,6 +40,20 @@ test('public student pages and QR codes use the backend API, never an arbitrary 
     assert.equal(defaultApiBase(''), 'https://proctoring.example.org');
     assert.equal(trustedApiBase('', 'https://proctoring.example.org/'), 'https://proctoring.example.org');
     assert.throws(() => trustedApiBase('', 'https://attacker.example.test'), /平台/);
-    assert.equal(defaultApiBase('https://custom-api.example.test'), 'https://custom-api.example.test');
+    assert.equal(defaultApiBase('https://custom-api.example.test'), 'https://proctoring.example.org');
+    assert.throws(() => trustedApiBase('', 'https://proctoring.example.test'), /平台/);
+  });
+});
+
+test('LAN domains and direct private-IP entrances ignore a public URL in the shared image', () => {
+  for (const [page, backend] of [
+    ['https://proctorstu.example.test/contest', 'https://proctoring.example.test'],
+    ['http://192.168.50.20:4032/contest', 'http://192.168.50.20:4031'],
+    ['https://192.168.50.20/contest', 'https://192.168.50.20'],
+    ['http://10.0.0.15:4032/contest', 'http://10.0.0.15:4031'],
+  ]) atPage(page, () => {
+    assert.equal(defaultApiBase('https://proctoring.example.org'), backend);
+    assert.equal(trustedApiBase('https://proctoring.example.org', backend), backend);
+    assert.throws(() => trustedApiBase('https://proctoring.example.org', 'https://proctoring.example.org'), /平台/);
   });
 });

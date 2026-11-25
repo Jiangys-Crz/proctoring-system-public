@@ -4,6 +4,7 @@ import { verifyClientTokenForAnySide } from '@/lib/client-auth';
 import { withSessionWrite, SessionWriteQueueError } from '@/lib/session-write';
 import { LoginFlowError } from '@/lib/room-login-policy';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
+import { stopTerminalSessionMedia } from '@/lib/session-media-lifecycle';
 
 const CancelLoginRequestSchema = z.object({
   sessionId: z.string().min(1).max(191).optional(),
@@ -46,6 +47,7 @@ export async function POST(request: Request) {
       } });
       return updated;
     }, { signal: request.signal });
+    await stopTerminalSessionMedia([session.id]);
     return ok(canceled);
   } catch (error) {
     if (error instanceof SessionWriteQueueError || error instanceof LoginFlowError) return fail(error.message, error.status);

@@ -2,6 +2,7 @@
   // One decoded bitmap and one IPC read at a time: slow Windows 7 machines
   // discard older frames at the producer instead of growing a media queue.
   root.proctorCaptureWindows7Screen = async function (api) {
+    if (typeof root.__proctorCaptureWindows7 === 'function') return root.__proctorCaptureWindows7(api);
     const id = await api.startWindows7ScreenCapture();
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d', { alpha: false });

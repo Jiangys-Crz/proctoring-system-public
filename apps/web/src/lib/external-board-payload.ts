@@ -26,12 +26,13 @@ export function externalBoardProblem(problem: Problem) {
   };
 }
 
-/** The receiver parses a China-local datetime, integer percentages and KB. */
+/** Keep the legacy percentage and send the source fraction for scored boards. */
 export function externalBoardSubmission(submission: Submission, problem: Problem, candidate: Pick<Candidate, 'examNumber'>, rule?: string) {
   const ignored = submission.status === 30;
-  const percentage = submission.manualScore !== null
-    ? submission.manualScore * 100 / (problem.score || 100)
-    : submission.score * 100 / (problem.hydroScore || 100);
+  const zeroScore = ignored || (rule === 'LANQIAO' && [0, 7, 20, 21, 22].includes(submission.status));
+  const rawMaxScore = submission.manualScore === null ? problem.hydroScore || 100 : problem.score || 100;
+  const rawScore = zeroScore ? 0 : submission.manualScore ?? submission.score;
+  const percentage = rawScore * 100 / rawMaxScore;
   return {
     rid: `proctor:${submission.id}`,
     username: candidate.examNumber,
@@ -40,7 +41,8 @@ export function externalBoardSubmission(submission: Submission, problem: Problem
     // its neutral verdict for best-score/XCPC boards. LANQIAO must distinguish
     // cancellations from a real latest CE, which earns zero points.
     status: ignored ? rule === 'LANQIAO' ? 'Cancelled' : 'Compile Error' : hydroStatusText(submission.statusText, submission.status),
-    score: ignored || (rule === 'LANQIAO' && [0, 7, 20, 21, 22].includes(submission.status)) ? 0 : Math.round(Math.max(0, Math.min(100, percentage))),
+    score: Math.round(Math.max(0, Math.min(100, percentage))),
+    ...(rule === 'GPLT' || rule === 'LANQIAO' ? { raw_score: rawScore, raw_max_score: rawMaxScore } : {}),
     language: submission.lang, code: submission.code,
     runtime: String(submission.time), memory: String(submission.memory),
     submit_time: new Date(+submission.createdAt + 8 * 3600_000).toISOString().replace('T', ' ').replace('Z', ''),

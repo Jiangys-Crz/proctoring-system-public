@@ -1,14 +1,29 @@
 import Link from 'next/link';
 import { ArrowDownToLine, ArrowRight, Monitor, ShieldCheck } from 'lucide-react';
+import { DESKTOP_FIXED_RUNTIME, DESKTOP_MAC_RUNTIME, type DesktopTarget } from '@cwnupaa/proctor-shared';
 import { getDesktopReleases } from '@/lib/desktop-releases';
 import { PublicSiteHeader, PublicSiteFooter } from '@/components/PublicSiteHeader';
 import styles from './downloads.module.css';
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
-  const releases = await getDesktopReleases().catch(() => []);
-  const windows = releases.find(item => item.target === 'windows');
-  const macs = releases.filter(item => item.target.startsWith('mac-'));
+  const [legacy, windowsNative, macNative] = await Promise.all([
+    getDesktopReleases().catch(() => []),
+    getDesktopReleases(undefined, DESKTOP_FIXED_RUNTIME, false).catch(() => []),
+    getDesktopReleases(undefined, DESKTOP_MAC_RUNTIME, false).catch(() => []),
+  ]);
+  const windowsTargets = [
+    { target: 'windows', label: 'Windows 合并版' },
+  ] as const satisfies ReadonlyArray<{ target: DesktopTarget; label: string }>;
+  const windowsDownloads = windowsTargets.flatMap(({ target, label }) => {
+    const release = windowsNative.find(item => item.target === target) ?? legacy.find(item => item.target === target);
+    return release ? [{ release, label }] : [];
+  });
+  const macTargets = ['mac-arm64', 'mac-x64'] as const satisfies readonly DesktopTarget[];
+  const macs = macTargets.flatMap(target => {
+    const release = macNative.find(item => item.target === target) ?? legacy.find(item => item.target === target);
+    return release ? [release] : [];
+  });
   return <div className={styles.page}>
     <PublicSiteHeader active="download" />
     <main className={styles.main}>
@@ -25,8 +40,8 @@ export default async function HomePage() {
         <section className={styles.card}>
           <div className={styles.platformIcon} aria-hidden="true"><svg viewBox="0 0 24 24" width="29" height="29" fill="currentColor"><path d="M2 4.7 10.6 3.5v7.9H2zm10-1.4L22 2v9.4H12zM2 12.8h8.6v7.8L2 19.4zm10 0h10V22l-10-1.3z" /></svg></div>
           <h2>Windows 版</h2><p>适用于 Windows 电脑</p>
-          <div className={styles.downloads}>{windows ? <a href={windows.installer.url} className={styles.download}><ArrowDownToLine size={18} />下载 Windows 版<small>v{windows.version}</small></a> : <div className={styles.unavailable}>安装包尚未发布</div>}</div>
-          <span className={styles.detail}>安装时请允许系统权限请求</span>
+          <div className={styles.downloads}>{windowsDownloads.length ? windowsDownloads.map(({ release, label }) => <a key={release.target} href={release.installer.url} className={styles.download}><ArrowDownToLine size={18} />下载 {label}<small>v{release.version}</small></a>) : <div className={styles.unavailable}>安装包尚未发布</div>}</div>
+          <span className={styles.detail}>安装时自动选择 x86、x64 或 ARM64，无需区分架构下载。</span>
         </section>
       </div>
       <div className={styles.steps}><span><b>01</b> 下载并安装</span><span><b>02</b> 完成权限检查</span><span><b>03</b> 登录参加考试</span></div>

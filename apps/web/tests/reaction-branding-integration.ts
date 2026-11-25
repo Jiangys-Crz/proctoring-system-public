@@ -170,7 +170,7 @@ try {
     for (const school of [null, '', 'Unknown TEST ' + suffix, orgName.toLowerCase(), orgName + ' Extension']) {
       const selected = await resolveReactionBrandingLogo(school); assert.equal(selected.basis, 'system-default'); assert.equal(selected.logoId, defaultLogoId);
     }
-    const selected = await resolveReactionBrandingLogo(orgRaw); assert.equal(selected.basis, 'system-organization'); assert.equal(selected.logoId, organizationLogoId); assert.equal(selected.normalizedSchoolName, orgName);
+    const selected = await resolveReactionBrandingLogo(orgRaw); assert.equal(selected.basis, 'system-organization'); assert.equal(selected.logoId, organizationLogoId); assert.equal(selected.normalizedOrganizationName, orgName);
     return { organizationLogoId, defaultLogoId, organizationSha256: organizationSha, defaultSha256: defaultSha };
   });
 

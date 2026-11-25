@@ -11,7 +11,7 @@ import { ensurePublicTestExam, cleanupPublicTestState } from '../src/lib/public-
 import { createMediaPublishToken } from '../src/lib/media-publish-token';
 import { hashClientSessionToken } from '../src/lib/client-auth';
 import { liveChannels } from '../src/lib/media-read-token';
-import { testMediaState } from '../src/lib/test-media-state';
+import { requiredTestMediaReady, testMediaState } from '../src/lib/test-media-state';
 import { requestHydroLanguages } from '../src/lib/hydro-contest';
 import { languageFamily } from '../src/lib/exam-languages';
 
@@ -49,7 +49,8 @@ try {
   await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const address = proxy.address();
   assert.ok(address && typeof address !== 'string');
-  for (const channel of liveChannels) {
+  // Deliberately leave the optional front camera absent throughout this test.
+  for (const channel of liveChannels.filter(channel => channel !== 'DESKTOP_CAMERA')) {
     const { token } = createMediaPublishToken(session, channel);
     const url = `rtmp://127.0.0.1:${address.port}/live/${session.id}_${channel}?token=${encodeURIComponent(token)}`;
     const child = spawn(binary, ['-hide_banner', '-loglevel', 'error', '-re', '-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=10',
@@ -61,10 +62,11 @@ try {
   let ready = false;
   for (let attempt = 0; attempt < 30; attempt++) {
     const channels = await testMediaState(session.id);
-    if (channels.every(channel => channel.ready)) { ready = true; break; }
+    if (requiredTestMediaReady(channels)) { ready = true; break; }
     await new Promise(resolve => setTimeout(resolve, 500));
   }
   assert.equal(ready, true, `Synthetic streams failed: ${diagnostics.join('').slice(-1500)}`);
+  assert.equal((await testMediaState(session.id)).find(item => item.channel === 'DESKTOP_CAMERA')?.ready, false);
   const started = await fetch('http://localhost:4031/api/client/session/start', {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-proctor-session-token': desktopToken },
     body: JSON.stringify({ sessionId: session.id, confirm: true }),
@@ -93,7 +95,7 @@ try {
   assert.equal(await prisma.candidate.findUnique({ where: { id: candidateId } }), null);
   assert.equal(await prisma.clientSession.findUnique({ where: { id: session.id } }), null);
   assert.equal(await prisma.contestSubmission.findUnique({ where: { id: submissionId } }), null);
-  console.log('PASS: three TLS-verified synthetic streams received, real start gate and A+B submission API passed (Accepted, 100, 5 cases), no media/events saved, temporary session/submission purged.');
+  console.log('PASS: screen and second-camera synthetic streams received with no front camera, real start gate and A+B submission API passed (Accepted, 100, 5 cases), no media/events saved, temporary session/submission purged.');
 } finally {
   for (const child of publishers) if (child.exitCode === null) child.kill('SIGTERM');
   for (const socket of sockets) socket.destroy();

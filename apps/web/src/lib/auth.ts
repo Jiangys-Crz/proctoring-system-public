@@ -46,14 +46,18 @@ export function createSessionToken(user: Pick<User, 'id' | 'role' | 'username' |
 }
 
 export function verifySessionToken(token: string): SessionPayload | null {
-  const [encoded, signature] = token.split('.');
-  if (!encoded || !signature) return null;
+  if (token.length > 4096) return null;
+  const [encoded, signature, extra] = token.split('.');
+  if (!encoded || !signature || extra !== undefined) return null;
   const expected = sign(encoded);
   if (Buffer.byteLength(signature) !== Buffer.byteLength(expected)) return null;
   if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
-  const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as SessionPayload;
-  if (!payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null;
-  return payload;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as SessionPayload | null;
+    if (!payload || typeof payload.sub !== 'string' || !payload.sub || !['ADMIN', 'SUPER_ADMIN'].includes(payload.role)
+      || !Number.isSafeInteger(payload.exp) || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch { return null; }
 }
 
 export async function setSessionCookie(response: NextResponse, user: Pick<User, 'id' | 'role' | 'username' | 'numberId'>) {

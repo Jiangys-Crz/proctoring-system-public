@@ -19,6 +19,8 @@ test('thirty monitor requests share one signed media query and cache presence, n
   assert.equal(calls, 1);
   for (const result of results) assert.deepEqual(result, { liveStatusAvailable: true, liveReadySessionIds: ['allowed'] });
   assert.deepEqual(await load([active('other-room')]), { liveStatusAvailable: true, liveReadySessionIds: ['other-room'] });
+  assert.deepEqual(await load([{ ...active('allowed'), revokedAt: new Date() }]),
+    { liveStatusAvailable: true, liveReadySessionIds: [] }, 'a revoked connection is not reported live from cache');
   assert.deepEqual(await load([]), { liveStatusAvailable: true, liveReadySessionIds: [] }, 'revoked scopes cannot inherit cached session IDs');
   assert.equal(calls, 1);
   now += 2001;

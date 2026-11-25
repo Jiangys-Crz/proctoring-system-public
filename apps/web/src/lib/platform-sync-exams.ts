@@ -14,8 +14,12 @@ import { getHydroSettings } from './settings';
 import { getPlatformSyncSettings, type PlatformSyncSettings } from './platform-sync-settings';
 import { assertCandidateCanDelete } from './platform-sync-candidate-delete';
 import type { PlatformItem } from './platform-sync-protocol';
+import { isSynchronizedPlatformKind } from './platform-sync-policy';
+import { roomLoginIpPolicies, setRoomLoginIpPolicy, deleteRoomLoginIpPolicy } from './room-login-ip';
 
-const EXAM_FIELDS = ['name','startAt','latestStartAt','endAt','durationMinutes','contestType','teamAccountMode','contestRule','published','flexible','scoreboardFrozenAt','freezeMinutes','allowedLanguages','showTestCaseCount','showObjectiveScore','allowPrint','printMode','allowTeamSubmissionView','leaderOnlySubmission','rules','saveFullRecording','saveIncidentRecording','externalBoardEnabled','externalBoardBaseUrl','externalBoardApiKey','externalBoardEventId','externalBoardIntervalSeconds'] as const;
+// Recording retention and bound candidate IPs belong to this server; room IP
+// switches travel in ROOM snapshots. This allowlist also filters legacy updates.
+const EXAM_FIELDS = ['name','startAt','latestStartAt','endAt','durationMinutes','contestType','teamAccountMode','contestRule','published','flexible','scoreboardFrozenAt','freezeMinutes','allowedLanguages','showTestCaseCount','showObjectiveScore','allowPrint','printMode','allowTeamSubmissionView','leaderOnlySubmission','rules','externalBoardEnabled','externalBoardBaseUrl','externalBoardApiKey','externalBoardEventId','externalBoardIntervalSeconds'] as const;
 const CANDIDATE_FIELDS = ['name','studentId','school','college','major','gender','gradeYear','className','advisor','groupName','teamName','teamMembers','teamMemberStudentIds','teamRoster','memberOrder','examNumber','password','seatNo','isTeamLeader','ranked','status','startedAt','lateStartAllowedAt','abnormal'] as const;
 const PROBLEM_FIELDS = ['order','label','title','content','html','problemType','config','hydroScore','scorePercent','score','timeLimitMs','memoryLimitMb','languages','files','sourceDeleted'] as const;
 const ROOM_FIELDS = ['name','requireSecondCamera','requireFrontCamera','loginMode','loginReviewMode'] as const;
@@ -85,8 +89,12 @@ export async function captureExamInTransaction(tx: Prisma.TransactionClient, exa
     const config = await tx.examFederation.findUnique({ where: { examId } });
     if (!config?.managedGlobally || !config.enabled) return;
     const exam = await tx.exam.findUniqueOrThrow({ where: { id: examId }, include: { problems: true, candidates: true,
-      rooms: { include: { candidates: true, proctors: { include: { user: true } } } }, administrators: { include: { user: true } }, printJobs: true, cheatingRecords: true, alerts: true, loginRequests: true } });
+      rooms: { include: { candidates: true, proctors: { include: { user: true } } } }, administrators: { include: { user: true } }, printJobs: true, cheatingRecords: true, alerts: true } });
     const scope = exam.examCode;
+    const roomPolicies = !incoming || incoming.kind === 'ROOM' || incoming.kind === 'ROOM_ASSIGNMENT'
+      ? await roomLoginIpPolicies(tx, exam, exam.rooms) : [];
+    const roomIp = new Map(roomPolicies.map(room => [room.id, room.enabled]));
+    const roomFields = (room: typeof exam.rooms[number]) => ({ ...pick(room, ROOM_FIELDS), ipLoginRestrictionEnabled: roomIp.get(room.id) ?? exam.ipLoginRestrictionEnabled });
     // A normal poll should not issue a lookup for every unchanged candidate,
     // room assignment or receipt. Keep only journal metadata in this transaction.
     const cacheLimit = 4096;
@@ -136,7 +144,7 @@ export async function captureExamInTransaction(tx: Prisma.TransactionClient, exa
     for (const room of exam.rooms) {
       if (incoming?.kind === 'ROOM_ASSIGNMENT') { const mapping = await tx.platformSyncItem.findUnique({ where: { scope_kind_localId: { scope, kind: 'ROOM', localId: room.id } } }); if (mapping) roomKeys.set(room.id, mapping.id); continue; }
       if (!matches('ROOM', room.id, room.name === incoming?.payload.name)) continue;
-      const item = await capture('ROOM', room.id, jsonValue({ ...pick(room, ROOM_FIELDS), proctors: room.proctors.map(p => identity(p.user)).sort(compareIdentities) }));
+      const item = await capture('ROOM', room.id, jsonValue({ ...roomFields(room), proctors: room.proctors.map(p => identity(p.user)).sort(compareIdentities) }));
       roomKeys.set(room.id, item.id);
     }
     const membershipsByCandidate = new Map<string, typeof exam.rooms>();
@@ -153,23 +161,17 @@ export async function captureExamInTransaction(tx: Prisma.TransactionClient, exa
       if (memberships.length > 1) throw new FederationError('考生被分配到多个考室，请先修正考室安排');
       if (memberships.length && !roomKeys.has(memberships[0].id)) {
         const room = memberships[0];
-        const item = await capture('ROOM', room.id, jsonValue({ ...pick(room, ROOM_FIELDS), proctors: room.proctors.map(p => identity(p.user)).sort(compareIdentities) }));
+        const item = await capture('ROOM', room.id, jsonValue({ ...roomFields(room), proctors: room.proctors.map(p => identity(p.user)).sort(compareIdentities) }));
         roomKeys.set(room.id, item.id);
       }
       await capture('ROOM_ASSIGNMENT', candidate.id, jsonValue({ candidateKey: candidateKeys.get(candidate.id), roomKey: memberships.length ? roomKeys.get(memberships[0].id) : null }), `room-assignment:${key}`);
       await clearRoomAssignmentPending(tx, [key]);
     }
     if (!incoming || incoming.kind === 'ROOM_ASSIGNMENT') await captureDeletions(tx, settings.nodeId, scope, 'ROOM_ASSIGNMENT', new Set(exam.candidates.map(c => c.id)));
-    for (const [kind, rows, fields] of [ ['PRINT', exam.printJobs, PRINT_FIELDS], ['CHEATING', exam.cheatingRecords, CHEATING_FIELDS], ['ALERT', exam.alerts, ALERT_FIELDS], ['LOGIN', exam.loginRequests, LOGIN_FIELDS] ] as const) {
+    for (const [kind, rows, fields] of [ ['PRINT', exam.printJobs, PRINT_FIELDS], ['CHEATING', exam.cheatingRecords, CHEATING_FIELDS], ['ALERT', exam.alerts, ALERT_FIELDS] ] as const) {
       for (const row of rows) {
         if (!matches(kind, row.id)) continue;
         const extra: Record<string, unknown> = {};
-        if (kind === 'LOGIN' && 'identityPhotoPath' in row) {
-          const photo = row.identityPhotoPath ? await tx.mediaSegment.findFirst({ where: { examId, candidateId: row.candidateId, objectPath: row.identityPhotoPath, channel: 'IDENTITY_PHOTO', deletedAt: null, validatedAt: { not: null } } }) : null;
-          const video = row.roomVideoPath ? await tx.mediaSegment.findFirst({ where: { examId, candidateId: row.candidateId, objectPath: row.roomVideoPath, channel: 'ROOM_VIDEO', deletedAt: null, validatedAt: { not: null } } }) : null;
-          extra.photoKey = photo ? `photo:${photo.id}` : null;
-          extra.materialsVerified = row.syncMaterialsVerified || Boolean(photo && video);
-        }
         await capture(kind, row.id, jsonValue({ ...pick(row, fields), ...extra, candidateKey: row.candidateId ? candidateKeys.get(row.candidateId) : null }));
       }
       if (!incoming || incoming.kind === kind) await captureDeletions(tx, settings.nodeId, scope, kind, new Set(rows.map(r => r.id)));
@@ -208,6 +210,7 @@ async function ensureUser(tx: Prisma.TransactionClient, value: Record<string, un
   return saved;
 }
 export async function mergeExamItem(value: PlatformItem, settings: PlatformSyncSettings, creatorId?: string, alreadyCaptured = false) {
+  if (!isSynchronizedPlatformKind(value.kind)) return;
   if (!/^\d{10}$/.test(value.scope)) throw new FederationError('考试同步范围无效', 400);
   if (value.hash !== itemHash(value.payload, value.deleted)) throw new FederationError('同步资料校验失败', 400);
   let initializing = false;
@@ -291,17 +294,22 @@ export async function mergeExamItem(value: PlatformItem, settings: PlatformSyncS
           // The separate assignment stream may still contain a move to another
           // room. Cascading memberships first would look like a local null edit.
           if (localId && await tx.examRoomCandidate.count({ where: { roomId: localId, room: { examId } } })) throw new FederationError('等待考生考室变更同步后再移除考室');
-          if (localId) await tx.examRoom.deleteMany({ where: { id: localId, examId } });
+          if (localId) { await tx.examRoom.deleteMany({ where: { id: localId, examId } }); await deleteRoomLoginIpPolicy(tx, examId, localId); }
           return { localId };
         }
         const data = dataFields(payload, ROOM_FIELDS) as Prisma.ExamRoomUncheckedCreateInput;
         const existingRoom = localId ? null : await tx.examRoom.findUnique({ where: { examId_name: { examId, name: data.name } } });
         localId ||= existingRoom?.id || null;
         const room = localId ? await tx.examRoom.upsert({ where: { id: localId }, update: data, create: { ...data, examId, id: localId } }) : await tx.examRoom.create({ data: { ...data, examId } });
+        if (payload.ipLoginRestrictionEnabled !== undefined) {
+          if (typeof payload.ipLoginRestrictionEnabled !== 'boolean') throw new FederationError('考室 IP 限制设置格式无效');
+          await setRoomLoginIpPolicy(tx, examId, room.id, payload.ipLoginRestrictionEnabled);
+        }
         await tx.examRoomProctor.deleteMany({ where: { roomId: room.id } });
         for (const user of payload.proctors as Record<string, unknown>[]) { const saved = await ensureUser(tx, user); await tx.examRoomProctor.upsert({ where: { roomId_userId: { roomId: room.id, userId: saved.id } }, create: { roomId: room.id, userId: saved.id }, update: {} }); }
         const proctors = await tx.examRoomProctor.findMany({ where: { roomId: room.id }, include: { user: true } });
-        return { localId: room.id, actual: jsonValue({ ...pick(room, ROOM_FIELDS), proctors: proctors.map(a => pick(a.user, ['realName','numberId','username','email'])).sort(compareIdentities) }) };
+        const [policy] = await roomLoginIpPolicies(tx, exam, [room]);
+        return { localId: room.id, actual: jsonValue({ ...pick(room, ROOM_FIELDS), ipLoginRestrictionEnabled: policy.enabled, proctors: proctors.map(a => pick(a.user, ['realName','numberId','username','email'])).sort(compareIdentities) }) };
       }
       if (value.kind === 'ROOM_ASSIGNMENT') {
         const candidate = await candidateId();

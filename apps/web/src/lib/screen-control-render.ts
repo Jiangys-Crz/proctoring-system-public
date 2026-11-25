@@ -4,7 +4,7 @@ import { processMedia } from './media-processing';
 import { SCREEN_CONTROL_MAX_IMAGE_BYTES, SCREEN_CONTROL_MAX_PIXELS, ScreenControlError } from './screen-control-policy';
 import { resolveScreenText, type ScreenImageTemplate, type ScreenTextValues } from './screen-control-template';
 
-function escapeMarkup(value: string) {
+export function escapeMarkup(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
 }
@@ -65,6 +65,10 @@ export async function cachedScreenControlImage(
   const key = createHash('sha256').update(JSON.stringify([
     image.objectPath, template, template.blocks.map(block => resolveScreenText(block.content, values)),
   ])).digest('hex');
+  return cachedScreenControlBuffer(key, async () => renderScreenControlImage(await read(), template, values));
+}
+
+export async function cachedScreenControlBuffer(key: string, render: () => Promise<Buffer>) {
   const hit = cache.entries.get(key);
   if (hit && hit.expires > Date.now()) return hit.buffer;
   if (hit) { cache.entries.delete(key); cache.bytes -= hit.buffer.length; }
@@ -73,7 +77,7 @@ export async function cachedScreenControlImage(
   // Keep simultaneous source reads bounded as well as decoder work.
   if (cache.pending.size >= 32) throw new ScreenControlError('图片生成繁忙，请稍后重试', 429);
   const operation = (async () => {
-    const buffer = await renderScreenControlImage(await read(), template, values);
+    const buffer = await render();
     while (cache.entries.size && (cache.entries.size >= 128 || cache.bytes + buffer.length > 64 * 1024 * 1024)) {
       const oldest = cache.entries.keys().next().value!;
       cache.bytes -= cache.entries.get(oldest)!.buffer.length;

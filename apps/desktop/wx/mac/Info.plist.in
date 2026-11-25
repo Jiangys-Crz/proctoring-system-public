@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>org.cwnupaa.proctor</string>
+  <key>CFBundleName</key><string>@PRODUCT_NAME@</string>
+  <key>CFBundleDisplayName</key><string>@PRODUCT_NAME@</string>
+  <key>CFBundleExecutable</key><string>@PRODUCT_NAME@</string>
+  <key>CFBundleIconFile</key><string>icon.icns</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>@PROCTOR_VERSION@</string>
+  <key>CFBundleVersion</key><string>@PROCTOR_VERSION@</string>
+  <key>LSMinimumSystemVersion</key><string>@CMAKE_OSX_DEPLOYMENT_TARGET@</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSCameraUsageDescription</key><string>用于考试期间的摄像头监考。</string>
+  <key>NSMicrophoneUsageDescription</key><string>用于考试期间的环境录音和通话。</string>
+  <key>NSScreenCaptureUsageDescription</key><string>用于考试期间的屏幕监考。</string>
+  <key>NSAppleEventsUsageDescription</key><string>用于检测考试期间的活动窗口。</string>
+  <key>NSLocalNetworkUsageDescription</key><string>用于连接考场内网中的监考服务。</string>
+  <key>NSAppTransportSecurity</key><dict>
+    <key>NSAllowsArbitraryLoads</key><true/>
+  </dict>
+</dict>
+</plist>

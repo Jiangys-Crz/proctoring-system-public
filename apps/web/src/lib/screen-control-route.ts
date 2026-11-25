@@ -53,6 +53,10 @@ export async function screenControlImageResponse(
   const buffer = personalized
     ? await cachedScreenControlImage(image, template!, values!, () => readScreenControlImage(image.objectPath))
     : await cachedScreenControlImage(image, { version: 1, blocks: [] }, { name: '', teamname: '', members: '', school: '', college: '', group: '' }, () => readScreenControlImage(image.objectPath));
+  return screenControlImageBytesResponse(buffer, personalized ? 'image/webp' : image.contentType);
+}
+
+export function screenControlImageBytesResponse(buffer: Buffer, contentType: string) {
   let offset = 0, data: Buffer | null = buffer;
   const body = new ReadableStream<Uint8Array>({
     pull(controller) {
@@ -63,7 +67,7 @@ export async function screenControlImageResponse(
     }, cancel() { data = null; },
   });
   return new Response(body, { headers: {
-    'content-type': personalized ? 'image/webp' : image.contentType, 'content-length': String(buffer.length),
+    'content-type': contentType, 'content-length': String(buffer.length),
     'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
     'Access-Control-Allow-Origin': '*',
   } });

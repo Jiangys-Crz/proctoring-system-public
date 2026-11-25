@@ -126,10 +126,10 @@ export async function deleteReactionBrandingBinding(user: Actor, rawInput: unkno
   return getReactionBrandingView();
 }
 
-export async function resolveReactionBrandingLogo(schoolName: string | null) {
+export async function resolveReactionBrandingLogo(organizationName: string | null) {
   const value = await getReactionBranding();
-  const selected = reactionLogoSelection(value, schoolName);
-  const candidates = [selected, ...(selected.basis === 'system-organization' ? [reactionLogoSelection({ ...value, organizations: [] }, schoolName)] : [])];
+  const selected = reactionLogoSelection(value, organizationName);
+  const candidates = [selected, ...(selected.basis === 'system-organization' ? [reactionLogoSelection({ ...value, organizations: [] }, organizationName)] : [])];
   for (const candidate of candidates) {
     if (!candidate.logoId) continue;
     const row = await prisma.reactionLogo.findUnique({ where: { id: candidate.logoId }, select: { id: true, objectPath: true, archivedAt: true } });
@@ -137,7 +137,7 @@ export async function resolveReactionBrandingLogo(schoolName: string | null) {
     reactionAssetFilename('logo-library', row.objectPath);
     return { ...candidate, path: row.objectPath };
   }
-  return reactionLogoSelection(defaultReactionBranding(), schoolName) as ReturnType<typeof reactionLogoSelection> & { path?: string };
+  return reactionLogoSelection(defaultReactionBranding(), organizationName) as ReturnType<typeof reactionLogoSelection> & { path?: string };
 }
 
 let builtinBadge: Promise<Buffer> | undefined;

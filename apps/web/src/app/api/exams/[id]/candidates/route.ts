@@ -11,6 +11,8 @@ import { prisma } from '@/lib/db';
 import { AuthError, requireUser } from '@/lib/auth';
 import { canManageExam } from '@/lib/permissions';
 import { candidateIdentityLookup } from '@/lib/candidate-identity';
+import { isContestLiveSupported } from '@/lib/contest-live-contract';
+import { pruneContestLiveRosterConnections } from '@/lib/contest-live-media';
 import { options, fail, ok, parseBody, RequestParseError, toErrorMessage } from '@/lib/http';
 
 const ImportSchema = z.object({ rows: z.array(CandidateImportRowSchema).min(1) });
@@ -207,6 +209,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       }
       return saved;
     }, { timeout: 60_000 });
+    if (isContestLiveSupported(exam.platform, exam.contestRule)) await pruneContestLiveRosterConnections(id);
     return ok({ imported: result.length, candidates: result });
   } catch (error) {
     if (error instanceof AuthError || error instanceof FederationError) return fail(error.message, error.status);
@@ -235,6 +238,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       }
       return tx.candidate.update({ where: { id: current.id }, data: row });
     });
+    if (isContestLiveSupported(exam.platform, exam.contestRule)) await pruneContestLiveRosterConnections(id);
     return ok(updated);
   } catch (error) {
     if (error instanceof AuthError || error instanceof FederationError) return fail(error.message, error.status);
@@ -253,6 +257,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       await assertCandidateCanDelete(tx, id, input.ids);
       return tx.candidate.deleteMany({ where: { examId: id, id: { in: input.ids } } });
     });
+    await pruneContestLiveRosterConnections(id);
     return ok({ deleted: result.count });
   } catch (error) {
     if (error instanceof AuthError || error instanceof FederationError) return fail(error.message, error.status);
